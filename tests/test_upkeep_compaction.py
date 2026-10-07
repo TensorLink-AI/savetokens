@@ -144,3 +144,42 @@ def test_desktop_backend_route_returns_status(hermes_home, monkeypatch):
     spec.loader.exec_module(mod)
     out = mod.status()
     assert set(out) == {"text", "detail"} and out["text"]
+
+
+# ── forecast refresh cadence ─────────────────────────────────────────────────
+
+def _use(store, ts, cost=1.0):
+    from savetokens.store import UsageEvent
+    store.add_usage([UsageEvent(harness="claude-code", session_id="s", request_id=f"r{ts}", ts=ts, input=1,
+                                output=1, cost_usd=cost, cost_source="test")])
+
+
+def test_refresh_is_hourly_while_in_use_and_three_hourly_otherwise(store):
+    from conftest import T0
+    from savetokens import maintain
+    H = 3600
+    assert maintain.refresh_due(store, None, T0)                        # never made
+    assert not maintain.refresh_due(store, T0, T0 + 5 * H)              # nothing new since: keep it
+    assert maintain.refresh_due(store, T0, T0 + 13 * H)                 # ... up to 12 hours
+    _use(store, T0 + 1.5 * H)
+    assert maintain.refresh_due(store, T0, T0 + 2 * H)                  # in use: hourly
+    assert not maintain.refresh_due(store, T0, T0 + 0.5 * H + 1)
+    assert not maintain.refresh_due(store, T0, T0 + 2.9 * H)            # idle for over an hour: 3-hourly
+    assert maintain.refresh_due(store, T0, T0 + 3 * H)
+
+
+def test_breakout_above_the_forecast_refreshes_early(store, monkeypatch):
+    from array import array
+    from conftest import T0
+    from savetokens import maintain, windows
+    H = 3600
+    start = windows.hour_floor(T0)
+    monkeypatch.setattr(windows, "classifier", lambda s: (lambda e: "sub_usd"))
+    windows.save_paths(store, "ephemeris", "sub_usd", start, start, 24, array("d", [1.0] * 24 * 10))  # $1/h, 10 paths
+    _use(store, start + 0.5 * H, cost=0.9)
+    assert not maintain.breakout(store, start + H + 60)              # within the forecast
+    _use(store, start + 1.5 * H, cost=5.0)
+    assert maintain.breakout(store, start + 2 * H + 60)              # $5 in an hour forecast at $1
+    made = start + 1.2 * H     # before the spike: under an hour old, but the spike broke out of it
+    assert maintain.refresh_due(store, made, start + 2 * H + 60, check_breakout=True)
+    assert not maintain.refresh_due(store, made, start + 2 * H + 60, check_breakout=False)

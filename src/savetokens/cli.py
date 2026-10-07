@@ -513,7 +513,7 @@ def cmd_ephemeris(args):
         cfg["forecaster"] = "ephemeris"
         save_config(cfg)
         print(f"Connected: {credits:,.0f} credits available. Forecasts now use the Ephemeris ensemble"
-              " (refreshed every 6 hours; only hourly dollar totals are sent).")
+              " (refreshed hourly while you work, every 3 hours otherwise; only hourly dollar totals are sent).")
         from . import maintain
         from .store import Store
         with Store() as s:

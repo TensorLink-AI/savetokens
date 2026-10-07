@@ -1,8 +1,9 @@
 """Short messages for channels without a statusline (Hermes cron delivery, Telegram).
 
 `alerts()` returns only what is new since the last call, so a frequent cron job
-stays silent unless something happened: guard alerts, or a limit or budget
-window whose forecast now reaches 100%.
+stays silent unless something happened: guard alerts, a limit or budget
+window whose forecast now reaches 100%, or a weekly projection that jumps or
+swings well beyond its usual (projection.py).
 """
 from __future__ import annotations
 
@@ -37,6 +38,17 @@ def alerts(store: Store, now=None) -> list[str]:
             out.append(f"⚠ {p['unit_of']}: {p['account'] or p['machine']:.0f}% used, reaching 100% is {likely}"
                        f" before it resets {when}.")
             notified.add(key)
+    from . import projection
+    for kind, unit in (("week", "sub_usd"), ("week", "api_usd")):
+        try:
+            found = projection.flags(store, now, kind, unit, src)
+        except Exception:   # a forecast-history problem must never stop the other alerts
+            found = []
+        for f in found:
+            key = f"{f['rule']}:{unit}:{int(f['end'])}:{int(f['level'] // 10)}"   # again only at a new level
+            if key not in notified:
+                out.append(f"⚠ {f['message']}.")
+                notified.add(key)
     store.set_meta("notify_last", now)
     store.set_meta("notified_windows", sorted(notified)[-50:])
     return out

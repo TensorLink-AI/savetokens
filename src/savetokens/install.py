@@ -79,8 +79,8 @@ def _ephemeris_change(out, no_ephemeris):
     if no_ephemeris:
         out("  - forecasts: local baseline only (--no-ephemeris); nothing leaves this machine")
     else:
-        out(f"  - forecasts: Ephemeris ({ephemeris.SITE}), the default forecaster. Every 6 hours it sends"
-            " hourly API-equivalent dollar totals (no prompts, tokens, project or session names);"
+        out(f"  - forecasts: Ephemeris ({ephemeris.SITE}), the default forecaster. Hourly while you work"
+            " (every 3 hours otherwise, never while idle) it sends hourly API-equivalent dollar totals (no prompts, tokens, project or session names);"
             " --no-ephemeris keeps everything local")
 
 
@@ -309,7 +309,7 @@ def capabilities() -> dict:
             "uninstall <harness>": "remove hooks/plugin; keeps local data",
         },
         "data": str(home()),
-        "network": "Ephemeris API (hourly usage totals, every 6 hours) unless forecaster is 'baseline'",
+        "network": "Ephemeris API (hourly usage totals, hourly while in use, every 3 hours otherwise) unless forecaster is 'baseline'",
     }
 
 

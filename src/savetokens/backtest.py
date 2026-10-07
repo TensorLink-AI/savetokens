@@ -15,8 +15,8 @@ Assumptions, printed with every result:
     steering, which is what the same usage looks like on a smaller plan.
   - A window starts at the first request after the previous window ended.
   - Lean mode cuts usage by `lean` (a fraction) while it is on; the eval measures it.
-  - Forecasts are remade every 6 hours from the history available then, as in the
-    product, and see the real (unsteered) history.
+  - Forecasts are remade every 6 hours from the history available then (the product now
+    refreshes hourly while in use, so this understates it), and see the real (unsteered) history.
   - Usage past the limit is blocked work, or with extra usage on, billed at API rates.
 
 Accuracy and cold start: every forecast is also scored on the next 5 and 24 hours
@@ -40,7 +40,7 @@ from .store import Store, home
 HOUR = 3600
 WINDOW = 5 * HOUR
 CHECK = 1800
-EVERY = 6 * HOUR           # forecasts are remade this often, as in the product
+EVERY = 6 * HOUR           # forecasts are remade this often (the product: hourly while in use)
 HORIZON = 24
 MIN_HISTORY = 7 * 24       # hours of history before the first steady-state origin
 LEVELS = (0.1, 0.5, 0.9)

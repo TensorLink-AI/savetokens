@@ -2,8 +2,10 @@
 
 What leaves the machine: hourly API-equivalent dollar totals (one series for
 subscription usage, one for API-billed usage). No tokens per request, no
-prompts, no project or session names. Calls are made at most every
-REFRESH_SECONDS, in the background, never from inside a hook.
+prompts, no project or session names. Calls are made in the background, never
+from inside a hook: hourly while agents are in use, every 3 hours otherwise, at
+once when usage breaks above the forecast, and not at all while nothing changes
+(see maintain.refresh_due).
 """
 from __future__ import annotations
 
@@ -17,7 +19,10 @@ from .store import load_config
 
 SITE = "https://ephemeris.cascade.industries"
 API = f"{SITE}/api/v1"
-REFRESH_SECONDS = 6 * 3600
+ACTIVE_SECONDS = 3600           # refresh this often while agents are in use
+REFRESH_SECONDS = 3 * 3600      # and this often otherwise
+MAX_AGE_SECONDS = 12 * 3600     # even with no new usage, so forecasts keep reaching the window's end
+BREAKOUT_MIN_SECONDS = 15 * 60  # a breakout refreshes at once, but not more often than this
 KEY_NAMES = ("EPHEMERIS_API_KEY", "EPHEMERIS_API_TOKEN")
 
 

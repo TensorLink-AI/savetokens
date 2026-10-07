@@ -33,8 +33,8 @@ flags. It adds the harness hooks (or the Hermes plugin), composes with your exis
 statusline, backfills history, and adds an hourly crontab line so forecasts and scoring
 stay current while Claude Code is closed (`--no-schedule` to skip). Your data stays on
 your machine in `~/.savetokens`: counts and metadata only, never prompts, replies or file
-contents. The one thing that leaves it is for forecasting: every 6 hours, hourly
-API-equivalent dollar totals go to Ephemeris (no tokens, prompts, project or session
+contents. The one thing that leaves it is for forecasting: hourly while you work (every
+3 hours otherwise, and not while idle), hourly API-equivalent dollar totals go to Ephemeris (no tokens, prompts, project or session
 names). `--no-ephemeris` keeps everything local. Limit percentages are rough for the
 first day while savetokens learns how your usage maps to your limits; the statusline
 says `learning` until then.
