@@ -38,7 +38,7 @@ savetokens levers --help | grep -q "hermes:compaction" && echo NEW-BUILD   # con
 ```sh
 hermes config path                                    # note the config file path
 cp "$(hermes config path)" /tmp/hermes-config.before-savetokens.yaml
-savetokens install hermes --no-restart --no-ephemeris
+savetokens install hermes --yes --no-restart --no-ephemeris   # prints every change it makes
 hermes plugins list | grep -i savetokens              # expect: enabled
 hermes cron list | grep -i savetokens                 # expect: savetokens-alerts and savetokens-daily
 ```
