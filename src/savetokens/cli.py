@@ -399,6 +399,10 @@ def cmd_levers(args):
             for lv in items:
                 state = "ON" if lv.id in on else ("allowed" if levers.is_allowed(lv, allowed) else "off")
                 print(f"  {state:8} {lv.id:13} {lv.describe:46} {lv.key or 'auxiliary.<task>.model'} in {lv.path()}")
+                if state == "allowed" and levers.consented(h, cfg):
+                    why = levers.why_idle(lv, s)
+                    if why:
+                        print(f"  {'':8} {'':13} nothing to change: {why}")
     return 0
 
 

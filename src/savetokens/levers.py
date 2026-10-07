@@ -256,6 +256,27 @@ def _cheaper_side_tasks(store: Store) -> dict:
     return plan
 
 
+def why_idle(lever: Lever, store: Store) -> str | None:
+    """Why an allowed lever has nothing to change right now, in words the user can act on."""
+    try:
+        if lever.changes(store):
+            return None
+    except Exception as e:
+        return f"can't read the settings ({e})"
+    if lever.harness == "hermes" and lever.id == "side-tasks":
+        cands = hermes_candidates(store)
+        priced = [c for c in cands if c["usd_per_mtok"] is not None]
+        if not priced:
+            return "no prices yet: start Hermes once so the plugin can price your configured models"
+        if not any(c["role"].startswith("side:") for c in cands):
+            return ("your side tasks use Hermes's automatic choice; give one an explicit model, or add a cheaper"
+                    " fallback model, for this lever to act")
+        return "your side tasks already use your cheapest configured model"
+    if lever.harness == "hermes" and lever.id == "quality-score":
+        return "only for OpenRouter's openrouter/pareto-code router"
+    return "already at or below the cheaper setting"
+
+
 def _pareto_down(current):
     if _model_id(_hermes_get("model")) != "openrouter/pareto-code":
         return None

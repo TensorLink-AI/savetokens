@@ -64,8 +64,14 @@ def backfill(store: Store, home: Path | None = None) -> int:
         for r in con.execute("SELECT * FROM calls WHERE usage_missing = 0"):
             ev = UsageEvent(HARNESS, r["session_id"] or "unknown", r["api_request_id"] or f"tt:{r['id']}",
                             r["ended_at"], model=r["model"], input=r["input_tokens"], output=r["output_tokens"],
-                            cache_read=r["cache_read_tokens"], cache_write_5m=r["cache_write_tokens"])
-            _price(ev, rates)
+                            cache_read=r["cache_read_tokens"], cache_write_5m=r["cache_write_tokens"],
+                            provider=provider_label(_col(r, "provider") or _col(r, "billing_provider"),
+                                                    _col(r, "base_url")))
+            own = _col(r, "actual_cost_usd") or _col(r, "cost_usd") or _col(r, "estimated_cost_usd")
+            if own:      # the call's own cost as Hermes recorded it beats a per-token average
+                ev.cost_usd, ev.cost_source = float(own), "hermes"
+            else:
+                _price(ev, rates)
             events.append(ev)
         con.close()
         added += store.add_usage(events)

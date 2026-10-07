@@ -17,6 +17,8 @@ CARRY_BASE = 50_000
 BIG_OUTPUT_CHARS = 40_000
 CHARS_PER_TOKEN = 4
 
+ESTIMATED_SOURCES = {"hermes_blended"}
+
 
 @dataclass
 class Finding:
@@ -188,10 +190,12 @@ def build(store: Store, days=7, harness=None, now=None):
         "cache_read": sum(e.cache_read for e in events),
         "cache_write": sum(e.cache_write_5m + e.cache_write_1h for e in events),
         "output": sum(e.output for e in events),
+        # per-token averages, for calls recorded before savetokens priced them one by one
+        "estimated_usd": sum(e.cost_usd for e in priced if e.cost_source in ESTIMATED_SOURCES),
     }
     groups = {}
     for name, key in (("harness", lambda e: e.harness), ("model", lambda e: pricing.normalize(e.model)),
-                      ("project", lambda e: e.project or "?"),
+                      ("project", lambda e: e.project or "?"), ("provider", lambda e: e.provider or "?"),
                       ("subagent", lambda e: "subagents" if e.subagent else "main")):
         g = defaultdict(float)
         for e in priced:
@@ -278,10 +282,13 @@ def render(r) -> str:
             L.append(f"  subscription: {g['requests']:,} requests, ${g['usd']:,.2f} API-equivalent{pct}")
         else:
             label = "API-billed" if b == "api" else "billing unknown"
+            est = t.get("estimated_usd") or 0
             L.append(f"  {label}: {g['requests']:,} requests, ${g['usd']:,.2f}"
-                     + (f" ({t['unpriced']} without a known price)" if t["unpriced"] else ""))
+                     + (f" ({t['unpriced']} without a known price)" if t["unpriced"] else "")
+                     + (f"; ${est:,.2f} of it is a rough estimate from per-token averages (calls from before"
+                        " savetokens priced each one)" if est >= 0.01 else ""))
     L.append("")
-    for name in ("harness", "model", "project", "subagent"):
+    for name in ("harness", "provider", "model", "project", "subagent"):
         rows = r["groups"][name][:5]
         if rows:
             L.append(f"  by {name} (API-equivalent $): " + ", ".join(f"{k} ${v:,.2f}" for k, v in rows))

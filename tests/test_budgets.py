@@ -188,3 +188,24 @@ def test_pareto_router_gets_a_lower_score(store, hermes_cfg, monkeypatch):
     assert lv.changes(store) == {"openrouter.min_coding_score": 0.5}
     hermes_cfg["openrouter"]["min_coding_score"] = 0.4
     assert lv.changes(store) == {}
+
+
+def test_idle_side_tasks_lever_says_why(store, hermes_cfg):
+    from savetokens import levers
+    lv = next(x for x in levers.LEVERS["hermes"] if x.id == "side-tasks")
+    assert "start Hermes once" in levers.why_idle(lv, store)
+    store.set_meta("hermes_prices", {"openrouter|moonshotai/kimi-k3": {"in": 2.0, "out": 10.0}})
+    hermes_cfg["auxiliary"] = {"compression": {"provider": "", "model": ""}}
+    hermes_cfg["fallback_providers"] = []
+    assert "automatic choice" in levers.why_idle(lv, store)      # what the remote test hit
+
+
+def test_report_says_how_much_is_estimated(store):
+    from savetokens import report
+    store.add_usage([UsageEvent("hermes", "a", "a1", NOON, model="m", cost_usd=1.0, cost_source="hermes:reported",
+                                provider="openrouter"),
+                     UsageEvent("hermes", "b", "b1", NOON, model="m", cost_usd=0.5, cost_source="hermes_blended")])
+    r = report.build(store, days=1, now=NOON + 60)
+    assert r["totals"]["estimated_usd"] == 0.5
+    text = report.render(r)
+    assert "$0.50 of it is a rough estimate" in text and "by provider" in text and "openrouter $1.00" in text
