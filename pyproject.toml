@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "savetokens"
+version = "0.1.0a1"
+description = "Stop runaway agent sessions, forecast your Claude limits and spend, and fix token waste in Claude Code and Hermes."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "TensorLink" }]
+keywords = ["claude-code", "hermes", "tokens", "rate-limit", "llm", "cost", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+savetokens = "savetokens.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/savetokens"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

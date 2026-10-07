@@ -1,0 +1,14 @@
+{
+  "control": {"note": "no savetokens"},
+  "guard": {"hooks": true, "note": "default install: warnings only"},
+  "block": {"hooks": true, "block": true, "note": "--block"},
+  "fixes": {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-5-5", "BASH_MAX_OUTPUT_LENGTH": "15000"}, "append_system_prompt": "- Cap long command output: pipe through `tail -n 50`, `head` or `grep` rather than printing everything.\n- Don't re-read a file you already have in context unless it changed.", "note": "canned fixes, no hooks"},
+  "all": {"hooks": true, "env": {"CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-5-5", "BASH_MAX_OUTPUT_LENGTH": "15000"}, "append_system_prompt": "- Cap long command output: pipe through `tail -n 50`, `head` or `grep` rather than printing everything.\n- Don't re-read a file you already have in context unless it changed.", "note": "guard + fixes"},
+  "quality": {"hooks": true, "mode": "quality", "note": "quality knob: monitoring only, late guard"},
+  "balanced": {"hooks": true, "mode": "balanced", "note": "quality knob default: lessons, nudge only at risk"},
+  "lean": {"hooks": true, "mode": "lean", "note": "quality knob: economy briefing, tighter guard"},
+  "opus": {"model": "claude-opus-5-5", "note": "lever baseline: Opus at default effort"},
+  "opus-low": {"model": "claude-opus-5-5", "env": {"CLAUDE_CODE_EFFORT_LEVEL": "low"}, "note": "lever: effort low"},
+  "sonnet": {"model": "claude-sonnet-5-5", "note": "lever: cheaper model"},
+  "sonnet-low": {"model": "claude-sonnet-5-5", "env": {"CLAUDE_CODE_EFFORT_LEVEL": "low"}, "note": "levers: cheaper model + effort low"}
+}

@@ -1,0 +1,9 @@
+name: savetokens
+version: "0.1"
+description: Record token usage per LLM call (counts only), brief the agent on its budget per the savetokens mode, and warn when a session loops or burns unusually fast.
+provides_hooks:
+  - post_api_request
+  - post_auxiliary_call
+  - pre_llm_call
+  - transform_tool_result
+  - pre_tool_call

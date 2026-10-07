@@ -1,0 +1,10 @@
+PLAN.md
+AGENTS.md
+CLAUDE.md
+__pycache__/
+*.egg-info/
+.venv/
+dist/
+.pytest_cache/
+evals/results/
+evals/mined/
