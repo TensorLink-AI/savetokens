@@ -22,13 +22,13 @@ uv --version || pipx --version
 
 ## 1. Install the test build
 
-It is the `hermes-test` branch of the private repo TensorLink-AI/savetokens; you need read access
-(`gh auth status`, or a GitHub token in your git credentials).
+It is the `hermes-test` branch of the public repo https://github.com/TensorLink-AI/savetokens
+(no GitHub login needed).
 
 ```sh
 uv tool install --reinstall "git+https://github.com/TensorLink-AI/savetokens@hermes-test"
 # no uv: pipx install --force "git+https://github.com/TensorLink-AI/savetokens@hermes-test"
-# no access over https: gh repo clone TensorLink-AI/savetokens -- -b hermes-test && uv tool install --reinstall ./savetokens
+# or: git clone -b hermes-test https://github.com/TensorLink-AI/savetokens && uv tool install --reinstall ./savetokens
 savetokens --version                                                  # expect 0.1.0a1
 savetokens levers --help | grep -q "hermes:compaction" && echo NEW-BUILD   # confirms this build
 ```
