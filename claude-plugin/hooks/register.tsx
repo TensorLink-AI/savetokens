@@ -45,9 +45,19 @@ const niceTop = (v: number) => {
 // Hourly usage as bars with a y-axis and hour ticks: past solid, forecast cyan, its range to p90 shaded.
 // Returns rows of [axis, past, forecast] so the pane can colour the forecast part.
 const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
-  const past = d.past, next = d.next, hi = d.next_hi ?? d.next
+  // Fit the plot: trim hours (older past, later forecast) rather than cut the axis off.
+  const room = Math.max(12, width - 10)
+  let past = d.past, next = d.next, hi = d.next_hi ?? d.next, start = d.start
+  if (past.length + next.length > room) {
+    const keepNext = Math.min(next.length, Math.floor(room / 2))
+    const keepPast = room - keepNext
+    start += (past.length - Math.min(past.length, keepPast)) * 3600
+    past = past.slice(-keepPast)
+    next = next.slice(0, keepNext)
+    hi = hi.slice(0, keepNext)
+  }
   const hours = past.length + next.length
-  const cell = 8 + 2 * hours <= width ? 2 : 1
+  const cell = 2 * hours <= room ? 2 : 1
   const top = niceTop(Math.max(0.01, ...past, ...hi))
   const label = (v: number) => (top < 10 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`).padStart(6)
   const glyph = (v: number, r: number, h?: number): string => {
@@ -61,19 +71,26 @@ const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
   for (let r = height - 1; r >= 0; r--) {
     const y = r === height - 1 ? label(top) : r === Math.floor(height / 2) - 1 ? label((top * Math.floor(height / 2)) / height) : ''
     const axis = y ? `${y} ┤` : `${''.padStart(6)} │`
-    const p = past.map(v => glyph(v, r).repeat(cell)).join('')
-    const f = next.map((v, i) => glyph(v, r, hi[i]).repeat(cell)).join('')
-    rows.push([axis, p, '┊' + f])
+    rows.push([axis, past.map(v => glyph(v, r).repeat(cell)).join(''),
+               '┊' + next.map((v, i) => glyph(v, r, hi[i]).repeat(cell)).join('')])
   }
-  let axis = `${label(0)} └`, ticks = ''.padStart(8)
+  // x-axis: a tick every 6 hours with its hour written under it, never overlapping the last label
+  let axis = `${label(0)} └`
+  const ticks = Array.from({ length: 8 + hours * cell + 2 }, () => ' ')
+  let free = 0
   for (let i = 0; i < hours; i++) {
-    const hour = new Date((d.start + i * 3600) * 1000).getHours()
-    if (i === past.length) { axis += '┴'; ticks += ' ' }
+    const hour = new Date((start + i * 3600) * 1000).getHours()
+    if (i === past.length) axis += '┴'
     const mark = hour % 6 === 0
     axis += (mark ? '┬' : '─') + '─'.repeat(cell - 1)
-    ticks += cell === 2 ? (mark ? String(hour).padStart(2, '0') : '  ') : mark ? String(hour).padStart(2, '0').slice(0, 1) : ' '
+    const col = 8 + i * cell + (i >= past.length ? 1 : 0)
+    if (mark && col >= free) {
+      const text = String(hour).padStart(2, '0')
+      for (let k = 0; k < text.length; k++) ticks[col + k] = text[k] ?? ' '
+      free = col + text.length + 1
+    }
   }
-  return { rows, axis, ticks }
+  return { rows, axis, ticks: ticks.join('').trimEnd() }
 }
 
 const STAGE: Record<string, string> = { heads_up: 'heads-up', act: 'act now', last_call: 'last call' }
@@ -156,7 +173,7 @@ export const register: Register = on => {
             <Box flexDirection="column">
               <Text>
                 <Text bold>usage per hour </Text>
-                <Text dimColor>% of weekly limit · last {s.demand.past.length}h {used.toFixed(1)}% · next {s.demand.next.length}h ~{ahead.toFixed(1)}%</Text>
+                <Text dimColor>(y: % of weekly limit per hour) · last {s.demand.past.length}h {used.toFixed(1)}% · next {s.demand.next.length}h ~{ahead.toFixed(1)}%</Text>
               </Text>
               {ch.rows.map(([axis, p, f]) => (
                 <Text wrap="truncate-end">
@@ -166,7 +183,8 @@ export const register: Register = on => {
                 </Text>
               ))}
               <Text dimColor wrap="truncate-end">{ch.axis}</Text>
-              <Text dimColor wrap="truncate-end">{ch.ticks}  now ┊ forecast →</Text>
+              <Text dimColor wrap="truncate-end">{ch.ticks}  hour</Text>
+              <Text dimColor wrap="truncate-end">{'        '}past ┊ forecast (shaded: its likely range)</Text>
             </Box>
           )
         })()}

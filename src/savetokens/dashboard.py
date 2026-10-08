@@ -130,24 +130,30 @@ def nice_top(v) -> float:
 
 
 def chart(d, width=80, height=6, color=True) -> list[str]:
-    """Hourly usage as vertical bars with a y-axis (% of the weekly limit per hour) and hour ticks.
+    """Hourly usage as vertical bars: y-axis in % of the weekly limit per hour, x-axis in hours.
 
     Past hours are solid; from `now` on, the forecast's likely value is solid cyan and the range up
-    to its p90 is shaded, so a busy stretch ahead shows as a tall shaded column.
+    to its p90 is shaded. A narrow screen shows fewer hours rather than cutting the axis off.
     """
     def c(code, text):
         return f"\033[{code}m{text}\033[0m" if color and text.strip() else text
-    past, nxt, hi = d["past"], d["next"], d.get("next_hi") or d["next"]
+    past, nxt, hi, start = d["past"], d["next"], d.get("next_hi") or d["next"], d["start"]
+    room = max(12, width - 10)
+    if len(past) + len(nxt) > room:
+        keep_next = min(len(nxt), room // 2)
+        keep_past = room - keep_next
+        start += (len(past) - min(len(past), keep_past)) * meter.HOUR
+        past, nxt, hi = past[-keep_past:], nxt[:keep_next], hi[:keep_next]
     hours = len(past) + len(nxt)
     if not hours:
         return []
-    cell = 2 if 8 + 2 * hours <= width else 1
+    cell = 2 if 2 * hours <= room else 1
     top = nice_top(max(past + hi + [0.01]))
     label = lambda v: f"{v:5.1f}%" if top < 10 else f"{v:5.0f}%"
     rows = []
     for r in range(height - 1, -1, -1):
         y = {height - 1: label(top), height // 2 - 1: label(top * (height // 2) / height)}   # each row's top edge
-        line = f"{y.get(r, ''):>6} ┤" if r in y else f"{'':6} │"
+        line = f"{y[r]:>6} ┤" if r in y else f"{'':6} │"
         for i in range(hours):
             fut = i >= len(past)
             v = nxt[i - len(past)] if fut else past[i]
@@ -164,25 +170,22 @@ def chart(d, width=80, height=6, color=True) -> list[str]:
                 line += c("2", "┊")
             line += c("36" if fut else "", ch * cell)
         rows.append(line)
-    axis, ticks = f"{label(0):>6} └", f"{'':8}"
+    axis = f"{label(0):>6} └"
+    ticks = [" "] * (8 + hours * cell + 2)
+    free = 0
     for i in range(hours):
-        h = time.localtime(d["start"] + i * meter.HOUR).tm_hour
+        h = time.localtime(start + i * meter.HOUR).tm_hour
         if i == len(past):
             axis += "┴"
-            ticks += " "
         mark = h % 6 == 0
         axis += ("┬" if mark else "─") + "─" * (cell - 1)
-        ticks += (f"{h:02d}" if mark else "  ")[:cell] if cell == 2 else ("|" if mark else " ")
+        col = 8 + i * cell + (1 if i >= len(past) else 0)
+        if mark and col >= free:            # the hour under its tick, never over the last label
+            ticks[col:col + 2] = f"{h:02d}"
+            free = col + 3
     rows.append(axis)
-    if cell == 1:   # one cell per hour: put the hour labels under their ticks instead
-        tick_line = list(" " * len(ticks))
-        for i in range(hours):
-            h = time.localtime(d["start"] + i * meter.HOUR).tm_hour
-            if h % 6 == 0:
-                pos = 8 + i + (1 if i >= len(past) else 0)
-                tick_line[pos:pos + 2] = f"{h:02d}"
-        ticks = "".join(tick_line)
-    rows.append(ticks.rstrip() + "   " + c("2", "now ┊ forecast →"))
+    rows.append("".join(ticks).rstrip() + "  hour")
+    rows.append(c("2", f"{'':8}past ┊ forecast (shaded: its likely range)"))
     return rows
 
 
@@ -239,7 +242,7 @@ def render(snap, width=80, color=True) -> list[str]:
     if any(d["past"]) or any(d["next"]):
         used = sum(d["past"])
         ahead = sum(d["next"])
-        lines.append(c("1", "usage per hour") + c("2", f"  % of the weekly limit · last {len(d['past'])}h: {used:.1f}%"
+        lines.append(c("1", "usage per hour") + c("2", f"  (y: % of the weekly limit per hour) · last {len(d['past'])}h: {used:.1f}%"
                                                         f" · next {len(d['next'])}h likely {ahead:.1f}%"))
         lines += chart(d, w, color=color)
         lines.append("")
