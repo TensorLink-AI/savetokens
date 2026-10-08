@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2   # v2: usage.project (kept on the machine, never synced)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     machine TEXT NOT NULL,
@@ -36,9 +36,11 @@ CREATE TABLE IF NOT EXISTS usage (
     output INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL,
     account TEXT,
+    project TEXT,                   -- the session's folder name; this machine only, never synced
     UNIQUE (machine, harness, request_id)
 );
 CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
+CREATE INDEX IF NOT EXISTS usage_session ON usage(session_id, ts);
 
 CREATE TABLE IF NOT EXISTS meter (
     machine TEXT NOT NULL,
@@ -123,12 +125,14 @@ class Usage:
     cost_usd: float | None = None
     account: str | None = None
     machine: str = ""
+    project: str | None = None
 
 
 USAGE_COLS = [f.name for f in fields(Usage)]
+SYNCED_USAGE = [c for c in USAGE_COLS if c != "project"]   # folder names stay on the machine
 METER_COLS = ["machine", "harness", "account", "ts", "name", "pct", "resets"]
 HIT_COLS = ["machine", "harness", "account", "session_id", "ts", "kind", "model"]
-SYNCED = {"usage": USAGE_COLS, "meter": METER_COLS, "hits": HIT_COLS}
+SYNCED = {"usage": SYNCED_USAGE, "meter": METER_COLS, "hits": HIT_COLS}
 
 
 class Store:
@@ -137,9 +141,14 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, timeout=2.0)
         self.conn.row_factory = sqlite3.Row
-        if self.conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if version != SCHEMA_VERSION:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.executescript(SCHEMA)
+            if version == 1:   # add the project, and read transcripts again to fill it in
+                self.conn.execute("ALTER TABLE usage ADD COLUMN project TEXT")
+                self.conn.execute("CREATE INDEX IF NOT EXISTS usage_session ON usage(session_id, ts)")
+                self.conn.execute("DELETE FROM offsets")
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -169,12 +178,19 @@ class Store:
         return cur.rowcount
 
     def add_usage(self, events) -> int:
+        events = list(events)
         machine = self.machine
         rows = []
         for e in events:
             e.machine = e.machine or machine
             rows.append([int(v) if isinstance(v, bool) else v for v in (getattr(e, c) for c in USAGE_COLS)])
-        return self.insert("usage", USAGE_COLS, rows)
+        n = self.insert("usage", USAGE_COLS, rows)
+        # rows read before projects were kept get theirs on the next read
+        self.conn.executemany("UPDATE usage SET project = ? WHERE machine = ? AND harness = ? AND request_id = ?"
+                              " AND project IS NULL", [(e.project, e.machine, e.harness, e.request_id)
+                                                       for e in events if e.project])
+        self.conn.commit()
+        return n
 
     def add_meter(self, harness, account, readings, ts=None) -> int:
         """readings: {name: (pct, resets)}."""

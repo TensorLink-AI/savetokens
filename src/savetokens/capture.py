@@ -96,7 +96,7 @@ def parse_line(d: dict, subagent_file=False, acct=None):
               request_id=f"{msg.get('id')}:{d.get('requestId')}",
               input=int(u.get("input_tokens") or 0), output=int(u.get("output_tokens") or 0),
               cache_read=int(u.get("cache_read_input_tokens") or 0), cache_write_5m=w5m, cache_write_1h=w1h,
-              account=acct)
+              account=acct, project=Path(d["cwd"]).name if d.get("cwd") else None)
     e.cost_usd = pricing.cost(model, input=e.input, output=e.output, cache_read=e.cache_read,
                               cache_write_5m=w5m, cache_write_1h=w1h, fast=u.get("speed") == "fast")
     return e, None

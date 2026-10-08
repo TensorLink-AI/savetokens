@@ -10,6 +10,10 @@ const SNAP = {
   demand: { past: [0, 1, 2, 4], next: [3, 2, 1] },
   models: [{ model: 'claude-opus-5-5', share: 0.98, subagents: 0.27 }],
   machines: [], accounts: [], alerts: [], hits: [],
+  sessions: [
+    { session: 'e8aadbbb', project: 'synth', share: 0.58, pct_week: 5.3, pace: 0.7, model: 'claude-opus-5-5', subagents: 0.7, running: true },
+    { session: null, project: '3 more', share: 0.1, pct_week: 0.9, running: false },
+  ],
 }
 
 test('the pane draws each limit and when you would run out', async ($, on) => {
@@ -19,7 +23,7 @@ test('the pane draws each limit and when you would run out', async ($, on) => {
     ran.push([...e.argv])
     return { value: { exitCode: 0, stdout: JSON.stringify(SNAP), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  await $.command.run({ command: 'savetokens', args: '' })
+  await $.command.run({ command: 'savetokens', args: '' } as never)
   expect(ran.at(-1)?.slice(-2)).toEqual(['dashboard', '--json'])
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
@@ -29,6 +33,8 @@ test('the pane draws each limit and when you would run out', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /act now: out ~/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /likely 120%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /opus-5-5 98%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /synth .* 58% 5\.3% wk/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 running/ })).toBeDefined()
     await ui.unmount()
   }
 })
@@ -36,7 +42,7 @@ test('the pane draws each limit and when you would run out', async ($, on) => {
 test('a failing command shows why instead of a blank pane', async ($, on) => {
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('process.run', async () => ({ value: { exitCode: 1, stdout: '', stderr: 'savetokens: command not found', isStdoutTruncated: false, isStderrTruncated: false } }))
-  await $.command.run({ command: 'savetokens', args: '' })
+  await $.command.run({ command: 'savetokens', args: '' } as never)
   const ui = await $.ui.mount({
     plugin: 'savetokens', surface: 'terminal', component: 'Pane', requestId: 'savetokens',
     props: { title: 'savetokens', isFocused: false } as never,

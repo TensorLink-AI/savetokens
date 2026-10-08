@@ -64,6 +64,7 @@ def snapshot(store, now=None, hours=24) -> dict:
                 or hits[-1]["ts"] - h["ts"] > 3600:
             hits.append(dict(h))
     tr = {k: v for k, v in (store.meta("track_record") or {}).items() if k != "at"}
+    sessions = top_sessions(store, now, rate)
     return {
         "now": now, "account": acct, "source": source, "forecast_made_at": store.meta("forecast_made_at"),
         "synced_at": store.meta("synced_at"), "limits": looks,
@@ -74,8 +75,37 @@ def snapshot(store, now=None, hours=24) -> dict:
                    for r in models],
         "machines": [{"machine": r["machine"], "last_seen": r["last"], "usd": r["usd"], "requests": r["n"]}
                      for r in machines],
-        "accounts": accounts, "alerts": recent, "hits": hits[:6], "track_record": tr,
+        "sessions": sessions, "accounts": accounts, "alerts": recent, "hits": hits[:6], "track_record": tr,
     }
+
+
+LIVE_SECONDS = 600   # a session with a request in the last 10 minutes counts as running
+
+
+def top_sessions(store, now, rate, since_hours=24, limit=8):
+    """The sessions that used the most in the last day: project, share, % of the weekly limit, pace now."""
+    since = now - since_hours * 3600
+    rows = store.conn.execute(
+        "SELECT session_id, MAX(project) AS project, MAX(machine) AS machine, SUM(cost_usd) AS usd, COUNT(*) AS n,"
+        " SUM(CASE WHEN subagent THEN cost_usd ELSE 0 END) AS sub, MIN(ts) AS first, MAX(ts) AS last,"
+        " SUM(CASE WHEN ts >= ? THEN cost_usd ELSE 0 END) AS hour_usd"
+        " FROM usage WHERE ts >= ? AND cost_usd > 0 GROUP BY session_id ORDER BY usd DESC",
+        (now - 3600, since)).fetchall()
+    total = sum(r["usd"] for r in rows) or 1.0
+    out = []
+    for r in rows[:limit]:
+        model = store.conn.execute("SELECT model FROM usage WHERE session_id = ? AND NOT subagent ORDER BY ts DESC"
+                                   " LIMIT 1", (r["session_id"],)).fetchone()
+        out.append({"session": r["session_id"][:8], "project": r["project"], "machine": r["machine"],
+                    "share": r["usd"] / total, "pct_week": r["usd"] * rate if rate else None,
+                    "pace": r["hour_usd"] * rate if rate else None,   # % of the weekly limit in the last hour
+                    "requests": r["n"], "subagents": (r["sub"] or 0) / r["usd"], "model": model[0] if model else None,
+                    "first": r["first"], "last": r["last"], "running": now - r["last"] <= LIVE_SECONDS})
+    rest = rows[limit:]
+    if rest:
+        out.append({"session": None, "project": f"{len(rest)} more", "share": sum(r["usd"] for r in rest) / total,
+                    "pct_week": sum(r["usd"] for r in rest) * rate if rate else None, "running": False})
+    return out
 
 
 # ── drawing ──────────────────────────────────────────────────────────────────
@@ -143,6 +173,22 @@ def render(snap, width=80, color=True) -> list[str]:
         for m in snap["models"][:4]:
             sub = f" ({m['subagents']:.0%} subagents)" if m["subagents"] >= 0.01 else ""
             lines.append(f"  {m['model'][:26]:26} {m['share']:4.0%}{sub}")
+        lines.append("")
+    if snap.get("sessions"):
+        live = sum(1 for x in snap["sessions"] if x.get("running"))
+        lines.append(c("1", "sessions, last 24h") + c("2", f"  ({live} running; share of usage, % of the weekly limit,"
+                                                            " pace in the last hour)"))
+        for x in snap["sessions"]:
+            dot = c("32", "●") if x.get("running") else c("2", "○")
+            pct = f"{x['pct_week']:5.1f}% wk" if x.get("pct_week") is not None else ""
+            if x["session"] is None:
+                lines.append(c("2", f"  {dot} {x['project']:24} {x['share']:4.0%} {pct}"))
+                continue
+            pace = f"  {x['pace']:.1f}%/h" if x.get("running") and x.get("pace") else ""
+            model = (x.get("model") or "").replace("claude-", "")
+            sub = f" · {x['subagents']:.0%} sub" if x.get("subagents", 0) >= 0.05 else ""
+            lines.append(f"  {dot} {(x['project'] or '?')[:16]:16} {x['session']}  {x['share']:4.0%} {pct}"
+                         f"{c('33', pace)}  {c('2', model + sub)}"[:w + 20])
         lines.append("")
     if len(snap["machines"]) > 1 or len(snap["accounts"]) > 1:
         lines.append(c("1", "machines and accounts"))

@@ -21,6 +21,16 @@ export type Snapshot = {
   demand: { past: number[]; next: number[] }
   models: { model: string; share: number; subagents: number }[]
   machines: { machine: string; last_seen: number; requests: number }[]
+  sessions?: {
+    session: string | null
+    project: string | null
+    share: number
+    pct_week: number | null
+    pace?: number | null
+    model?: string | null
+    subagents?: number
+    running: boolean
+  }[]
   accounts: { account: string | null; weekly: number | null; active: boolean }[]
   alerts: { ts: number; message: string }[]
   hits: { ts: number; kind: string; model: string | null }[]

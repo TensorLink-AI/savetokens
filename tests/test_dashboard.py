@@ -32,3 +32,21 @@ def test_render_draws_bars_sparklines_and_the_run_out_time(store):
 
 def test_bar_shows_now_likely_and_high_end():
     assert dashboard.bar(25, 30, 50, 75, width=4) == "█▒░·"
+
+
+def test_sessions_show_who_used_the_most_and_who_is_running(store):
+    week_of_readings(store, T0 - 48 * H, 48, per_hour=1.0, resets=T0 + 20 * H)
+    store.add_usage([Usage("claude-code", "big", f"b{i}", T0 - 120 - i, "claude-opus-5-5", cost_usd=20.0,
+                           project="synth") for i in range(3)]
+                    + [Usage("claude-code", "old", "o1", T0 - 5 * H, "claude-sonnet-5-5", cost_usd=5.0, project="web")])
+    rows = {x["project"]: x for x in dashboard.top_sessions(store, T0, rate=0.1)}
+    assert rows["synth"]["running"] and not rows["web"]["running"]
+    assert rows["synth"]["share"] > rows["web"]["share"] and abs(rows["synth"]["pct_week"] - 6.0) < 1e-9
+    assert abs(rows["synth"]["pace"] - 6.0) < 1e-9                      # all of it in the last hour
+    text = "\n".join(dashboard.render(dashboard.snapshot(store, T0), width=100, color=False))
+    assert "sessions, last 24h" in text and "synth" in text
+
+
+def test_project_names_are_never_synced():
+    from savetokens.store import SYNCED
+    assert "project" not in SYNCED["usage"]

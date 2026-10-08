@@ -127,6 +127,24 @@ export const register: Register = on => {
             <Text dimColor>{m.subagents >= 0.01 ? ` (${Math.round(m.subagents * 100)}% subagents)` : ''}</Text>
           </Text>
         ))}
+        {(s.sessions ?? []).length > 0 && (
+          <Box flexDirection="column">
+            <Text> </Text>
+            <Text bold>
+              sessions, last 24h <Text dimColor>({(s.sessions ?? []).filter(x => x.running).length} running)</Text>
+            </Text>
+            {(s.sessions ?? []).map(x => (
+              <Text wrap="truncate-end">
+                <Text color={x.running ? 'green' : undefined} dimColor={!x.running}>{x.running ? '●' : '○'}</Text>
+                {' '}
+                {(x.project ?? '?').slice(0, 14).padEnd(14)} {String(Math.round(x.share * 100)).padStart(3)}%
+                {x.pct_week !== null ? ` ${x.pct_week.toFixed(1)}% wk` : ''}
+                {x.running && x.pace ? <Text color="yellow"> {x.pace.toFixed(1)}%/h</Text> : ''}
+                <Text dimColor>{x.session ? ` ${x.session}` : ''}</Text>
+              </Text>
+            ))}
+          </Box>
+        )}
         {s.machines.length > 1 && <Text dimColor>{s.machines.length} machines this week</Text>}
         {s.alerts.slice(0, 2).map(a => (
           <Text color="yellow" wrap="wrap">
