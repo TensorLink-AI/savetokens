@@ -1,3 +1,3 @@
-"""savetokens: stop runaway agent sessions and cut token waste."""
+"""savetokens: know when you'll run out of Claude, before you do."""
 
-__version__ = "0.1.0a1"
+__version__ = "0.2.0"

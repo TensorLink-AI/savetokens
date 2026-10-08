@@ -1,11 +1,10 @@
-"""Ephemeris forecaster (the default): hourly usage forecasts, scored against a local baseline.
+"""Ephemeris (the default forecaster): its key, credits and refresh cadence. Gnomon makes the calls.
 
-What leaves the machine: hourly API-equivalent dollar totals (one series for
-subscription usage, one for API-billed usage). No tokens per request, no
-prompts, no project or session names. Calls are made in the background, never
-from inside a hook: hourly while agents are in use, every 3 hours otherwise, at
-once when usage breaks above the forecast, and not at all while nothing changes
-(see maintain.refresh_due).
+What leaves the machine (or the sync server): one series of hourly totals, the %
+of the weekly limit used each hour. No tokens, prompts, models, projects or
+sessions. Calls are made in the background, never from inside a hook: hourly
+while you work, every 3 hours otherwise, at once when demand breaks above the
+forecast, and not at all while nothing changes (see maintain.refresh_due).
 """
 from __future__ import annotations
 
@@ -91,26 +90,3 @@ def balance(key) -> float:
     """Spendable credits."""
     b = _call("balance", key)
     return (int(b["balance_mc"]) - int(b["active_holds_mc"])) / 1000
-
-
-def forecast_hourly(series: dict, horizon: int, key=None, retries=0, freq="H") -> dict:
-    """One ensemble call for several hourly series.
-
-    series: {unit: [hourly values, oldest first]}. Returns {"quantiles": {unit: [{level: value} per hour]},
-    "credits": float, "models": [...]}. Only these numbers leave the machine.
-    """
-    from .windows import QUANTILE_GRID
-    key = key or api_key()
-    if not key:
-        raise RuntimeError("no Ephemeris key: set EPHEMERIS_API_KEY or run `savetokens ephemeris connect`")
-    units = list(series)
-    body = {"mode": "ensemble", "series": [{"values": series[u], "freq": freq} for u in units],
-            "horizon": horizon, "quantiles": list(QUANTILE_GRID)}
-    result = _call("forecast", key, body, timeout=180, retries=retries)
-    out = {}
-    for unit, fc in zip(units, result["forecasts"]):
-        qs = fc["quantiles"]
-        out[unit] = [{p: max(0.0, qs[str(p)][i]) for p in QUANTILE_GRID} for i in range(horizon)]
-    meta = result.get("meta", {})
-    return {"quantiles": out, "models": meta.get("models_used", []),
-            "credits": int((meta.get("billing") or {}).get("settled_mc") or 0) / 1000}

@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "savetokens"
-version = "0.1.0a1"
-description = "Stop runaway agent sessions, forecast your Claude limits and spend, and fix token waste in Claude Code and Hermes."
+version = "0.2.0"
+description = "Know when you'll run out of Claude: limit forecasts and pace alerts across machines and accounts."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "TensorLink" }]
-keywords = ["claude-code", "hermes", "tokens", "rate-limit", "llm", "cost", "agents"]
+keywords = ["claude-code", "rate-limit", "forecasting", "usage", "llm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -19,8 +19,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Software Development",
 ]
-requires-python = ">=3.10"
-dependencies = []
+requires-python = ">=3.11"
+dependencies = ["gnomon-forecast>=1.4"]
 
 [project.scripts]
 savetokens = "savetokens.cli:main"

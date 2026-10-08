@@ -1,0 +1,10 @@
+.git
+**/__pycache__
+*.egg-info
+dist
+.venv
+tests
+PLAN.md
+AGENTS.md
+CLAUDE.md
+.pytest_cache
