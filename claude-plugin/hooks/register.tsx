@@ -42,7 +42,7 @@ const niceTop = (v: number) => {
   return [1, 2, 2.5, 5, 10].map(m => m * k).find(x => x >= v) ?? 10 * k
 }
 
-// Hourly usage as bars in a plain frame: past solid, forecast cyan from the ┊, shaded to its likely high.
+// Hourly usage as bars in a plain frame: past solid; the forecast from the ┊, ▒ to likely, ░ to the high end.
 // Returns the frame's top and bottom, and each row as [past, forecast] so the forecast can be coloured.
 const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
   const room = Math.max(12, width - 6)
@@ -58,9 +58,12 @@ const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
   const top = niceTop(Math.max(0.01, ...past, ...hi))
   const glyph = (v: number, r: number, h?: number): string => {
     const level = (v / top) * height
+    if (h !== undefined) {   // forecast: one joined column of whole cells, ▒ to the likely value, ░ to the high end
+      const high = Math.max(level, (h / top) * height)
+      return r < Math.round(level) ? '▒' : r < Math.round(high) ? '░' : r === 0 && level > 0 ? '▁' : ' '
+    }
     if (level >= r + 1) return '█'
     if (level > r) return BARS[Math.max(1, Math.floor((level - r) * 8))] ?? '▁'
-    if (h !== undefined && (h / top) * height > r) return '░'
     return ' '
   }
   const rows: [string, string][] = []
@@ -152,7 +155,7 @@ export const register: Register = on => {
             <Box flexDirection="column">
               <Text>
                 <Text bold>usage per hour </Text>
-                <Text dimColor>last {s.demand.past.length}h ┊ next {s.demand.next.length}h · used {used.toFixed(1)}% of the week, ~{ahead.toFixed(1)}% to come</Text>
+                <Text dimColor>last {s.demand.past.length}h ┊ next {s.demand.next.length}h: ▒ likely ░ could reach · used {used.toFixed(1)}% of the week, ~{ahead.toFixed(1)}% to come</Text>
               </Text>
               <Text dimColor>{ch.top}</Text>
               {ch.rows.map(([p, f]) => (

@@ -130,8 +130,8 @@ def nice_top(v) -> float:
 
 
 def chart(d, width=80, height=6, color=True) -> list[str]:
-    """Hourly usage as vertical bars in a plain frame: past solid, the forecast cyan from the ┊ on,
-    shaded up to its likely high. A narrow screen shows fewer hours rather than cutting the frame."""
+    """Hourly usage as vertical bars in a plain frame: past solid; from the ┊ on, the forecast as one
+    column, ▒ up to the likely value and ░ on to the high end. A narrow screen shows fewer hours rather than cutting the frame."""
     def c(code, text):
         return f"\033[{code}m{text}\033[0m" if color and text.strip() else text
     past, nxt, hi = d["past"], d["next"], d.get("next_hi") or d["next"]
@@ -150,16 +150,14 @@ def chart(d, width=80, height=6, color=True) -> list[str]:
         line = "  │"
         for i in range(hours):
             fut = i >= len(past)
-            v = nxt[i - len(past)] if fut else past[i]
-            level = v / top * height
-            if level >= r + 1:
-                ch = "█"
-            elif level > r:
-                ch = BARS[max(1, int((level - r) * 8))]
-            elif fut and hi[i - len(past)] / top * height > r:
-                ch = "░"
+            if fut:   # one joined column of whole cells: ▒ up to the likely value, ░ on to the high end
+                likely = nxt[i - len(past)] / top * height
+                high = max(likely, hi[i - len(past)] / top * height)
+                ch = ("▒" if r < round(likely) else "░" if r < round(high)
+                      else "▁" if r == 0 and likely > 0 else " ")
             else:
-                ch = " "
+                level = past[i] / top * height
+                ch = "█" if level >= r + 1 else BARS[max(1, int((level - r) * 8))] if level > r else " "
             if fut and i == len(past):
                 line += c("2", "┊")
             line += c("36" if fut else "", ch * cell)
@@ -221,7 +219,7 @@ def render(snap, width=80, color=True) -> list[str]:
     if any(d["past"]) or any(d["next"]):
         used = sum(d["past"])
         ahead = sum(d["next"])
-        lines.append(c("1", "usage per hour") + c("2", f"  last {len(d['past'])}h ┊ next {len(d['next'])}h forecast"
+        lines.append(c("1", "usage per hour") + c("2", f"  last {len(d['past'])}h ┊ next {len(d['next'])}h: ▒ likely ░ could reach"
                                                         f" · used {used:.1f}% of the week, ~{ahead:.1f}% to come"))
         lines += chart(d, w, color=color)
         lines.append("")
