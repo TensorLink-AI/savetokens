@@ -36,9 +36,8 @@ test('the pane draws each limit and when you would run out', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /synth .*58%.*5\.3%.*0\.7%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /1 running/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /project .*share .*of week .*last hr/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /5\.0% ┤/ })).toBeDefined()        // the chart's y-axis
-    expect(await ui.find({ type: 'Text', text: /past ┊ forecast/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /\d\d .*hour$/ })).toBeDefined()           // hour labels on the x-axis
+    expect(await ui.find({ type: 'Text', text: /^┌─+┐$/ })).toBeDefined()           // the chart's frame
+    expect(await ui.find({ type: 'Text', text: /^└─+┘$/ })).toBeDefined()
     await ui.unmount()
   }
 })

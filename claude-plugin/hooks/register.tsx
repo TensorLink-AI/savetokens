@@ -42,24 +42,20 @@ const niceTop = (v: number) => {
   return [1, 2, 2.5, 5, 10].map(m => m * k).find(x => x >= v) ?? 10 * k
 }
 
-// Hourly usage as bars with a y-axis and hour ticks: past solid, forecast cyan, its range to p90 shaded.
-// Returns rows of [axis, past, forecast] so the pane can colour the forecast part.
+// Hourly usage as bars in a plain frame: past solid, forecast cyan from the ┊, shaded to its likely high.
+// Returns the frame's top and bottom, and each row as [past, forecast] so the forecast can be coloured.
 const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
-  // Fit the plot: trim hours (older past, later forecast) rather than cut the axis off.
-  const room = Math.max(12, width - 10)
-  let past = d.past, next = d.next, hi = d.next_hi ?? d.next, start = d.start
+  const room = Math.max(12, width - 6)
+  let past = d.past, next = d.next, hi = d.next_hi ?? d.next
   if (past.length + next.length > room) {
     const keepNext = Math.min(next.length, Math.floor(room / 2))
-    const keepPast = room - keepNext
-    start += (past.length - Math.min(past.length, keepPast)) * 3600
-    past = past.slice(-keepPast)
+    past = past.slice(-(room - keepNext))
     next = next.slice(0, keepNext)
     hi = hi.slice(0, keepNext)
   }
   const hours = past.length + next.length
   const cell = 2 * hours <= room ? 2 : 1
   const top = niceTop(Math.max(0.01, ...past, ...hi))
-  const label = (v: number) => (top < 10 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`).padStart(6)
   const glyph = (v: number, r: number, h?: number): string => {
     const level = (v / top) * height
     if (level >= r + 1) return '█'
@@ -67,30 +63,13 @@ const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
     if (h !== undefined && (h / top) * height > r) return '░'
     return ' '
   }
-  const rows: [string, string, string][] = []
+  const rows: [string, string][] = []
   for (let r = height - 1; r >= 0; r--) {
-    const y = r === height - 1 ? label(top) : r === Math.floor(height / 2) - 1 ? label((top * Math.floor(height / 2)) / height) : ''
-    const axis = y ? `${y} ┤` : `${''.padStart(6)} │`
-    rows.push([axis, past.map(v => glyph(v, r).repeat(cell)).join(''),
-               '┊' + next.map((v, i) => glyph(v, r, hi[i]).repeat(cell)).join('')])
+    rows.push([past.map(v => glyph(v, r).repeat(cell)).join(''),
+               (next.length ? '┊' : '') + next.map((v, i) => glyph(v, r, hi[i]).repeat(cell)).join('')])
   }
-  // x-axis: a tick every 6 hours with its hour written under it, never overlapping the last label
-  let axis = `${label(0)} └`
-  const ticks = Array.from({ length: 8 + hours * cell + 2 }, () => ' ')
-  let free = 0
-  for (let i = 0; i < hours; i++) {
-    const hour = new Date((start + i * 3600) * 1000).getHours()
-    if (i === past.length) axis += '┴'
-    const mark = hour % 6 === 0
-    axis += (mark ? '┬' : '─') + '─'.repeat(cell - 1)
-    const col = 8 + i * cell + (i >= past.length ? 1 : 0)
-    if (mark && col >= free) {
-      const text = String(hour).padStart(2, '0')
-      for (let k = 0; k < text.length; k++) ticks[col + k] = text[k] ?? ' '
-      free = col + text.length + 1
-    }
-  }
-  return { rows, axis, ticks: ticks.join('').trimEnd() }
+  const inner = hours * cell + (next.length ? 1 : 0)
+  return { rows, top: '┌' + '─'.repeat(inner) + '┐', bottom: '└' + '─'.repeat(inner) + '┘' }
 }
 
 const STAGE: Record<string, string> = { heads_up: 'heads-up', act: 'act now', last_call: 'last call' }
@@ -173,18 +152,18 @@ export const register: Register = on => {
             <Box flexDirection="column">
               <Text>
                 <Text bold>usage per hour </Text>
-                <Text dimColor>(y: % of weekly limit per hour) · last {s.demand.past.length}h {used.toFixed(1)}% · next {s.demand.next.length}h ~{ahead.toFixed(1)}%</Text>
+                <Text dimColor>last {s.demand.past.length}h ┊ next {s.demand.next.length}h · used {used.toFixed(1)}% of the week, ~{ahead.toFixed(1)}% to come</Text>
               </Text>
-              {ch.rows.map(([axis, p, f]) => (
+              <Text dimColor>{ch.top}</Text>
+              {ch.rows.map(([p, f]) => (
                 <Text wrap="truncate-end">
-                  <Text dimColor>{axis}</Text>
+                  <Text dimColor>│</Text>
                   {p}
                   <Text color="cyan">{f}</Text>
+                  <Text dimColor>│</Text>
                 </Text>
               ))}
-              <Text dimColor wrap="truncate-end">{ch.axis}</Text>
-              <Text dimColor wrap="truncate-end">{ch.ticks}  hour</Text>
-              <Text dimColor wrap="truncate-end">{'        '}past ┊ forecast (shaded: its likely range)</Text>
+              <Text dimColor>{ch.bottom}</Text>
             </Box>
           )
         })()}
