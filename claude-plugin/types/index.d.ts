@@ -30,6 +30,7 @@ export type Snapshot = {
     model?: string | null
     subagents?: number
     running: boolean
+    if_stopped?: { limit: string; adds: number; eta: number | null; eta_if_stopped: number | null; hours: number }
   }[]
   accounts: { account: string | null; weekly: number | null; active: boolean }[]
   alerts: { ts: number; message: string }[]

@@ -97,8 +97,10 @@ def load_paths(store, account, source):
     return {"made_at": row["made_at"], "start": row["start_hour"], "hours": row["hours"], "n": row["n"], "data": a}
 
 
-def walk(paths, now, end, need, scale=1.0):
-    """Per path: (demand over [now, end) x scale, time it reaches `need` or None). None if paths stop short."""
+def walk(paths, now, end, need, scale=1.0, cut=1.0, cut_until=None):
+    """Per path: (demand over [now, end) x scale, time it reaches `need` or None). None if paths stop short.
+
+    cut scales demand further until cut_until (a what-if: some usage stops for a while)."""
     start, hours, data, n = paths["start"], paths["hours"], paths["data"], paths["n"]
     if end > start + hours * HOUR + 1 or now < start:
         return None
@@ -109,7 +111,9 @@ def walk(paths, now, end, need, scale=1.0):
         while t < end:
             i = int((t - start) // HOUR)
             nxt = min(end, start + (i + 1) * HOUR)
-            add = data[base + i] * scale * (nxt - t) / HOUR
+            if cut_until is not None and t < cut_until:
+                nxt = min(nxt, cut_until)
+            add = data[base + i] * scale * (cut if cut_until is not None and t < cut_until else 1.0) * (nxt - t) / HOUR
             if when is None and need is not None and acc + add >= need:
                 frac = (need - acc) / add if add > 0 else 0.0
                 when = t + frac * (nxt - t)
@@ -181,8 +185,11 @@ def preferred_source(store, account=None):
     return "ephemeris" if load_paths(store, account, "ephemeris") else "baseline"
 
 
-def outlook(store, now=None, source=None):
-    """Per limit of the active account: used now, reset, projected % at reset, chance and time of a hit."""
+def outlook(store, now=None, source=None, cut=1.0, cut_hours=None):
+    """Per limit of the active account: used now, reset, projected % at reset, chance and time of a hit.
+
+    cut, cut_hours: a what-if, demand scaled by `cut` for the next `cut_hours` (0.8, 5: "a fifth of the
+    usage stops for the next five hours")."""
     now = now or time.time()
     acct = meter.active_account(store, now)
     source = source or preferred_source(store, acct)
@@ -203,7 +210,8 @@ def outlook(store, now=None, source=None):
         o = {"name": name, "label": NAMES[name], "account": acct, "used": used, "read_at": r["ts"],
              "resets": r["resets"], "source": source if paths else None, "p10": None, "p50": None, "p90": None,
              "p_hit": 1.0 if used >= 100 else None, "eta": now if used >= 100 else None}
-        w = walk(paths, now, r["resets"], max(0.0, 100 - used), scale) if paths and used < 100 else None
+        w = (walk(paths, now, r["resets"], max(0.0, 100 - used), scale, cut,
+                  now + cut_hours * HOUR if cut_hours else None) if paths and used < 100 else None)
         if w:
             ends = [used + a for a, _ in w]
             hits = sorted(t for _, t in w if t is not None)

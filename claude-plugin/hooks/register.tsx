@@ -75,6 +75,14 @@ const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
   return { rows, top: '┌' + '─'.repeat(inner) + '┐', bottom: '└' + '─'.repeat(inner) + '┘' }
 }
 
+// What stopping a running session would change: the run-out time with and without it, or what it saves.
+const ifStopped = (x: NonNullable<Snapshot['sessions']>[number]) => {
+  const w = x.if_stopped
+  if (!w) return '–'
+  if (w.eta !== null) return `out ${clock(w.eta)} → ${w.eta_if_stopped !== null ? clock(w.eta_if_stopped) : 'after reset'}`
+  return `saves ${w.adds.toFixed(1)}%`
+}
+
 const STAGE: Record<string, string> = { heads_up: 'heads-up', act: 'act now', last_call: 'last call' }
 const STAGE_COLOR: Record<string, string> = { heads_up: 'yellow', act: 'red', last_call: 'red' }
 
@@ -184,7 +192,7 @@ export const register: Register = on => {
               sessions, last 24h <Text dimColor>({(s.sessions ?? []).filter(x => x.running).length} running)</Text>
             </Text>
             <Text dimColor wrap="truncate-end">
-              {'  ' + 'project'.padEnd(14)} {'share'.padStart(5)} {'of week'.padStart(8)} {'last hr'.padStart(8)}  session
+              {'  ' + 'project'.padEnd(14)} {'share'.padStart(5)} {'of week'.padStart(8)} {'last hr'.padStart(8)}  {'if stopped'.padEnd(22)}session
             </Text>
             {(s.sessions ?? []).map(x => (
               <Text wrap="truncate-end">
@@ -194,10 +202,11 @@ export const register: Register = on => {
                 <Text color={x.running && x.pace ? 'yellow' : undefined}>
                   {' ' + (x.pace ? `${x.pace.toFixed(1)}%` : '–').padStart(8)}
                 </Text>
-                <Text dimColor>{x.session ? `  ${x.session}` : ''}</Text>
+                {'  ' + ifStopped(x).padEnd(22)}
+                <Text dimColor>{x.session ?? ''}</Text>
               </Text>
             ))}
-            <Text dimColor wrap="wrap">of week and last hr: % of your weekly limit</Text>
+            <Text dimColor wrap="wrap">of week and last hr: % of your weekly limit · if stopped: over the next 5h</Text>
           </Box>
         )}
         {s.machines.length > 1 && <Text dimColor>{s.machines.length} machines this week</Text>}

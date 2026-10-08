@@ -50,3 +50,21 @@ def test_sessions_show_who_used_the_most_and_who_is_running(store):
 def test_project_names_are_never_synced():
     from savetokens.store import SYNCED
     assert "project" not in SYNCED["usage"]
+
+
+def test_stopping_a_busy_session_moves_the_run_out_time(store):
+    from savetokens import alerts, forecast
+    from array import array
+    store.add_meter("claude-code", "a1", {"seven_day": (90.0, T0 + 30 * H)}, ts=T0)
+    forecast.save_paths(store, "a1", "baseline", T0, T0 - T0 % H, 48, array("d", [2.0] * 48 * 10))
+    store.add_usage([Usage("claude-code", "busy", f"b{i}", T0 - 60 * i, "claude-opus-5-5", cost_usd=6.0,
+                           project="synth") for i in range(1, 10)]
+                    + [Usage("claude-code", "small", "s1", T0 - 120, "claude-opus-5-5", cost_usd=6.0, project="web")])
+    rows = {x["project"]: x for x in dashboard.top_sessions(store, T0, rate=0.1)}
+    synth, web = rows["synth"]["if_stopped"], rows["web"]["if_stopped"]
+    # 90% used at 2% an hour: out in 5h. synth is 90% of the pace; pausing it for 5h gets to 91%, then 4.5h more
+    assert abs(synth["eta"] - (T0 + 5 * H)) < 120 and abs(synth["eta_if_stopped"] - (T0 + 9.5 * H)) < 120
+    assert web["eta"] < web["eta_if_stopped"] < synth["eta_if_stopped"]
+    o = {x["name"]: x for x in forecast.outlook(store, T0)}["seven_day"]
+    assert alerts.best_pause(store, T0, o) == " Pausing synth would buy about 4.5 h."
+    assert "out " in dashboard.stopping(rows["web"], T0) and "→" in dashboard.stopping(rows["web"], T0)

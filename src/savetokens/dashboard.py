@@ -109,13 +109,58 @@ def top_sessions(store, now, rate, since_hours=24, limit=8):
         out.append({"session": r["session_id"][:8], "project": (model[1] if model and model[1] else r["project"]), "machine": r["machine"],
                     "share": r["usd"] / total, "pct_week": r["usd"] * rate if rate else None,
                     "pace": r["hour_usd"] * rate if rate else None,   # % of the weekly limit in the last hour
-                    "requests": r["n"], "subagents": (r["sub"] or 0) / r["usd"], "model": model[0] if model else None,
+                    "hour_usd": r["hour_usd"] or 0.0, "requests": r["n"], "subagents": (r["sub"] or 0) / r["usd"], "model": model[0] if model else None,
                     "first": r["first"], "last": r["last"], "running": now - r["last"] <= LIVE_SECONDS})
+    what_if(store, now, out, sum(r["hour_usd"] or 0 for r in rows))
     rest = rows[limit:]
     if rest:
         out.append({"session": None, "project": f"{len(rest)} more", "share": sum(r["usd"] for r in rest) / total,
                     "pct_week": sum(r["usd"] for r in rest) * rate if rate else None, "running": False})
     return out
+
+
+WHAT_IF_HOURS = 5   # a session is assumed to carry on at its pace for at most this long
+
+
+def what_if(store, now, sessions, hour_usd_total):
+    """For each running session: what stopping it now would change, by the limit nearest to running out.
+
+    A session's part of the coming demand is its share of the last hour's usage, for the next
+    WHAT_IF_HOURS (sessions don't run for days). Adds `if_stopped`: {limit, adds (points it would add
+    in those hours), eta (run-out time now), eta_if_stopped (None: no longer runs out before the reset)}.
+    """
+    if hour_usd_total <= 0:
+        return
+    base = forecast.outlook(store, now)
+    looks = [o for o in base if o["p50"] is not None]
+    if not looks:
+        return
+    # the limit that matters: the one you'd run out of first, else the one closest to full by reset
+    target = min(looks, key=lambda o: (o["eta"] or float("inf"), -(o["p50"] or 0)))
+    for x in sessions:
+        if not x.get("running") or not x.get("hour_usd"):
+            continue
+        part = min(1.0, x["hour_usd"] / hour_usd_total)
+        o = {y["name"]: y for y in forecast.outlook(store, now, cut=1 - part, cut_hours=WHAT_IF_HOURS)}.get(
+            target["name"])
+        if not o or o["p50"] is None:
+            continue
+        x["if_stopped"] = {"limit": target["name"], "adds": target["p50"] - o["p50"], "eta": target["eta"],
+                           "hours": WHAT_IF_HOURS,
+                           "eta_if_stopped": o["eta"] if (o["p_hit"] or 0) >= 0.5 else None,
+                           "resets": target["resets"]}
+
+
+def stopping(x, now) -> str:
+    """'out Fri 01:10 → after reset' when you'd run out; else 'saves 2.1% of weekly'."""
+    w = x.get("if_stopped")
+    if not w:
+        return "–"
+    if w["eta"]:
+        after = alerts.when(w["eta_if_stopped"], now) if w["eta_if_stopped"] else "after reset"
+        return f"out {alerts.when(w['eta'], now)} → {after}"
+    label = "5-hour" if w["limit"] == "five_hour" else "weekly"
+    return f"saves {w['adds']:.1f}% of {label}"
 
 
 # ── drawing ──────────────────────────────────────────────────────────────────
@@ -232,7 +277,8 @@ def render(snap, width=80, color=True) -> list[str]:
     if snap.get("sessions"):
         live = sum(1 for x in snap["sessions"] if x.get("running"))
         lines.append(c("1", "sessions, last 24h") + c("2", f"  {live} running (●), idle (○)"))
-        lines.append(c("2", f"    {'project':16} {'session':8} {'share':>6} {'of week':>8} {'last hour':>10}  model"))
+        lines.append(c("2", f"    {'project':16} {'session':8} {'share':>6} {'of week':>8} {'last hour':>10}"
+                            f"  {'if you stop it':26} model"))
         for x in snap["sessions"]:
             dot = c("32", "●") if x.get("running") else c("2", "○")
             share = f"{x['share']:.0%}"
@@ -245,9 +291,11 @@ def render(snap, width=80, color=True) -> list[str]:
             sub = f", {x['subagents']:.0%} subagents" if x.get("subagents", 0) >= 0.05 else ""
             lines.append(f"  {dot} {(x['project'] or '?')[:16]:16} {x['session']:8} {share:>6} {week:>8}"
                          f" {c('33', f'{pace:>10}') if x.get('running') and x.get('pace') else f'{pace:>10}'}"
-                         f"  {c('2', model + sub)}")
+                         f"  {stopping(x, now):26} {c('2', model + sub)}")
         lines.append(c("2", "    share = of all usage in the last 24h · of week = % of your weekly limit"
                             " · last hour = % of the weekly limit used in the past hour"))
+        lines.append(c("2", f"    if you stop it = over the next {WHAT_IF_HOURS}h at its current pace: when you'd run out"
+                            " with and without it, or how much of the limit it would use"))
         lines.append("")
     if len(snap["machines"]) > 1 or len(snap["accounts"]) > 1:
         lines.append(c("1", "machines and accounts"))

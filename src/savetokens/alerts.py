@@ -69,6 +69,26 @@ def message(o, st, now):
     return text
 
 
+def best_pause(store, now, o) -> str:
+    """' Pausing synth would ...': the running session whose pause moves the run-out time furthest."""
+    from . import dashboard, meter
+    try:
+        rate = meter.rate(store)
+        sessions = [x for x in dashboard.top_sessions(store, now, rate)
+                    if (x.get("if_stopped") or {}).get("limit") == o["name"] and x["if_stopped"]["eta"]]
+    except Exception:
+        return ""
+    if not sessions:
+        return ""
+    later = lambda x: x["if_stopped"]["eta_if_stopped"] or float("inf")
+    x = max(sessions, key=later)
+    name = x.get("project") or f"session {x['session']}"
+    if x["if_stopped"]["eta_if_stopped"] is None:
+        return f" Pausing {name} for a few hours would likely get you to the reset."
+    gain = x["if_stopped"]["eta_if_stopped"] - o["eta"]
+    return f" Pausing {name} would buy about {span(gain)}." if gain >= 1800 else ""
+
+
 def projection_flags(store, now, account, name="seven_day"):
     """Jump and volatility flags on the recorded projection for the open window."""
     o = {x["name"]: x for x in forecast.outlook(store, now)}.get(name)
@@ -118,7 +138,10 @@ def check(store, now=None) -> list[dict]:
             (acct or "", o["name"], o["resets"]))}
         if any(STAGES.index(f) >= STAGES.index(st) for f in fired if f in STAGES):
             continue
-        found.append({"name": o["name"], "window_end": o["resets"], "stage": st, "message": message(o, st, now)})
+        text = message(o, st, now)
+        if st in ("act", "last_call"):
+            text += best_pause(store, now, o)
+        found.append({"name": o["name"], "window_end": o["resets"], "stage": st, "message": text})
     if looks:
         found += projection_flags(store, now, acct)
     new = []
