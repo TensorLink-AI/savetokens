@@ -34,6 +34,17 @@ works across every machine and every account you use.
   before any stage is reached. Alerts show in the statusline, as a message on your
   next prompt (to you, not the agent) and as a desktop notification where available.
 
+## See it live
+
+- **In Claude Code:** the statusline, plus a live pane. Install the pane with
+  `/plugin install savetokens --marketplace TensorLink-AI/savetokens`, then type `/savetokens`.
+  It shows each limit's bar (now, likely at reset, high end), when you'd run out, usage per
+  hour with the forecast, and your model mix, refreshing every 30 seconds.
+- **In a terminal:** `savetokens watch`, the same dashboard full-screen. Put it in a split pane
+  or tmux window next to Claude Code.
+- **Anywhere else:** `savetokens dashboard --json`. When connected to a server, both show every
+  machine and account.
+
 ## Install
 
 ```sh
@@ -90,5 +101,7 @@ Without a server, everything runs on your machine (`savetokens install` on its o
 | `ephemeris [--key KEY \| --on \| --off]` | the forecaster, and credits left |
 | `connect URL --token T` / `connect --off` | sync with a server |
 | `server [--add-user NAME]` | run the sync server |
+| `watch` | the live dashboard in your terminal |
+| `dashboard [--json]` | the dashboard once (JSON for other tools) |
 | `maintain` | forecast if due and raise alerts (runs in the background) |
 | `backfill` | read transcripts again |

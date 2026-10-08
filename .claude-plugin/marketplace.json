@@ -1,0 +1,12 @@
+{
+  "name": "savetokens",
+  "owner": {
+    "name": "TensorLink"
+  },
+  "plugins": [
+    {
+      "name": "savetokens",
+      "source": "./claude-plugin"
+    }
+  ]
+}

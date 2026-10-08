@@ -209,6 +209,71 @@ def cmd_connect(args):
     return 0
 
 
+def _snapshot(s, push=True):
+    """The server's snapshot when connected (every machine), else this machine's. Falls back to local."""
+    from . import dashboard, sync
+    from .store import load_config
+    cfg = load_config()
+    if sync.connected(cfg):
+        try:
+            if push:
+                sync.push(s, cfg)
+            snap = sync._call(cfg, "/v1/dashboard", timeout=10)
+            snap["synced_at"] = time.time()
+            return snap
+        except Exception as e:
+            snap = dashboard.snapshot(s)
+            snap["sync_error"] = str(e)[:120]
+            return snap
+    return dashboard.snapshot(s)
+
+
+def cmd_dashboard(args):
+    import shutil
+
+    from . import capture, dashboard
+    from .store import Store
+    with Store() as s:
+        capture.backfill(s)
+        snap = _snapshot(s)
+    if args.json:
+        print(json.dumps(snap))
+    else:
+        print("\n".join(dashboard.render(snap, shutil.get_terminal_size().columns, color=sys.stdout.isatty())))
+    return 0
+
+
+def cmd_watch(args):
+    """Full-screen and live: redraws every few seconds until Ctrl-C."""
+    import shutil
+
+    from . import capture, dashboard, maintain
+    from .store import Store
+    out = sys.stdout
+    out.write("\033[?1049h\033[?25l")   # alternate screen, hide the cursor
+    try:
+        while True:
+            with Store() as s:
+                capture.backfill(s)
+                maintain.kick(s)
+                snap = _snapshot(s)
+            size = shutil.get_terminal_size()
+            lines = dashboard.render(snap, size.columns)
+            if snap.get("sync_error"):
+                lines.append(f"(server unreachable, showing this machine: {snap['sync_error']})")
+            lines.append("")
+            lines.append(f"\033[2mrefreshes every {args.every}s · Ctrl-C to quit\033[0m")
+            out.write("\033[H\033[2J" + "\n".join(lines[:size.lines - 1]))
+            out.flush()
+            time.sleep(args.every)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        out.write("\033[?25h\033[?1049l")
+        out.flush()
+    return 0
+
+
 def cmd_server(args):
     from pathlib import Path
 
@@ -245,6 +310,12 @@ def main(argv=None):
     s = sub.add_parser("status", help="each limit: used now, at reset, and when you'd run out")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("watch", help="live dashboard in the terminal (put it in a split pane next to Claude Code)")
+    s.add_argument("--every", type=int, default=15, help="seconds between refreshes")
+    s.set_defaults(fn=cmd_watch)
+    s = sub.add_parser("dashboard", help="the dashboard once (--json for other tools, e.g. the Claude Code pane)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_dashboard)
     sub.add_parser("backfill", help="read transcripts again").set_defaults(fn=cmd_backfill)
     s = sub.add_parser("maintain", help="forecast if due, raise alerts, sync (runs in the background)")
     s.add_argument("--quiet", action="store_true")

@@ -2,7 +2,8 @@
 
   POST /v1/push    a machine's new rows (usage, meter, hits)
   GET  /v1/pull    other machines' meter readings and hits, and the newest forecast paths
-  GET  /v1/status  the current outlook per limit (JSON)
+  GET  /v1/status     the current outlook per limit (JSON)
+  GET  /v1/dashboard  everything the dashboard draws, across every machine
 
 One SQLite database per user, with the same schema and engine as a machine:
 forecasts are made here (Ephemeris with the server's key) on the same cadence,
@@ -135,6 +136,9 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     out["ephemeris_last"] = s.meta("ephemeris_last")
                     out["track_record"] = s.meta("track_record")
                     return self._send(200, out)
+                if url.path == "/v1/dashboard":
+                    from . import dashboard
+                    return self._send(200, dashboard.snapshot(s))
                 if url.path == "/v1/status":
                     return self._send(200, {"outlook": forecast.outlook(s), "made_at": s.meta("forecast_made_at")})
             self._send(404, {"error": "not found"})
