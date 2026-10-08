@@ -36,6 +36,46 @@ const bar = (l: Limit, width: number) => {
   return out
 }
 
+const niceTop = (v: number) => {
+  if (v <= 0) return 1
+  const k = 10 ** Math.floor(Math.log10(v))
+  return [1, 2, 2.5, 5, 10].map(m => m * k).find(x => x >= v) ?? 10 * k
+}
+
+// Hourly usage as bars with a y-axis and hour ticks: past solid, forecast cyan, its range to p90 shaded.
+// Returns rows of [axis, past, forecast] so the pane can colour the forecast part.
+const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
+  const past = d.past, next = d.next, hi = d.next_hi ?? d.next
+  const hours = past.length + next.length
+  const cell = 8 + 2 * hours <= width ? 2 : 1
+  const top = niceTop(Math.max(0.01, ...past, ...hi))
+  const label = (v: number) => (top < 10 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`).padStart(6)
+  const glyph = (v: number, r: number, h?: number): string => {
+    const level = (v / top) * height
+    if (level >= r + 1) return '█'
+    if (level > r) return BARS[Math.max(1, Math.floor((level - r) * 8))] ?? '▁'
+    if (h !== undefined && (h / top) * height > r) return '░'
+    return ' '
+  }
+  const rows: [string, string, string][] = []
+  for (let r = height - 1; r >= 0; r--) {
+    const y = r === height - 1 ? label(top) : r === Math.floor(height / 2) - 1 ? label((top * Math.floor(height / 2)) / height) : ''
+    const axis = y ? `${y} ┤` : `${''.padStart(6)} │`
+    const p = past.map(v => glyph(v, r).repeat(cell)).join('')
+    const f = next.map((v, i) => glyph(v, r, hi[i]).repeat(cell)).join('')
+    rows.push([axis, p, '┊' + f])
+  }
+  let axis = `${label(0)} └`, ticks = ''.padStart(8)
+  for (let i = 0; i < hours; i++) {
+    const hour = new Date((d.start + i * 3600) * 1000).getHours()
+    if (i === past.length) { axis += '┴'; ticks += ' ' }
+    const mark = hour % 6 === 0
+    axis += (mark ? '┬' : '─') + '─'.repeat(cell - 1)
+    ticks += cell === 2 ? (mark ? String(hour).padStart(2, '0') : '  ') : mark ? String(hour).padStart(2, '0').slice(0, 1) : ' '
+  }
+  return { rows, axis, ticks }
+}
+
 const STAGE: Record<string, string> = { heads_up: 'heads-up', act: 'act now', last_call: 'last call' }
 const STAGE_COLOR: Record<string, string> = { heads_up: 'yellow', act: 'red', last_call: 'red' }
 
@@ -108,18 +148,28 @@ export const register: Register = on => {
           </Box>
         ))}
         <Text> </Text>
-        {s.demand.past.length > 0 && (
-          <Box flexDirection="column">
-            <Text bold>usage per hour</Text>
-            <Text wrap="truncate-end">  last  {spark(s.demand.past.slice(-n), top)}</Text>
-            {s.demand.next.length > 0 && (
-              <Text wrap="truncate-end">
-                {'  next  '}
-                <Text color="cyan">{spark(s.demand.next.slice(0, n), top)}</Text>
+        {(s.demand.past.some(v => v > 0) || s.demand.next.length > 0) && (() => {
+          const ch = chartRows(s.demand, (e.viewport?.columns ?? 80) - 4)
+          const used = s.demand.past.reduce((a, b) => a + b, 0)
+          const ahead = s.demand.next.reduce((a, b) => a + b, 0)
+          return (
+            <Box flexDirection="column">
+              <Text>
+                <Text bold>usage per hour </Text>
+                <Text dimColor>% of weekly limit · last {s.demand.past.length}h {used.toFixed(1)}% · next {s.demand.next.length}h ~{ahead.toFixed(1)}%</Text>
               </Text>
-            )}
-          </Box>
-        )}
+              {ch.rows.map(([axis, p, f]) => (
+                <Text wrap="truncate-end">
+                  <Text dimColor>{axis}</Text>
+                  {p}
+                  <Text color="cyan">{f}</Text>
+                </Text>
+              ))}
+              <Text dimColor wrap="truncate-end">{ch.axis}</Text>
+              <Text dimColor wrap="truncate-end">{ch.ticks}  now ┊ forecast →</Text>
+            </Box>
+          )
+        })()}
         <Text> </Text>
         {s.models.slice(0, 3).map(m => (
           <Text wrap="truncate-end">
@@ -133,16 +183,21 @@ export const register: Register = on => {
             <Text bold>
               sessions, last 24h <Text dimColor>({(s.sessions ?? []).filter(x => x.running).length} running)</Text>
             </Text>
+            <Text dimColor wrap="truncate-end">
+              {'  ' + 'project'.padEnd(14)} {'share'.padStart(5)} {'of week'.padStart(8)} {'last hr'.padStart(8)}  session
+            </Text>
             {(s.sessions ?? []).map(x => (
               <Text wrap="truncate-end">
                 <Text color={x.running ? 'green' : undefined} dimColor={!x.running}>{x.running ? '●' : '○'}</Text>
-                {' '}
-                {(x.project ?? '?').slice(0, 14).padEnd(14)} {String(Math.round(x.share * 100)).padStart(3)}%
-                {x.pct_week !== null ? ` ${x.pct_week.toFixed(1)}% wk` : ''}
-                {x.running && x.pace ? <Text color="yellow"> {x.pace.toFixed(1)}%/h</Text> : ''}
-                <Text dimColor>{x.session ? ` ${x.session}` : ''}</Text>
+                {' ' + (x.project ?? '?').slice(0, 14).padEnd(14)} {`${Math.round(x.share * 100)}%`.padStart(5)}
+                {' ' + (x.pct_week !== null ? `${x.pct_week.toFixed(1)}%` : '–').padStart(8)}
+                <Text color={x.running && x.pace ? 'yellow' : undefined}>
+                  {' ' + (x.pace ? `${x.pace.toFixed(1)}%` : '–').padStart(8)}
+                </Text>
+                <Text dimColor>{x.session ? `  ${x.session}` : ''}</Text>
               </Text>
             ))}
+            <Text dimColor wrap="wrap">of week and last hr: % of your weekly limit</Text>
           </Box>
         )}
         {s.machines.length > 1 && <Text dimColor>{s.machines.length} machines this week</Text>}

@@ -18,7 +18,7 @@ export type Snapshot = {
   synced_at: number | null
   sync_error?: string
   limits: Limit[]
-  demand: { past: number[]; next: number[] }
+  demand: { start: number; past: number[]; next: number[]; next_hi?: number[]; next_lo?: number[] }
   models: { model: string; share: number; subagents: number }[]
   machines: { machine: string; last_seen: number; requests: number }[]
   sessions?: {

@@ -7,7 +7,7 @@ const SNAP = {
     { name: 'five_hour', label: '5-hour limit', used: 10, resets: NOW + 3600, p10: 11, p50: 15, p90: 23, p_hit: 0, eta: null, stage: null },
     { name: 'seven_day', label: 'weekly limit', used: 80, resets: NOW + 86400, p10: 95, p50: 120, p90: 140, p_hit: 0.9, eta: NOW + 7200, stage: 'act' },
   ],
-  demand: { past: [0, 1, 2, 4], next: [3, 2, 1] },
+  demand: { start: NOW - 4 * 3600, past: [0, 1, 2, 4], next: [3, 2, 1], next_hi: [5, 4, 2] },
   models: [{ model: 'claude-opus-5-5', share: 0.98, subagents: 0.27 }],
   machines: [], accounts: [], alerts: [], hits: [],
   sessions: [
@@ -33,8 +33,11 @@ test('the pane draws each limit and when you would run out', async ($, on) => {
     expect(await ui.find({ type: 'Text', text: /act now: out ~/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /likely 120%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /opus-5-5 98%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /synth .* 58% 5\.3% wk/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /synth .*58%.*5\.3%.*0\.7%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /1 running/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /project .*share .*of week .*last hr/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /5\.0% ┤/ })).toBeDefined()        // the chart's y-axis
+    expect(await ui.find({ type: 'Text', text: /now ┊ forecast/ })).toBeDefined()
     await ui.unmount()
   }
 })

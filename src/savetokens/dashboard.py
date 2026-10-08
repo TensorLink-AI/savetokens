@@ -17,6 +17,7 @@ STAGE_TEXT = {"heads_up": "heads-up", "act": "act now", "last_call": "last call"
 
 
 def _hourly_forecast(store, account, source, now, hours):
+    """Per coming hour: (p10, p50, p90) of demand, from the forecast paths."""
     p = forecast.load_paths(store, account, source)
     if not p:
         return []
@@ -27,7 +28,7 @@ def _hourly_forecast(store, account, source, now, hours):
         if not 0 <= k < p["hours"]:
             break
         v = sorted(p["data"][j * p["hours"] + k] for j in range(p["n"]))
-        out.append(v[len(v) // 2])
+        out.append((v[len(v) // 10], v[len(v) // 2], v[(9 * len(v)) // 10]))
     return out
 
 
@@ -68,8 +69,7 @@ def snapshot(store, now=None, hours=24) -> dict:
     return {
         "now": now, "account": acct, "source": source, "forecast_made_at": store.meta("forecast_made_at"),
         "synced_at": store.meta("synced_at"), "limits": looks,
-        "demand": {"start": hist[0][0] if hist else None, "past": [round(v, 3) for _, v in hist],
-                   "next": [round(v, 3) for v in _hourly_forecast(store, acct, source, now, hours)]},
+        "demand": demand_view(hist, _hourly_forecast(store, acct, source, now, hours), now, hours),
         "usd_per_pct": 1 / rate if rate else None,
         "models": [{"model": r["model"], "share": r["usd"] / total, "subagents": (r["sub"] or 0) / r["usd"]}
                    for r in models],
@@ -77,6 +77,16 @@ def snapshot(store, now=None, hours=24) -> dict:
                      for r in machines],
         "sessions": sessions, "accounts": accounts, "alerts": recent, "hits": hits[:6], "track_record": tr,
     }
+
+
+def demand_view(hist, fc, now, hours):
+    """The last `hours` complete hours (zeros where nothing was used) and the forecast from this hour on."""
+    first = meter.hour_floor(now) - hours * meter.HOUR
+    got = dict(hist)
+    return {"start": first, "now_hour": meter.hour_floor(now),
+            "past": [round(got.get(first + i * meter.HOUR, 0.0), 3) for i in range(hours)],
+            "next": [round(m, 3) for _, m, _ in fc], "next_lo": [round(lo, 3) for lo, _, _ in fc],
+            "next_hi": [round(hi, 3) for _, _, hi in fc]}
 
 
 LIVE_SECONDS = 600   # a session with a request in the last 10 minutes counts as running
@@ -94,9 +104,9 @@ def top_sessions(store, now, rate, since_hours=24, limit=8):
     total = sum(r["usd"] for r in rows) or 1.0
     out = []
     for r in rows[:limit]:
-        model = store.conn.execute("SELECT model FROM usage WHERE session_id = ? AND NOT subagent ORDER BY ts DESC"
-                                   " LIMIT 1", (r["session_id"],)).fetchone()
-        out.append({"session": r["session_id"][:8], "project": r["project"], "machine": r["machine"],
+        model = store.conn.execute("SELECT model, project FROM usage WHERE session_id = ? AND NOT subagent"
+                                   " ORDER BY ts DESC LIMIT 1", (r["session_id"],)).fetchone()
+        out.append({"session": r["session_id"][:8], "project": (model[1] if model and model[1] else r["project"]), "machine": r["machine"],
                     "share": r["usd"] / total, "pct_week": r["usd"] * rate if rate else None,
                     "pace": r["hour_usd"] * rate if rate else None,   # % of the weekly limit in the last hour
                     "requests": r["n"], "subagents": (r["sub"] or 0) / r["usd"], "model": model[0] if model else None,
@@ -109,6 +119,72 @@ def top_sessions(store, now, rate, since_hours=24, limit=8):
 
 
 # ── drawing ──────────────────────────────────────────────────────────────────
+
+def nice_top(v) -> float:
+    """A round axis maximum at or above v: 1, 2, 2.5, 5 x 10^k."""
+    import math
+    if v <= 0:
+        return 1.0
+    k = 10 ** math.floor(math.log10(v))
+    return next(m * k for m in (1, 2, 2.5, 5, 10) if m * k >= v)
+
+
+def chart(d, width=80, height=6, color=True) -> list[str]:
+    """Hourly usage as vertical bars with a y-axis (% of the weekly limit per hour) and hour ticks.
+
+    Past hours are solid; from `now` on, the forecast's likely value is solid cyan and the range up
+    to its p90 is shaded, so a busy stretch ahead shows as a tall shaded column.
+    """
+    def c(code, text):
+        return f"\033[{code}m{text}\033[0m" if color and text.strip() else text
+    past, nxt, hi = d["past"], d["next"], d.get("next_hi") or d["next"]
+    hours = len(past) + len(nxt)
+    if not hours:
+        return []
+    cell = 2 if 8 + 2 * hours <= width else 1
+    top = nice_top(max(past + hi + [0.01]))
+    label = lambda v: f"{v:5.1f}%" if top < 10 else f"{v:5.0f}%"
+    rows = []
+    for r in range(height - 1, -1, -1):
+        y = {height - 1: label(top), height // 2 - 1: label(top * (height // 2) / height)}   # each row's top edge
+        line = f"{y.get(r, ''):>6} ┤" if r in y else f"{'':6} │"
+        for i in range(hours):
+            fut = i >= len(past)
+            v = nxt[i - len(past)] if fut else past[i]
+            level = v / top * height
+            if level >= r + 1:
+                ch = "█"
+            elif level > r:
+                ch = BARS[max(1, int((level - r) * 8))]
+            elif fut and hi[i - len(past)] / top * height > r:
+                ch = "░"
+            else:
+                ch = " "
+            if fut and i == len(past):
+                line += c("2", "┊")
+            line += c("36" if fut else "", ch * cell)
+        rows.append(line)
+    axis, ticks = f"{label(0):>6} └", f"{'':8}"
+    for i in range(hours):
+        h = time.localtime(d["start"] + i * meter.HOUR).tm_hour
+        if i == len(past):
+            axis += "┴"
+            ticks += " "
+        mark = h % 6 == 0
+        axis += ("┬" if mark else "─") + "─" * (cell - 1)
+        ticks += (f"{h:02d}" if mark else "  ")[:cell] if cell == 2 else ("|" if mark else " ")
+    rows.append(axis)
+    if cell == 1:   # one cell per hour: put the hour labels under their ticks instead
+        tick_line = list(" " * len(ticks))
+        for i in range(hours):
+            h = time.localtime(d["start"] + i * meter.HOUR).tm_hour
+            if h % 6 == 0:
+                pos = 8 + i + (1 if i >= len(past) else 0)
+                tick_line[pos:pos + 2] = f"{h:02d}"
+        ticks = "".join(tick_line)
+    rows.append(ticks.rstrip() + "   " + c("2", "now ┊ forecast →"))
+    return rows
+
 
 def spark(values, top=None) -> str:
     top = top or max(values or [0]) or 1.0
@@ -160,13 +236,12 @@ def render(snap, width=80, color=True) -> list[str]:
                                 f" {alerts.span(o['resets'] - o['eta'])} before the reset"))
         lines.append("")
     d = snap["demand"]
-    if d["past"]:
-        top = max(d["past"] + d["next"]) or 1.0
-        n = max(1, (w - 30) // 2)
-        lines.append(c("1", "usage per hour") + c("2", f"  (% of the weekly limit; peak {top:.1f}%)"))
-        lines.append(f"  last {min(n, len(d['past'])):2}h  {spark(d['past'][-n:], top)}")
-        if d["next"]:
-            lines.append(f"  next {min(n, len(d['next'])):2}h  {c('36', spark(d['next'][:n], top))}  forecast")
+    if any(d["past"]) or any(d["next"]):
+        used = sum(d["past"])
+        ahead = sum(d["next"])
+        lines.append(c("1", "usage per hour") + c("2", f"  % of the weekly limit · last {len(d['past'])}h: {used:.1f}%"
+                                                        f" · next {len(d['next'])}h likely {ahead:.1f}%"))
+        lines += chart(d, w, color=color)
         lines.append("")
     if snap["models"]:
         lines.append(c("1", "this week by model"))
@@ -176,19 +251,23 @@ def render(snap, width=80, color=True) -> list[str]:
         lines.append("")
     if snap.get("sessions"):
         live = sum(1 for x in snap["sessions"] if x.get("running"))
-        lines.append(c("1", "sessions, last 24h") + c("2", f"  ({live} running; share of usage, % of the weekly limit,"
-                                                            " pace in the last hour)"))
+        lines.append(c("1", "sessions, last 24h") + c("2", f"  {live} running (●), idle (○)"))
+        lines.append(c("2", f"    {'project':16} {'session':8} {'share':>6} {'of week':>8} {'last hour':>10}  model"))
         for x in snap["sessions"]:
             dot = c("32", "●") if x.get("running") else c("2", "○")
-            pct = f"{x['pct_week']:5.1f}% wk" if x.get("pct_week") is not None else ""
+            share = f"{x['share']:.0%}"
+            week = f"{x['pct_week']:.1f}%" if x.get("pct_week") is not None else "–"
             if x["session"] is None:
-                lines.append(c("2", f"  {dot} {x['project']:24} {x['share']:4.0%} {pct}"))
+                lines.append(c("2", f"  {dot} {x['project'][:16]:16} {'':8} {share:>6} {week:>8}"))
                 continue
-            pace = f"  {x['pace']:.1f}%/h" if x.get("running") and x.get("pace") else ""
+            pace = f"{x['pace']:.1f}%" if x.get("pace") else "–"
             model = (x.get("model") or "").replace("claude-", "")
-            sub = f" · {x['subagents']:.0%} sub" if x.get("subagents", 0) >= 0.05 else ""
-            lines.append(f"  {dot} {(x['project'] or '?')[:16]:16} {x['session']}  {x['share']:4.0%} {pct}"
-                         f"{c('33', pace)}  {c('2', model + sub)}"[:w + 20])
+            sub = f", {x['subagents']:.0%} subagents" if x.get("subagents", 0) >= 0.05 else ""
+            lines.append(f"  {dot} {(x['project'] or '?')[:16]:16} {x['session']:8} {share:>6} {week:>8}"
+                         f" {c('33', f'{pace:>10}') if x.get('running') and x.get('pace') else f'{pace:>10}'}"
+                         f"  {c('2', model + sub)}")
+        lines.append(c("2", "    share = of all usage in the last 24h · of week = % of your weekly limit"
+                            " · last hour = % of the weekly limit used in the past hour"))
         lines.append("")
     if len(snap["machines"]) > 1 or len(snap["accounts"]) > 1:
         lines.append(c("1", "machines and accounts"))
