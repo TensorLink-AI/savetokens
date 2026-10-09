@@ -45,6 +45,26 @@ test('the pane draws each limit and when you would run out', async ($, on) => {
   }
 })
 
+test('the chart frame fits the pane body and its sides line up', async ($, on) => {
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: JSON.stringify({ ...SNAP, demand: {
+    start: NOW - 24 * 3600, past: Array.from({ length: 24 }, (_, i) => i % 5), next: Array.from({ length: 24 }, () => 1),
+    next_hi: Array.from({ length: 24 }, () => 3) } }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  await $.command.run({ command: 'savetokens', args: '' } as never)
+  for (const bodyColumns of [40, 64, 120]) {
+    const ui = await $.ui.mount({
+      plugin: 'savetokens', surface: 'terminal', component: 'Pane', requestId: 'savetokens',
+      props: { title: 'savetokens', isFocused: false, bodyColumns } as never,
+    })
+    const top = (await ui.find({ type: 'Text', text: /^┌─+┐$/ }))?.text ?? ''
+    const bottom = (await ui.find({ type: 'Text', text: /^└─+┘$/ }))?.text ?? ''
+    expect(top.length).toBeGreaterThan(10)
+    expect(top.length).toBeLessThanOrEqual(bodyColumns)
+    expect(bottom.length).toBe(top.length)
+    await ui.unmount()
+  }
+})
+
 test('a failing command shows why instead of a blank pane', async ($, on) => {
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
   on('process.run', async () => ({ value: { exitCode: 1, stdout: '', stderr: 'savetokens: command not found', isStdoutTruncated: false, isStderrTruncated: false } }))

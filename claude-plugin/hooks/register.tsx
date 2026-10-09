@@ -45,7 +45,7 @@ const niceTop = (v: number) => {
 // Hourly usage as bars in a plain frame: past solid; the forecast from the ┊, ▒ to likely, ░ to the high end.
 // Returns the frame's top and bottom, and each row as [past, forecast] so the forecast can be coloured.
 const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
-  const room = Math.max(12, width - 4)
+  const room = Math.max(12, width - 3)   // the frame's two sides and the ┊ divider
   let past = d.past, next = d.next, hi = d.next_hi ?? d.next
   if (past.length + next.length > room) {
     const keepNext = Math.min(next.length, Math.floor(room / 2))
@@ -117,7 +117,8 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     const s = await read($, snap)
     const err = await read($, error)
-    const cols = e.viewport?.columns ?? 60
+    // the pane's own body width, not the terminal's: a chart sized to the terminal wraps inside a docked pane
+    const cols = e.props.bodyColumns || e.viewport?.columns || 60
     if (!s) {
       return (
         <Box flexDirection="column">
@@ -129,7 +130,7 @@ export const register: Register = on => {
     const headColor = head.level === 'bad' ? 'red' : head.level === 'warn' ? 'yellow' : head.level === 'ok' ? 'green' : undefined
     const bw = Math.max(10, Math.min(30, cols - 34))
     const sessions = s.sessions ?? []
-    const ch = chartRows(s.demand, cols - 2)
+    const ch = chartRows(s.demand, cols)
     const used = s.demand.past.reduce((a, b) => a + b, 0)
     const ahead = s.demand.next.reduce((a, b) => a + b, 0)
     return (
@@ -170,7 +171,7 @@ export const register: Register = on => {
               <Text bold>USAGE PER HOUR </Text>
               <Text dimColor>last {s.demand.past.length}h ┊ next {s.demand.next.length}h</Text>
             </Text>
-            <Text dimColor>{ch.top}</Text>
+            <Text dimColor wrap="truncate-end">{ch.top}</Text>
             {ch.rows.map(([p, f]) => (
               <Text wrap="truncate-end">
                 <Text dimColor>│</Text>
@@ -179,7 +180,7 @@ export const register: Register = on => {
                 <Text dimColor>│</Text>
               </Text>
             ))}
-            <Text dimColor>{ch.bottom}</Text>
+            <Text dimColor wrap="truncate-end">{ch.bottom}</Text>
             <Text dimColor wrap="wrap">
               used {used.toFixed(1)}% of the week · ~{ahead.toFixed(1)}% to come · █ used ▒ likely ░ could reach
             </Text>
