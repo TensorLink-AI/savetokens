@@ -154,11 +154,13 @@ def cmd_backfill(args):
 
 def cmd_install(args):
     from . import install
-    if bool(args.server) != bool(args.token):
-        print("--server and --token go together")
+    if bool(args.server) != bool(args.token or args.code):
+        print("--server goes with --code (from `savetokens pair`) or --token")
         return 2
     return 0 if install.install(yes=args.yes, key=args.key, no_ephemeris=args.no_ephemeris,
-                                cron=not args.no_schedule, server=args.server, token=args.token) else 1
+                                cron=not args.no_schedule, server=args.server, token=args.token, code=args.code,
+                                tell_agent=True if args.tell_agent else (False if args.yes else None),
+                                mcp=not args.no_mcp) else 1
 
 
 def cmd_uninstall(args):
@@ -247,6 +249,70 @@ def cmd_price(args):
                 n += 1
         s.conn.commit()
     print(f"{args.model}: ${args.input:g} in, ${args.output:g} out per million tokens; {n:,} requests priced")
+    return 0
+
+
+def cmd_advise(args):
+    from . import advise, capture, mcp
+    from .store import Store
+    with Store() as s:
+        capture.backfill(s)
+        b = advise.brief(s, session_id=args.session)
+    print(json.dumps(mcp._clean(b), default=str) if args.json else advise.brief_text(b))
+    return 0
+
+
+def cmd_estimate(args):
+    from . import advise, capture, mcp
+    from .store import Store
+    with Store() as s:
+        capture.backfill(s)
+        e = advise.estimate(s, points=args.points, usd=args.usd, like=args.like, hours=args.hours,
+                            parallel=args.parallel, session_id=args.session)
+    print(json.dumps(mcp._clean(e), default=str) if args.json else e.get("summary") or e.get("error"))
+    return 0 if "error" not in e else 1
+
+
+def cmd_mcp(args):
+    from . import mcp
+    mcp.serve()
+    return 0
+
+
+def cmd_join(args):
+    """Join a server with a short code: no token to copy."""
+    import urllib.request
+
+    from . import sync
+    from .store import Store, load_config, save_config
+    req = urllib.request.Request(args.url.rstrip("/") + "/v1/join", data=json.dumps({"code": args.code}).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            token = json.load(r)["token"]
+    except Exception as e:
+        print(f"couldn't join: {e}")
+        return 1
+    cfg = load_config()
+    cfg.update(server_url=args.url, server_token=token)
+    save_config(cfg)
+    with Store() as s:
+        n = sync.push(s, cfg)
+        got = sync.pull(s, cfg)
+    print(f"joined {args.url}: sent {n:,} rows, received {got['meter']:,} readings from other machines")
+    return 0
+
+
+def cmd_pair(args):
+    """A join code for another machine, from this one (already connected)."""
+    from . import sync
+    from .store import load_config
+    cfg = load_config()
+    if not sync.connected(cfg):
+        print("this machine isn't connected to a server (savetokens join URL CODE, or connect URL --token T)")
+        return 1
+    code = sync._call(cfg, "/v1/pair", {})["code"]
+    print(f"On the other machine, within 10 minutes:\n  savetokens join {sync.settings(cfg)['server_url']} {code}")
     return 0
 
 
@@ -341,9 +407,13 @@ def cmd_server(args):
     from .store import home
     data = Path(args.data) if args.data else home() / "server"
     if args.add_user:
-        token = server.Users(data).add(args.add_user)
-        print(f"user {args.add_user}: token {token}\n(shown once; on each machine run:"
-              f" savetokens connect URL --token {token})")
+        users = server.Users(data)
+        token = users.add(args.add_user)
+        print(f"user {args.add_user}: token {token} (shown once; for SAVETOKENS_TOKEN in containers)\n"
+              f"to add a machine: savetokens join URL {users.pair(args.add_user, seconds=3600)} (valid an hour)")
+        return 0
+    if args.pair:
+        print(f"savetokens join URL {server.Users(data).pair(args.pair)}  (valid 10 minutes, once)")
         return 0
     server.serve(data, args.host, args.port)
     return 0
@@ -365,6 +435,9 @@ def main(argv=None):
     s.add_argument("--no-schedule", action="store_true", help="no crontab line")
     s.add_argument("--server", help="URL of your savetokens server (it makes the forecasts)")
     s.add_argument("--token", help="your token on that server")
+    s.add_argument("--code", help="a join code from that server (instead of a token)")
+    s.add_argument("--tell-agent", action="store_true", help="give the agent a pacing note when a limit is at risk")
+    s.add_argument("--no-mcp", action="store_true", help="don't register the MCP server")
     s.set_defaults(fn=cmd_install)
     sub.add_parser("uninstall", help="remove the statusline, hooks and crontab line").set_defaults(fn=cmd_uninstall)
     s = sub.add_parser("status", help="each limit: used now, at reset, and when you'd run out")
@@ -397,6 +470,26 @@ def main(argv=None):
     s.add_argument("output", type=float)
     s.add_argument("cache_read", type=float, nargs="?")
     s.set_defaults(fn=cmd_price)
+    s = sub.add_parser("advise", help="where the limits stand and what to change, biggest effect first")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--session", help="a session id (default: the latest one in this folder)")
+    s.set_defaults(fn=cmd_advise)
+    s = sub.add_parser("estimate", help="a job's size and how long it would take, waits for resets included")
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--points", type=float, help="points of the limit")
+    g.add_argument("--usd", type=float, help="API-equivalent dollars")
+    g.add_argument("--like", help="small, typical, big (past sessions here) or a session id")
+    g.add_argument("--hours", type=float, help="hours of work at your pace")
+    s.add_argument("--parallel", type=int, default=1, help="sessions or subagents at once")
+    s.add_argument("--session")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_estimate)
+    sub.add_parser("mcp", help="run as an MCP server (stdio) for your agent").set_defaults(fn=cmd_mcp)
+    s = sub.add_parser("join", help="join a savetokens server with a short code (XXXX-XXXX)")
+    s.add_argument("url")
+    s.add_argument("code")
+    s.set_defaults(fn=cmd_join)
+    sub.add_parser("pair", help="a join code for another machine").set_defaults(fn=cmd_pair)
     s = sub.add_parser("connect", help="sync with a savetokens server, so all machines and accounts add up")
     s.add_argument("url", nargs="?")
     s.add_argument("--token")
@@ -407,6 +500,7 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=8787)
     s.add_argument("--data", help="data directory (default ~/.savetokens/server)")
     s.add_argument("--add-user", metavar="NAME")
+    s.add_argument("--pair", metavar="NAME", help="a join code for one of NAME's machines")
     s.set_defaults(fn=cmd_server)
     args = p.parse_args(argv)
     if args.cmd == "connect" and not args.off and not (args.url and args.token):

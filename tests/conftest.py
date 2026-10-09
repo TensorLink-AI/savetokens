@@ -14,8 +14,11 @@ H = 3600
 
 @pytest.fixture(autouse=True)
 def homes(tmp_path, monkeypatch):
-    from savetokens import alerts, ephemeris, maintain, schedule
+    from savetokens import alerts, ephemeris, install, maintain, schedule
     monkeypatch.setattr(schedule, "available", lambda: False)
+    monkeypatch.setattr(install, "claude_cli", lambda: None)     # never the real `claude mcp add`
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(maintain, "kick", lambda *a, **k: None)
     monkeypatch.setattr(alerts, "desktop", lambda *a, **k: None)
     for name in ("EPHEMERIS_API_KEY", "EPHEMERIS_API_TOKEN"):

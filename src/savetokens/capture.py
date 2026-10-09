@@ -103,10 +103,40 @@ def parse_line(d: dict, subagent_file=False, acct=None):
     return e, None
 
 
-def billing() -> str | None:
-    """"api" when this machine's Claude Code runs on an API key (set with `savetokens api claude-code`)."""
+def billing(store=None) -> str | None:
+    """"api" when this machine's Claude Code runs on an API key: set with `savetokens api claude-code`,
+    else as detected (detect_billing)."""
     from .store import load_config
-    return (load_config().get("billing") or {}).get(HARNESS)
+    set_ = (load_config().get("billing") or {}).get(HARNESS)
+    if set_:
+        return "api" if set_ == "api" else None
+    return "api" if store is not None and store.meta(f"detected_billing:{HARNESS}") == "api" else None
+
+
+NO_METER_PAYLOADS, NO_METER_SECONDS, METER_DAYS = 10, 900, 7
+
+
+def api_key_signs() -> bool:
+    """Signs that Claude Code here runs on an API key: a key in its environment, or no claude.ai login."""
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+                or not account()["account"])
+
+
+def detect_billing(store, now=None) -> str | None:
+    """Claude Code's billing on this machine, from what the statusline sends. A plan always sends its
+    limit meter; on an API key there is none. Returns "api", "subscription" or None (can't tell yet)."""
+    now = now or time.time()
+    seen = store.meta("statusline_meter") or 0
+    none = store.meta("statusline_no_meter") or {}
+    if seen and now - seen < METER_DAYS * 86400:
+        result = "subscription"
+    elif (none.get("n", 0) >= NO_METER_PAYLOADS and none.get("last", 0) - none.get("first", 0) >= NO_METER_SECONDS
+          and none.get("key_signs")):
+        result = "api"
+    else:
+        return None
+    store.set_meta(f"detected_billing:{HARNESS}", result)
+    return result
 
 
 def ingest_file(store: Store, path: Path, acct=None, max_bytes: int | None = None, bill=None) -> int:
@@ -161,7 +191,7 @@ def backfill(store: Store, root: Path | None = None) -> int:
     left empty."""
     from . import codex
     from .store import load_config
-    bill = billing()
+    bill = billing(store)
     n = sum(ingest_file(store, p, bill=bill) for p in transcripts(root))
     return n + codex.backfill(store, billing=(load_config().get("billing") or {}).get(codex.HARNESS))
 
@@ -171,7 +201,7 @@ def ingest_session(store: Store, transcript_path, acct=None):
     if not transcript_path:
         return
     p = Path(transcript_path)
-    bill = billing()
+    bill = billing(store)
     ingest_file(store, p, acct, max_bytes=64 * 1024 * 1024, bill=bill)
     sub = p.with_suffix("") / "subagents"
     if sub.is_dir():
@@ -184,4 +214,14 @@ def record_statusline(store: Store, payload: dict, acct=None) -> int:
     rl = payload.get("rate_limits") or {}
     readings = {name: (v.get("used_percentage"), v.get("resets_at"))
                 for name, v in rl.items() if isinstance(v, dict) and name != "spend_limit"}
-    return store.add_meter(HARNESS, acct, readings) if readings else 0
+    now = time.time()
+    if readings:
+        store.set_meta("statusline_meter", now)
+        if store.meta("statusline_no_meter"):
+            store.conn.execute("DELETE FROM meta WHERE key = 'statusline_no_meter'")
+        return store.add_meter(HARNESS, acct, readings)
+    if payload.get("model"):    # a real session's payload with no meter in it: counts toward "on an API key"
+        n = store.meta("statusline_no_meter") or {"first": now, "n": 0}
+        n.update(n=n["n"] + 1, last=now, key_signs=n.get("key_signs") or api_key_signs())
+        store.set_meta("statusline_no_meter", n)
+    return 0

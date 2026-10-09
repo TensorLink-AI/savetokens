@@ -2,6 +2,8 @@
 
   POST /v1/push    a machine's new rows (usage, meter, hits)
   POST /v1/settings   API budgets (the newest setting wins)
+  POST /v1/pair    a short join code for another machine (authenticated)
+  POST /v1/join    a join code in, that user's new token out (no token needed; codes expire in 10 minutes)
   GET  /v1/pull    other machines' meter readings and hits, and the newest forecast paths
   GET  /v1/status     the current outlook per limit (JSON)
   GET  /v1/dashboard  everything the dashboard draws, across every machine
@@ -30,6 +32,9 @@ from .store import SYNCED, Store
 
 MAX_BODY = 16 * 1024 * 1024
 ENGINE_SECONDS = 60
+CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no 0/O, 1/I/L
+CODE_SECONDS = 600
+JOIN_FAILURES_PER_MINUTE = 20
 
 
 def _hash(token):
@@ -58,6 +63,35 @@ class Users:
         self.path.chmod(0o600)
         return token
 
+    def pair(self, name, seconds=CODE_SECONDS) -> str:
+        """A one-time join code for `name`: XXXX-XXXX, valid for `seconds`."""
+        code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
+        codes = {k: v for k, v in self._codes().items() if v["expires"] > time.time()}
+        codes[_hash(code)] = {"user": name, "expires": time.time() + seconds}
+        self._save_codes(codes)
+        return f"{code[:4]}-{code[4:]}"
+
+    def join(self, code):
+        """The user's new token for a valid code (used up), else None."""
+        key = _hash(re.sub(r"[^A-Z0-9]", "", (code or "").upper()))
+        codes = self._codes()
+        c = codes.pop(key, None)
+        self._save_codes(codes)
+        if not c or c["expires"] < time.time():
+            return None
+        return self.add(c["user"])
+
+    def _codes(self):
+        try:
+            return json.loads((self.data / "codes.json").read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def _save_codes(self, codes):
+        path = self.data / "codes.json"
+        path.write_text(json.dumps(codes))
+        path.chmod(0o600)
+
     def who(self, token):
         return self._load().get(_hash(token)) if token else None
 
@@ -76,6 +110,8 @@ def _rows_after(store, table, cursor, machine):
 
 
 def make_handler(users: Users, dirty: set, lock: threading.Lock):
+    failures = []   # times of failed joins, to slow down guessing
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "savetokens"
 
@@ -94,11 +130,32 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             auth = self.headers.get("Authorization", "")
             return users.who(auth.removeprefix("Bearer ").strip())
 
+        def _join(self):
+            now = time.time()
+            with lock:
+                failures[:] = [t for t in failures if t > now - 60]
+                if len(failures) >= JOIN_FAILURES_PER_MINUTE:
+                    return self._send(429, {"error": "too many attempts; wait a minute"})
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)))
+                token = users.join(str(body["code"]))
+            except (ValueError, KeyError, TypeError):
+                token = None
+            if not token:
+                with lock:
+                    failures.append(now)
+                return self._send(403, {"error": "unknown or expired code"})
+            self._send(200, {"token": token})
+
         def do_POST(self):
+            path = urllib.parse.urlparse(self.path).path
+            if path == "/v1/join":
+                return self._join()
             user = self._user()
             if not user:
                 return self._send(401, {"error": "unknown token"})
-            path = urllib.parse.urlparse(self.path).path
+            if path == "/v1/pair":
+                return self._send(200, {"code": users.pair(user), "expires_in": CODE_SECONDS})
             if path not in ("/v1/push", "/v1/settings"):
                 return self._send(404, {"error": "not found"})
             n = int(self.headers.get("Content-Length") or 0)
@@ -193,9 +250,11 @@ def first_user(users: Users, log=print):
     path = users.data / "first-token.txt"
     path.write_text(token + "\n")
     path.chmod(0o600)
-    log("No users yet, so one was made. Your token (also in first-token.txt in the data directory):")
-    log(f"  {token}")
-    log("On each machine: savetokens install --server <this server's URL> --token <token>")
+    code = users.pair("me", seconds=3600)
+    log("No users yet, so one was made. To add a machine, run on it (this code works for an hour, once;")
+    log("  more codes: `savetokens pair` on a joined machine, or `savetokens server --pair me` here):")
+    log(f"  savetokens join <this server's URL> {code}")
+    log("Your token, for containers and cloud sessions (SAVETOKENS_TOKEN), is in first-token.txt.")
     return token
 
 

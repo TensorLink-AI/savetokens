@@ -66,8 +66,9 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
     """A machine's upkeep: capture, then sync with the server if connected, else forecast here."""
     from . import capture, sync
     now = now or time.time()
-    capture.backfill(store)
     cfg = load_config()
+    notices(store, now, cfg)
+    capture.backfill(store)
     if sync.connected(cfg):
         try:
             sync.push(store, cfg)
@@ -82,7 +83,34 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
         new = update(store, now, log=log)
     if new and cfg.get("desktop_notifications", True):
         alerts.desktop([a["message"] for a in new])
+    if cfg.get("agent_context"):
+        from . import advise
+        try:
+            store.set_meta("agent_note", {"at": now, "text": advise.agent_note(store, now)})
+        except Exception as e:
+            log(f"agent note failed: {e}")
     return new
+
+
+def notices(store, now, cfg):
+    """One-time notices: a tool found running on an API key with no budget set. Shown on the next prompt."""
+    from . import capture, codex, pools
+    found = []
+    if not (cfg.get("billing") or {}).get(capture.HARNESS) and capture.detect_billing(store, now) == "api":
+        found.append(capture.HARNESS)
+    if not (cfg.get("billing") or {}).get(codex.HARNESS) and codex.auth_mode() == "apikey":
+        found.append(codex.HARNESS)
+    have = pools.budgets(store)
+    for h in found:
+        if h in have:
+            continue
+        tool = pools.TOOLS[h]
+        store.conn.execute(
+            "INSERT OR IGNORE INTO alerts (account, ts, name, window_end, stage, message) VALUES (?,?,?,?,?,?)",
+            (h, now, "setup", 0, "billing:api",
+             f"savetokens: {tool} here is on an API key, so its usage counts as API spend. Set a budget to get"
+             f" forecasts and alerts for it: savetokens api {h} --budget 200 --per month"))
+    store.conn.commit()
 
 
 def kick(store: Store, now=None):

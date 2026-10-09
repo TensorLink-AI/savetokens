@@ -1,66 +1,53 @@
 ---
 name: savetokens
-description: Check Claude Code and Codex usage limits (5-hour and weekly plan limits, or an API budget) with savetokens and suggest how to pace usage so the user doesn't run out. Use when the user asks about limits, usage, running out, pacing, budget, which session is using the most, or before a large job (many subagents, wide refactors, long test loops).
+description: Check Claude Code and Codex usage limits (5-hour and weekly plan limits, or an API budget) with savetokens, suggest how to pace usage, and estimate big jobs before starting them. Use when the user asks about limits, usage, running out, pacing, budget or which session uses the most; when a savetokens alert appears; and before a large job (many subagents, wide refactors, long test or eval loops).
 ---
 
 # Pacing Claude Code and Codex usage with savetokens
 
-savetokens reads Claude Code's and Codex's own limit meters (every session, device and account), or counts API-key usage against a dollar budget. It forecasts usage with Ephemeris and knows which sessions are using the most.
+savetokens reads each tool's own limit meter (every session, device and account) or counts API-key spend against a budget. It forecasts usage with Ephemeris, and works out the options from the user's own data. Use its numbers; don't estimate your own.
 
-## Read the numbers
+## Get the numbers
 
-```sh
-savetokens dashboard --json
-```
+Use the savetokens MCP tools when they're available. Otherwise run the same thing as a command:
 
-The parts that matter:
+| MCP tool | Command | Gives |
+|---|---|---|
+| `pacing_brief` | `savetokens advise --json` | each limit: used, likely at reset, chance of running out, room left in points and hours; this session's usage; options ranked by measured effect, each with the exact change to make |
+| `estimate_job` | `savetokens estimate --like big --json` | a job's size in points, hours of work at the user's pace, finish time including any wait for a 5-hour reset, and a better start time if one avoids waiting |
 
-- `headline`: `{level, text}`. `level` is `ok`, `warn` or `bad`. `text` is the one-line answer. Lead with it.
-- `limits[]`: one per limit:
-  - `label`: what to call it ("weekly limit", "Codex weekly limit", "Claude Code API budget").
-  - `pool`: `claude-code`, `codex`, `claude-code:api` or `codex:api`. `name` is `five_hour`, `seven_day` or `budget`.
-  - For a budget (`kind` `api`): `spent_usd` of `budget_usd` per `period`. Its `used` and `p50` are % of the budget, and `resets` is when the period ends.
-  - `used`: % used now.
-  - `p50`: the likely % at reset; `p10` to `p90` is the range.
-  - `p_hit`: the chance of running out before the reset.
-  - `eta`: when you'd run out at this pace (epoch seconds), or null.
-  - `resets`: the reset time.
-  - `stage`: `heads_up`, `act`, `last_call`, or null.
-- `sessions[]`: the last 24 hours, biggest first:
-  - `project`, `harness` (`claude-code` or `codex`), `pool` and `running`.
-  - `pct_week`: % of its pool's limit used today (the weekly limit, or the budget).
-  - `pace`: the same for the last hour.
-  - `subagents`: the share of the session's usage that went through subagents.
-  - `model`.
-  - `if_stopped`: what pausing the session for the next 5 hours would change. `eta` → `eta_if_stopped`, where null means it would reach the reset. When nobody is running out, `adds` is the points of the limit it would use.
-- `models[]`: this week's mix per `harness`, with each model's subagent share.
-- `usd_per_pct`: API-equivalent dollars per 1% of Claude's weekly limit, for sizing a job before it starts.
-- `unpriced`: Codex models used on an API key that have no price yet, so they aren't counted. Suggest `savetokens price MODEL INPUT OUTPUT`.
+Points are % of a limit: a plan's weekly limit, or an API budget. Times are epoch seconds; say them as local clock times ("Wed 13:20").
 
-Times are epoch seconds. Say them as local clock times ("Sun 19:59"), not raw numbers.
+## When the user asks about limits or pacing
 
-## Suggest what to do, biggest effect first
+1. Lead with the brief's headline.
+2. Give the top 2–3 options with what each buys, in the brief's words and numbers. Example: "Run subagents on Sonnet: about 6.5 points a day."
+3. Offer to make a change, and make it only after the user agrees: a subagent's `model`, an agent file, the effort level, or pausing a session.
 
-Only suggest what the numbers support, and say what each step buys in time or points. Typical moves, roughly by size:
+If nothing is at risk, say so in one line and don't invent cuts.
 
-1. **Pause or wind down the session that buys the most.** That's the running session with the latest `if_stopped.eta_if_stopped`, or the largest `adds`. Name it by project.
-2. **Move subagents to a cheaper model** when a session's `subagents` share is high. Options:
-   - Ask for Sonnet in the Task call.
-   - Set `model: sonnet` in the agent's frontmatter.
-   - Set `CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-5-5` for new sessions.
+## Before a big job
 
-   Exploration and search subagents rarely need Opus.
-3. **Lower the effort** for routine work, such as edits, tests and small fixes: `/effort` or `effortLevel` in Claude Code, `model_reasoning_effort` in Codex's `config.toml`.
-4. **Compact or start fresh at a natural break** in long sessions, since re-reading a large context costs on every turn. Do it only at a break, never mid-task.
-5. **Shift background or batch work to after the reset** when the 5-hour window is the problem, because the 5-hour limit resets often.
-6. **Size big jobs first.** For a job estimated at about $X of API-equivalent usage, that's X / `usd_per_pct` points of Claude's weekly limit. Compare it with the room left (100 − `p50`) before starting.
-7. **Move work between tools** when one pool is tight and another has room, e.g. Codex's weekly limit at 30% while Claude's is heading past 100%.
-8. **On an API budget**, the money is real: keep prompt caching on, use a cheaper model for bulk work, and run batch jobs through the API's batch endpoint where the work allows.
+Size it with `estimate_job` before starting, using one of:
+- `like`: `small`, `typical` or `big`, compared with past sessions in this project.
+- `hours`: hours of work.
+- `usd`.
+- `parallel`: how many subagents or sessions will run at once.
 
-If `headline.level` is `ok` and `p_hit` is low, say so briefly and don't invent cuts.
+Tell the user the size, how long it takes, and whether it fits. If it says a later start avoids waiting, suggest it. If the job won't fit alongside their usual usage, say so before starting and offer a smaller plan, such as Sonnet subagents, fewer parallel runs, or splitting it across the reset.
+
+## While working, when a limit is at risk
+
+If a savetokens note or alert is in your context, pace yourself without being asked:
+- Use Sonnet for search and exploration subagents.
+- Avoid wide fan-outs.
+- Don't re-read large files you've already seen.
+- At a task boundary, suggest starting fresh with a short handover note.
+
+Never stop the user's task on your own; tell them and let them decide.
 
 ## Rules
 
-- **Never change settings, models or sessions yourself without asking.** Propose; the user decides.
-- **Don't print token counts or dollar figures as if they were the user's bill on a subscription.** There they're API-equivalent, not charges. On an API budget (`kind` `api`), they are the spend.
-- **If `savetokens` isn't found**, say so and point to `savetokens install`.
+- **Never change settings, models or sessions without asking.** Propose; the user decides.
+- **Dollar figures on a plan are API-equivalent, not charges.** On an API budget (`kind: api`) they are real spend.
+- **If savetokens isn't installed**, say so and point to `savetokens install`.
