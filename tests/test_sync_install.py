@@ -62,9 +62,11 @@ def test_install_keeps_the_users_statusline_and_uninstall_restores_it(homes):
     assert data["statusLine"]["command"].endswith(" statusline")
     assert data["hooks"]["PostToolUse"] == [mine]           # an older version's hook is gone, theirs kept
     assert set(data["hooks"]) == {"PostToolUse", *install.HOOK_EVENTS}
+    assert install.skill_path().read_text().startswith("---\nname: savetokens")
     install.uninstall(out=lambda *_: None)
     data = json.loads(settings.read_text())
     assert data["statusLine"]["command"] == "my-line" and data["hooks"] == {"PostToolUse": [mine]}
+    assert not install.skill_path().exists()
 
 
 def test_statusline_records_and_renders(store):

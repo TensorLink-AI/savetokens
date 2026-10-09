@@ -44,6 +44,13 @@ def _our_statusline(sl) -> bool:
     return "savetokens" in cmd and cmd.rstrip().endswith(" statusline")
 
 
+SKILL_SRC = Path(__file__).with_name("skill") / "SKILL.md"
+
+
+def skill_path() -> Path:
+    return capture.claude_home() / "skills" / "savetokens" / "SKILL.md"
+
+
 def settings_path() -> Path:
     return capture.claude_home() / "settings.json"
 
@@ -110,6 +117,7 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
     for c in changes:
         out(f"  - {c}")
     out("  - read usage from ~/.claude/projects: token counts and limit errors only, kept in ~/.savetokens")
+    out(f"  - add the savetokens skill at {skill_path()}: ask your agent about your limits and how to pace them")
     if server:
         out(f"  - sync with {server}: token counts per request, limit readings and limit hits go there;"
             " forecasts come back. Never prompts, replies, code or file names")
@@ -131,6 +139,8 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
         if not backup.exists():
             shutil.copy2(path, backup)
     _write_json(path, data)
+    skill_path().parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SKILL_SRC, skill_path())
     cfg = load_config()
     cfg.update(cfg_updates)
     cfg["forecaster"] = "baseline" if no_ephemeris else "ephemeris"
@@ -182,4 +192,6 @@ def uninstall(out=print, run=subprocess.run):
     save_config(cfg)
     _write_json(path, data)
     schedule.remove(run)
-    out(f"Removed savetokens' hooks, statusline and crontab line. Your data stays in {home()}.")
+    if skill_path().exists():
+        shutil.rmtree(skill_path().parent, ignore_errors=True)
+    out(f"Removed savetokens' hooks, statusline, skill and crontab line. Your data stays in {home()}.")
