@@ -3,6 +3,9 @@
 Cache writes cost 1.25x input for the 5-minute TTL and 2x for the 1-hour TTL.
 Cache reads vary by model, so each row carries its own rate. For subscription
 users these dollars are API-equivalent, not what they are billed.
+
+Models without a price here (Codex's, for one) can be given one with
+`savetokens price MODEL INPUT OUTPUT [CACHE_READ]`, kept in the config.
 """
 from __future__ import annotations
 
@@ -41,8 +44,29 @@ def normalize(model: str | None) -> str:
     return m
 
 
+_extra = None
+
+
+def extra() -> dict:
+    """Prices you added: {model prefix: (input, output, cache_read)}."""
+    global _extra
+    if _extra is None:
+        from .store import load_config
+        _extra = {normalize(k): (float(v[0]), float(v[1]), float(v[2]) if len(v) > 2 else float(v[0]) / 10)
+                  for k, v in (load_config().get("prices") or {}).items()}
+    return _extra
+
+
+def reset():
+    global _extra
+    _extra = None
+
+
 def rates(model: str | None):
     m = normalize(model)
+    for prefix in sorted(extra(), key=len, reverse=True):
+        if m.startswith(prefix):
+            return extra()[prefix]
     for prefix in _ORDER:
         if m.startswith(prefix):
             return PRICES[prefix]

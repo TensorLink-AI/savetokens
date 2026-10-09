@@ -1,4 +1,5 @@
 """Claude Code capture: usage and limit hits from transcripts, limit readings from the statusline.
+(Codex has its own reader, codex.py; backfill reads both.)
 
 Transcripts repeat one assistant message per content block with the same message
 id and request id, so usage is keyed on both (as ccusage does). A limit error
@@ -102,7 +103,13 @@ def parse_line(d: dict, subagent_file=False, acct=None):
     return e, None
 
 
-def ingest_file(store: Store, path: Path, acct=None, max_bytes: int | None = None) -> int:
+def billing() -> str | None:
+    """"api" when this machine's Claude Code runs on an API key (set with `savetokens api claude-code`)."""
+    from .store import load_config
+    return (load_config().get("billing") or {}).get(HARNESS)
+
+
+def ingest_file(store: Store, path: Path, acct=None, max_bytes: int | None = None, bill=None) -> int:
     """Read new complete lines since the last call. Returns usage rows added."""
     path = Path(path)
     try:
@@ -128,6 +135,8 @@ def ingest_file(store: Store, path: Path, acct=None, max_bytes: int | None = Non
         except ValueError:
             continue
         e, h = parse_line(d, sub, acct)
+        if e:
+            e.billing = bill
         if e and (e.request_id not in usage or e.output > usage[e.request_id].output):
             usage[e.request_id] = e
         if h:
@@ -148,8 +157,13 @@ def transcripts(root: Path | None = None):
 
 
 def backfill(store: Store, root: Path | None = None) -> int:
-    """Every transcript on this machine. Older sessions' account is unknown, so it is left empty."""
-    return sum(ingest_file(store, p) for p in transcripts(root))
+    """Every Claude Code and Codex session on this machine. Older sessions' account is unknown, so it is
+    left empty."""
+    from . import codex
+    from .store import load_config
+    bill = billing()
+    n = sum(ingest_file(store, p, bill=bill) for p in transcripts(root))
+    return n + codex.backfill(store, billing=(load_config().get("billing") or {}).get(codex.HARNESS))
 
 
 def ingest_session(store: Store, transcript_path, acct=None):
@@ -157,11 +171,12 @@ def ingest_session(store: Store, transcript_path, acct=None):
     if not transcript_path:
         return
     p = Path(transcript_path)
-    ingest_file(store, p, acct, max_bytes=64 * 1024 * 1024)
+    bill = billing()
+    ingest_file(store, p, acct, max_bytes=64 * 1024 * 1024, bill=bill)
     sub = p.with_suffix("") / "subagents"
     if sub.is_dir():
         for q in sub.glob("*.jsonl"):
-            ingest_file(store, q, acct, max_bytes=16 * 1024 * 1024)
+            ingest_file(store, q, acct, max_bytes=16 * 1024 * 1024, bill=bill)
 
 
 def record_statusline(store: Store, payload: dict, acct=None) -> int:

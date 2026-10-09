@@ -1,7 +1,8 @@
 """Upkeep: refresh forecasts when due, raise alerts, sync with the server.
 
 Runs in the background: kicked by the statusline and hooks while Claude Code is
-open (at most every few minutes), and hourly from cron when it isn't.
+open (at most every few minutes), and hourly from cron when it isn't (that is
+also when Codex sessions are read, as Codex has no hooks to kick it).
 
 Forecast cadence (refresh_due): hourly while you work, every 3 hours otherwise,
 at once (but not within 15 minutes of the last) when demand breaks above the
@@ -14,27 +15,27 @@ import subprocess
 import sys
 import time
 
-from . import alerts, ephemeris, forecast, meter
+from . import alerts, ephemeris, forecast, meter, pools
 from .store import Store, home, load_config
 
 KICK_SECONDS = 300
 
 
 def breakout(store, now, source="ephemeris") -> bool:
-    """The last complete hour's demand rose above the forecast's p90 for that hour."""
-    acct = meter.active_account(store, now)
-    p = forecast.load_paths(store, acct, source)
-    if not p:
-        return False
-    hist, _ = meter.demand(store, now, hours=2)
-    if not hist:
-        return False
-    h, v = hist[-1]
-    i = int((h - p["start"]) // meter.HOUR)
-    if not 0 <= i < p["hours"]:
-        return False
-    vals = sorted(p["data"][k * p["hours"] + i] for k in range(p["n"]))
-    return v > max(vals[int(0.9 * (len(vals) - 1))], 0.01)
+    """In some pool, the last complete hour's demand rose above the forecast's p90 for that hour."""
+    for pool in pools.pools(store, now):
+        p = forecast.load_paths(store, pool.key, source)
+        hist = pools.history(store, pool, now, hours=2)[0] if p else None
+        if not hist:
+            continue
+        h, v = hist[-1]
+        i = int((h - p["start"]) // meter.HOUR)
+        if not 0 <= i < p["hours"]:
+            continue
+        vals = sorted(p["data"][k * p["hours"] + i] for k in range(p["n"]))
+        if v > max(vals[int(0.9 * (len(vals) - 1))], 0.01):
+            return True
+    return False
 
 
 def refresh_due(store, made_at, now, check_breakout=False) -> bool:

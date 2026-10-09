@@ -1,4 +1,4 @@
-"""savetokens: know when you'll run out of Claude, before you do."""
+"""savetokens: know when you'll run out of Claude Code or Codex, before you do."""
 from __future__ import annotations
 
 import argparse
@@ -74,17 +74,21 @@ def cmd_status(args):
         cfg = load_config()
         acct = meter.active_account(s, now)
         if not looks:
-            print("No limit readings yet. They arrive through the Claude Code statusline: send a message in"
-                  " Claude Code, then run this again.")
+            print("No limit readings yet. They arrive through the Claude Code statusline and Codex's session"
+                  " logs: send a message in either, then run this again. On an API key: `savetokens api`.")
         src = looks[0]["source"] if looks else None
         made = s.meta("forecast_made_at")
         how = {"ephemeris": "Ephemeris", "baseline": "local baseline", None: "none yet"}[src]
-        print(f"account {acct or '?'} · forecast: {how}"
+        print(f"Claude account {acct or '?'} · forecast: {how}"
               + (f", made {(now - made) / 3600:.1f}h ago" if made else "")
               + (" · synced with " + sync.settings(cfg)["server_url"] if sync.connected(cfg) else ""))
         for o in looks:
-            print(f"\n{o['label']}: {o['used']:.0f}% used, resets {alerts.when(o['resets'], now)}"
-                  f" (reading {alerts.span(now - o['read_at'])} old)")
+            if o.get("kind") == "api":
+                print(f"\n{o['label']}: ${o['spent_usd']:,.2f} of ${o['budget_usd']:,.0f} {o['per']} ({o['used']:.0f}%),"
+                      f" the {o['period']} ends {alerts.when(o['resets'], now)}")
+            else:
+                print(f"\n{o['label']}: {o['used']:.0f}% used, resets {alerts.when(o['resets'], now)}"
+                      f" (reading {alerts.span(now - o['read_at'])} old)")
             if o["p50"] is not None:
                 print(f"  at reset: {o['p50']:.0f}% likely, {o['p10']:.0f}–{o['p90']:.0f}% range;"
                       f" {o['p_hit']:.0%} chance of running out first")
@@ -187,6 +191,62 @@ def cmd_ephemeris(args):
     if last:
         print(f"last forecast: {time.strftime('%a %H:%M', time.localtime(last['made_at']))},"
               f" {last['horizon']}h ahead from {last['history_hours']}h of history, {last['credits']:g} credits")
+    return 0
+
+
+def cmd_api(args):
+    """This machine's Claude Code or Codex runs on an API key: count its usage against a dollar budget."""
+    from . import pools, sync
+    from .store import Store, load_config, save_config
+    cfg = load_config()
+    billing = cfg.setdefault("billing", {})
+    tool = pools.TOOLS[args.tool]
+    with Store() as s:
+        if args.off:
+            billing.pop(args.tool, None)
+            pools.set_budget(s, args.tool, None, None)
+            print(f"{tool} on this machine counts as a subscription again; its API budget is removed")
+        else:
+            billing[args.tool] = "api"
+            if args.budget is not None:
+                pools.set_budget(s, args.tool, args.budget, args.per)
+            b = pools.budgets(s).get(args.tool)
+            print(f"{tool} on this machine is on an API key: its usage from now on counts against "
+                  + (f"a budget of ${b['usd']:,.0f} a {b['period']}" if b else
+                     "no budget yet (add one with --budget USD --per day|week|month)"))
+            if args.tool == "codex":
+                print("Codex models have no built-in price: add each with `savetokens price MODEL INPUT OUTPUT`"
+                      " ($ per million tokens), or its usage can't count against the budget.")
+        save_config(cfg)
+        if sync.connected(cfg):
+            try:
+                sync.push(s, cfg)
+            except Exception as e:
+                print(f"couldn't reach the server ({e}); it's sent on the next sync")
+    return 0
+
+
+def cmd_price(args):
+    """A price for a model savetokens doesn't know, and every captured request on it priced again."""
+    from . import pricing
+    from .store import Store, load_config, save_config
+    cfg = load_config()
+    prices = cfg.setdefault("prices", {})
+    prices[args.model] = [args.input, args.output] + ([args.cache_read] if args.cache_read is not None else [])
+    save_config(cfg)
+    pricing.reset()
+    n = 0
+    with Store() as s:
+        rows = s.conn.execute("SELECT rowid, model, input, output, cache_read, cache_write_5m, cache_write_1h"
+                              " FROM usage WHERE cost_usd IS NULL AND model IS NOT NULL").fetchall()
+        for r in rows:
+            c = pricing.cost(r["model"], input=r["input"], output=r["output"], cache_read=r["cache_read"],
+                             cache_write_5m=r["cache_write_5m"], cache_write_1h=r["cache_write_1h"])
+            if c is not None:
+                s.conn.execute("UPDATE usage SET cost_usd = ? WHERE rowid = ?", (c, r["rowid"]))
+                n += 1
+        s.conn.commit()
+    print(f"{args.model}: ${args.input:g} in, ${args.output:g} out per million tokens; {n:,} requests priced")
     return 0
 
 
@@ -325,6 +385,18 @@ def main(argv=None):
     s.add_argument("--on", action="store_true")
     s.add_argument("--off", action="store_true")
     s.set_defaults(fn=cmd_ephemeris)
+    s = sub.add_parser("api", help="Claude Code or Codex on this machine runs on an API key: set a $ budget")
+    s.add_argument("tool", choices=["claude-code", "codex"])
+    s.add_argument("--budget", type=float, metavar="USD")
+    s.add_argument("--per", choices=["day", "week", "month"], default="month")
+    s.add_argument("--off", action="store_true", help="back to a subscription")
+    s.set_defaults(fn=cmd_api)
+    s = sub.add_parser("price", help="the API price of a model savetokens doesn't know ($ per million tokens)")
+    s.add_argument("model")
+    s.add_argument("input", type=float)
+    s.add_argument("output", type=float)
+    s.add_argument("cache_read", type=float, nargs="?")
+    s.set_defaults(fn=cmd_price)
     s = sub.add_parser("connect", help="sync with a savetokens server, so all machines and accounts add up")
     s.add_argument("url", nargs="?")
     s.add_argument("--token")

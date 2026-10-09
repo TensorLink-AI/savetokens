@@ -86,7 +86,8 @@ def test_projection_jump_is_flagged(store):
     rows.append(("a1", "seven_day", "baseline", T0 - 0.5 * H, T0 + 100 * H, 20, 50, 70, 90, 0.2, None))
     store.conn.executemany("INSERT INTO outlook VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
     _flat_paths(store, "a1", 0.1, hours=120)
-    flags = alerts.projection_flags(store, T0, "a1")
+    o = {x["name"]: x for x in forecast.outlook(store, T0)}["seven_day"]
+    flags = alerts.projection_flags(store, T0, o)
     assert flags and flags[0]["stage"].startswith("jump") and "jumped to 70%" in flags[0]["message"]
 
 

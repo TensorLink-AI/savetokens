@@ -1,6 +1,7 @@
 """The savetokens server: one place where every machine's usage and every account's meter add up.
 
   POST /v1/push    a machine's new rows (usage, meter, hits)
+  POST /v1/settings   API budgets (the newest setting wins)
   GET  /v1/pull    other machines' meter readings and hits, and the newest forecast paths
   GET  /v1/status     the current outlook per limit (JSON)
   GET  /v1/dashboard  everything the dashboard draws, across every machine
@@ -24,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import forecast, maintain
+from .pools import PERIODS
 from .store import SYNCED, Store
 
 MAX_BODY = 16 * 1024 * 1024
@@ -96,23 +98,43 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             user = self._user()
             if not user:
                 return self._send(401, {"error": "unknown token"})
-            if urllib.parse.urlparse(self.path).path != "/v1/push":
+            path = urllib.parse.urlparse(self.path).path
+            if path not in ("/v1/push", "/v1/settings"):
                 return self._send(404, {"error": "not found"})
             n = int(self.headers.get("Content-Length") or 0)
             if n > MAX_BODY:
                 return self._send(413, {"error": "too large"})
             try:
                 body = json.loads(self.rfile.read(n))
+                if path == "/v1/settings":
+                    return self._settings(user, body)
                 table, cols, rows = body["table"], body["cols"], body["rows"]
             except (ValueError, KeyError, TypeError):
                 return self._send(400, {"error": "bad body"})
-            if table not in SYNCED or cols != SYNCED[table] or any(len(r) != len(cols) for r in rows):
+            # an older client sends fewer columns (no billing): any known subset with the key columns is fine
+            if (table not in SYNCED or not set(cols) <= set(SYNCED[table]) or len(set(cols)) != len(cols)
+                    or not {"machine", "ts"} <= set(cols) or any(len(r) != len(cols) for r in rows)):
                 return self._send(400, {"error": "unexpected table or columns"})
             with users.store(user) as s:
                 added = s.insert(table, cols, rows)
             with lock:
                 dirty.add(user)
             self._send(200, {"added": added})
+
+        def _settings(self, user, body):
+            budgets, at = body["budgets"], float(body["at"])
+            if not isinstance(budgets, dict) or not all(
+                    isinstance(b, dict) and isinstance(b.get("usd"), (int, float)) and b.get("period") in PERIODS
+                    for b in budgets.values()):
+                return self._send(400, {"error": "bad budgets"})
+            with users.store(user) as s:
+                if at > (s.meta("budgets_at") or 0):
+                    s.set_meta("budgets", {h: {"usd": float(b["usd"]), "period": b["period"],
+                                               "tz": int(b.get("tz") or 0)} for h, b in budgets.items()})
+                    s.set_meta("budgets_at", at)
+            with lock:
+                dirty.add(user)
+            self._send(200, {"ok": True})
 
         def do_GET(self):
             if self.path == "/healthz":
@@ -135,6 +157,7 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     out["forecast_made_at"] = s.meta("forecast_made_at")
                     out["ephemeris_last"] = s.meta("ephemeris_last")
                     out["track_record"] = s.meta("track_record")
+                    out["budgets"], out["budgets_at"] = s.meta("budgets"), s.meta("budgets_at")
                     return self._send(200, out)
                 if url.path == "/v1/dashboard":
                     from . import dashboard

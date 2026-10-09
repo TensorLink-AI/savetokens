@@ -1,8 +1,9 @@
-"""Hourly upkeep outside Claude Code: a user crontab line, added and removed with consent.
+"""Upkeep outside Claude Code: a user crontab line every 10 minutes, added and removed with consent.
 
 The statusline and hooks already trigger upkeep while Claude Code runs; this keeps
-scoring and forecasts current when it doesn't (and covers headless `claude -p` runs,
-which have no statusline).
+scoring and forecasts current when it doesn't, reads Codex sessions (Codex has no
+hooks), and covers headless `claude -p` runs, which have no statusline. Forecasts
+still only refresh on their own cadence.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ def available() -> bool:
 
 
 def line(exe: str) -> str:
-    return f"17 * * * * {exe} maintain --quiet >/dev/null 2>&1 {MARK}"
+    return f"*/10 * * * * {exe} maintain --quiet >/dev/null 2>&1 {MARK}"
 
 
 def _read(run=subprocess.run) -> str:

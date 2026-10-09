@@ -81,9 +81,10 @@ const ifStopped = (x: NonNullable<Snapshot['sessions']>[number]) => {
   if (!x.running) return 'not running'
   if (!w) return 'no forecast yet'
   if (w.eta !== null) return `out ${clock(w.eta)} → ${w.eta_if_stopped !== null ? clock(w.eta_if_stopped) : 'after reset'}`
-  return `saves ${w.adds.toFixed(1)}%`
+  return `saves ${w.adds.toFixed(1)}%${w.short ? ` of ${w.short}` : ''}`
 }
 
+const TOOLS: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex' }
 const STAGE: Record<string, string> = { heads_up: 'heads-up', act: 'act now', last_call: 'last call' }
 const STAGE_COLOR: Record<string, string> = { heads_up: 'yellow', act: 'red', last_call: 'red' }
 
@@ -128,8 +129,11 @@ export const register: Register = on => {
     }
     const head = s.headline ?? { level: 'none', text: '' }
     const headColor = head.level === 'bad' ? 'red' : head.level === 'warn' ? 'yellow' : head.level === 'ok' ? 'green' : undefined
-    const bw = Math.max(10, Math.min(30, cols - 34))
+    const bw = Math.max(10, Math.min(30, cols - 36))
+    const dollars = s.demand.unit === '$'
+    const tools = [...new Set(s.models.map(m => m.harness ?? 'claude-code'))]
     const sessions = s.sessions ?? []
+    const many = new Set(sessions.filter(x => x.session).map(x => x.pool)).size > 1
     const ch = chartRows(s.demand, cols)
     const used = s.demand.past.reduce((a, b) => a + b, 0)
     const ahead = s.demand.next.reduce((a, b) => a + b, 0)
@@ -150,26 +154,31 @@ export const register: Register = on => {
         {s.limits.map(l => (
           <Box flexDirection="column">
             <Text wrap="truncate-end">
-              {'  ' + (l.name === 'five_hour' ? '5-hour' : 'weekly').padEnd(7)}
+              {'  ' + (l.short ?? (l.name === 'five_hour' ? '5-hour' : 'weekly')).padEnd(9)}
               <Text color={l.stage ? STAGE_COLOR[l.stage] : 'green'}>{bar(l, bw)}</Text>
               <Text bold> {`${Math.round(l.used)}%`.padStart(4)}</Text>
               <Text dimColor> now</Text>
             </Text>
             <Text dimColor wrap="truncate-end">
-              {'         '}
+              {'           '}
+              {l.kind === 'api' && l.spent_usd !== undefined && l.budget_usd !== undefined
+                ? `$${l.spent_usd.toFixed(0)} of $${l.budget_usd.toFixed(0)} ${l.per ?? ''} · ` : ''}
               {l.p50 !== null ? `likely ${Math.round(l.p50)}% (${Math.round(l.p10 ?? 0)}–${Math.round(l.p90 ?? 0)}%) · ` : ''}
-              resets {clock(l.resets)}
+              {l.kind === 'api' ? 'ends' : 'resets'} {clock(l.resets)}
             </Text>
           </Box>
         ))}
-        {s.limits.length > 0 && <Text dimColor>{'         '}█ used ▒ likely by reset ░ could reach</Text>}
+        {s.limits.length > 0 && <Text dimColor>{'           '}█ used ▒ likely by reset ░ could reach</Text>}
         <Text> </Text>
 
         {(s.demand.past.some(v => v > 0) || s.demand.next.length > 0) && (
           <Box flexDirection="column">
             <Text>
               <Text bold>USAGE PER HOUR </Text>
-              <Text dimColor>last {s.demand.past.length}h ┊ next {s.demand.next.length}h</Text>
+              <Text dimColor>
+                {(s.pools?.length ?? 0) > 1 && s.demand.label ? `${s.demand.label.replace(/ (API \$|% of weekly limit)$/, '')} · ` : ''}
+                last {s.demand.past.length}h ┊ next {s.demand.next.length}h
+              </Text>
             </Text>
             <Text dimColor wrap="truncate-end">{ch.top}</Text>
             {ch.rows.map(([p, f]) => (
@@ -182,7 +191,8 @@ export const register: Register = on => {
             ))}
             <Text dimColor wrap="truncate-end">{ch.bottom}</Text>
             <Text dimColor wrap="wrap">
-              used {used.toFixed(1)}% of the week · ~{ahead.toFixed(1)}% to come · █ used ▒ likely ░ could reach
+              {dollars ? `used $${used.toFixed(2)} · ~$${ahead.toFixed(2)} to come`
+                : `used ${used.toFixed(1)}% of the week · ~${ahead.toFixed(1)}% to come`} · █ used ▒ likely ░ could reach
             </Text>
             <Text> </Text>
           </Box>
@@ -200,24 +210,25 @@ export const register: Register = on => {
             {sessions.map(x => (
               <Text wrap="truncate-end" dimColor={!x.running}>
                 <Text color={x.running ? 'green' : undefined}>{x.running ? '●' : '○'}</Text>
-                {' ' + (x.project ?? x.session ?? '?').slice(0, 14).padEnd(15)}
+                {' ' + ((many && x.harness === 'codex' ? 'cx ' : '') + (x.project ?? x.session ?? '?')).slice(0, 14).padEnd(15)}
                 {(x.pct_week !== null ? `${x.pct_week.toFixed(1)}%` : '–').padStart(6)}
                 {(x.running && x.pace ? `${x.pace.toFixed(1)}%` : '–').padStart(9)}
                 {x.session ? '   ' + ifStopped(x) : ''}
               </Text>
             ))}
-            <Text dimColor>today and last hr: % of your weekly limit</Text>
+            <Text dimColor>today and last hr: % of each session's weekly limit{many ? ' (or API budget); cx = Codex' : ''}</Text>
             <Text> </Text>
           </Box>
         )}
 
-        {s.models.length > 0 && (
+        {tools.map(tool => (
           <Text wrap="wrap">
-            <Text bold>MODELS </Text>
-            {s.models.slice(0, 3).map(m => `${m.model.replace('claude-', '')} ${Math.round(m.share * 100)}%`
-              + (m.subagents >= 0.05 ? ` (${Math.round(m.subagents * 100)}% subagents)` : '')).join(' · ')}
+            <Text bold>{tools.length > 1 ? `MODELS ${TOOLS[tool] ?? tool} ` : 'MODELS '}</Text>
+            {s.models.filter(m => (m.harness ?? 'claude-code') === tool).slice(0, 3)
+              .map(m => `${m.model.replace('claude-', '')} ${Math.round(m.share * 100)}%`
+                + (m.subagents >= 0.05 ? ` (${Math.round(m.subagents * 100)}% subagents)` : '')).join(' · ')}
           </Text>
-        )}
+        ))}
         {s.machines.length > 1 && <Text dimColor>{s.machines.length} machines this week</Text>}
         {s.alerts.slice(0, 1).map(a => (
           <Text wrap="wrap">

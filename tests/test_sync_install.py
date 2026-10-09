@@ -2,26 +2,13 @@
 from __future__ import annotations
 
 import json
-import threading
-from http.server import ThreadingHTTPServer
 
 import pytest
 
-from savetokens import forecast, hooks, install, maintain, server, sync
+from savetokens import forecast, hooks, install, maintain, pools, sync
 from savetokens.store import Store
 
 from conftest import H, T0, week_of_readings
-
-
-@pytest.fixture
-def running(tmp_path):
-    users = server.Users(tmp_path / "srv")
-    token = users.add("chris")
-    dirty, lock = set(), threading.Lock()
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(users, dirty, lock))
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    yield users, token, f"http://127.0.0.1:{httpd.server_address[1]}"
-    httpd.shutdown()
 
 
 def test_two_machines_add_up_on_the_server(running, tmp_path):
@@ -83,3 +70,26 @@ def test_prompt_hook_shows_new_alerts_once(store):
     store.conn.commit()
     assert hooks.handle("UserPromptSubmit", {}, store) == {"systemMessage": "weekly limit: out soon"}
     assert hooks.handle("UserPromptSubmit", {}, store) is None
+
+
+def test_install_gives_codex_the_skill_when_codex_is_here(homes):
+    (homes / "codex").mkdir()
+    assert install.install(yes=True, no_ephemeris=True, cron=False, out=lambda *_: None)
+    assert install.codex_skill_path().read_text().startswith("---\nname: savetokens")
+    install.uninstall(out=lambda *_: None)
+    assert not install.codex_skill_path().exists()
+
+
+def test_api_mode_is_per_machine_and_tags_new_usage(homes, transcript):
+    from savetokens import capture, cli
+    from savetokens.store import Store
+    assert cli.main(["api", "claude-code", "--budget", "40", "--per", "week"]) == 0
+    transcript().turn(T0)
+    with Store() as s:
+        capture.backfill(s)
+        assert s.conn.execute("SELECT billing FROM usage").fetchone()[0] == "api"
+        assert [p.id for p in pools.pools(s, T0)] == ["claude-code:api"]
+    assert cli.main(["api", "claude-code", "--off"]) == 0
+    with Store() as s:
+        assert pools.budgets(s) == {}
+

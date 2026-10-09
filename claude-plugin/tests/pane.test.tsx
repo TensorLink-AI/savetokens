@@ -75,3 +75,29 @@ test('a failing command shows why instead of a blank pane', async ($, on) => {
   })
   expect(await ui.find({ type: 'Text', text: /command not found/ })).toBeDefined()
 })
+
+test('Codex and an API budget get their own rows and dollars', async ($, on) => {
+  const snap = {
+    ...SNAP,
+    limits: [...SNAP.limits,
+      { name: 'seven_day', label: 'Codex weekly limit', short: 'Codex wk', pool: 'codex', kind: 'subscription', used: 10,
+        resets: NOW + 86400, p10: 30, p50: 60, p90: 90, p_hit: 0.1, eta: null, stage: null },
+      { name: 'budget', label: 'Claude Code API budget', short: 'Claude $', pool: 'claude-code:api', kind: 'api', used: 62,
+        spent_usd: 124, budget_usd: 200, per: 'a month', resets: NOW + 9 * 86400, p10: 80, p50: 95, p90: 130,
+        p_hit: 0.3, eta: null, stage: null }],
+    pools: [{ id: 'claude-code', tool: 'Claude Code', kind: 'subscription' }, { id: 'codex', tool: 'Codex', kind: 'subscription' }],
+    models: [...SNAP.models, { model: 'gpt-6-astra', harness: 'codex', share: 1, subagents: 0 }],
+    sessions: [...SNAP.sessions.slice(0, 1).map(x => ({ ...x, pool: 'claude-code', harness: 'claude-code' })),
+      { session: 'c0ffee00', project: 'api', harness: 'codex', pool: 'codex', share: 1, pct_week: 4.1, pace: 0.4, running: true }],
+  }
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: JSON.stringify(snap), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  await $.command.run({ command: 'savetokens', args: '' } as never)
+  const ui = await $.ui.mount({ plugin: 'savetokens', surface: 'terminal', component: 'Pane', requestId: 'savetokens',
+    props: { title: 'savetokens', isFocused: false, bodyColumns: 80 } as never })
+  expect(await ui.find({ type: 'Text', text: /Codex wk .*10%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\$124 of \$200 a month .*ends/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /MODELS Codex .*gpt-6-astra 100%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /cx api/ })).toBeDefined()
+  await ui.unmount()
+})

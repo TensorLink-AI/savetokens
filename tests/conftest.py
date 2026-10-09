@@ -26,7 +26,26 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setattr(ephemeris, "_call", no_network)
     monkeypatch.setenv("SAVETOKENS_HOME", str(tmp_path / "st"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    from savetokens import pricing
+    pricing.reset()
     return tmp_path
+
+
+@pytest.fixture
+def running(tmp_path):
+    """A sync server on a free port: (users, a user's token, its URL)."""
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    from savetokens import server
+    users = server.Users(tmp_path / "srv")
+    token = users.add("chris")
+    dirty, lock = set(), threading.Lock()
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(users, dirty, lock))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield users, token, f"http://127.0.0.1:{httpd.server_address[1]}"
+    httpd.shutdown()
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@
 
 Counts and metadata only: never prompts, replies, tool output or file contents.
 
-  usage      one row per model request: tokens and API-equivalent dollars
+  usage      one row per model request (Claude Code or Codex): tokens, dollars, subscription or API
   meter      Claude's own limit readings (% used, reset time) per account and limit
   hits       limit errors seen in transcripts: the times you actually ran out
   paths      the latest forecast sample paths of hourly demand
@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 2   # v2: usage.project (kept on the machine, never synced)
+SCHEMA_VERSION = 3   # v2: usage.project (kept on the machine, never synced); v3: usage.billing
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     machine TEXT NOT NULL,
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS usage (
     cost_usd REAL,
     account TEXT,
     project TEXT,                   -- the session's folder name; this machine only, never synced
+    billing TEXT,                   -- 'api' when paid by API key; NULL for a subscription
     UNIQUE (machine, harness, request_id)
 );
 CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
@@ -126,6 +127,7 @@ class Usage:
     account: str | None = None
     machine: str = ""
     project: str | None = None
+    billing: str | None = None    # "api" when paid by API key
 
 
 USAGE_COLS = [f.name for f in fields(Usage)]
@@ -149,6 +151,8 @@ class Store:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN project TEXT")
                 self.conn.execute("CREATE INDEX IF NOT EXISTS usage_session ON usage(session_id, ts)")
                 self.conn.execute("DELETE FROM offsets")
+            if version in (1, 2):
+                self.conn.execute("ALTER TABLE usage ADD COLUMN billing TEXT")
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             self.conn.commit()
 

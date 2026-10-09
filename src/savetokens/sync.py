@@ -1,8 +1,8 @@
 """Sync with a savetokens server, so every machine and account adds up to one forecast.
 
 Each machine pushes what it captured (usage counts, meter readings, limit hits)
-and pulls back the other machines' meter readings and hits, plus the server's
-forecast paths. Alerts are then worked out locally from the same paths and the
+and any API budget set on it, and pulls back the other machines' meter readings
+and hits, the budgets, and the server's forecast paths. Alerts are then worked out locally from the same paths and the
 freshest reading, so the statusline needs no network. Nothing else is sent:
 no prompts, replies, file names or projects.
 """
@@ -58,6 +58,10 @@ def push(store: Store, cfg) -> int:
             cursor = rows[-1][0]
             store.set_meta(f"pushed:{table}", cursor)
             sent += len(rows)
+    at = store.meta("budgets_at")
+    if at and at > (store.meta("pushed:budgets") or 0):
+        _call(cfg, "/v1/settings", {"budgets": store.meta("budgets") or {}, "at": at})
+        store.set_meta("pushed:budgets", at)
     return sent
 
 
@@ -84,4 +88,8 @@ def pull(store: Store, cfg) -> dict:
     for key in ("ephemeris_last", "track_record"):
         if got.get(key):
             store.set_meta(key, got[key])
+    if got.get("budgets_at") and got["budgets_at"] > (store.meta("budgets_at") or 0):   # set on another machine
+        store.set_meta("budgets", got.get("budgets") or {})
+        store.set_meta("budgets_at", got["budgets_at"])
+        store.set_meta("pushed:budgets", got["budgets_at"])
     return {"meter": len((got.get("meter") or {}).get("rows", [])), "paths": len(got.get("paths", []))}

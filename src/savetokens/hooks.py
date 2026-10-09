@@ -13,7 +13,7 @@ import time
 from . import alerts, capture, forecast, maintain
 from .store import Store, load_config
 
-SHORT = {"five_hour": "5h", "seven_day": "wk"}
+SHORT = {"five_hour": "5h", "seven_day": "wk", "budget": "$"}
 
 
 def _account(store):
@@ -29,6 +29,8 @@ def segment(store, now=None) -> str:
     now = now or time.time()
     parts = []
     for o in forecast.outlook(store, now):
+        if o["harness"] != capture.HARNESS:   # Claude Code's statusline shows Claude Code's limits
+            continue
         text = f"{SHORT[o['name']]} {o['used']:.0f}%"
         st = alerts.stage(o, now)
         if st and o.get("eta"):

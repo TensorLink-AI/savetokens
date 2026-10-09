@@ -1,4 +1,5 @@
-"""Pace alerts: when, at this pace, you'll run out, in three stages per limit window.
+"""Pace alerts: when, at this pace, you'll run out, in three stages per limit window (each pool's limits:
+Claude Code's and Codex's plans, and API budgets).
 
   heads_up   more likely than not to reach the limit before it resets
   act        80% likely, or under an hour to go at this pace
@@ -58,6 +59,8 @@ def stage(o, now):
 
 def message(o, st, now):
     head = f"{o['label']}: {o['used']:.0f}% used"
+    if o.get("kind") == "api":
+        head += f" (${o['spent_usd']:,.2f} of ${o['budget_usd']:,.0f} {o['per']})"
     if o.get("eta"):
         pace = (f"at this pace you'll reach it around {when(o['eta'], now)} (in {span(o['eta'] - now)}),"
                 f" {span(o['resets'] - o['eta'])} before it resets at {when(o['resets'], now)}")
@@ -71,11 +74,11 @@ def message(o, st, now):
 
 def best_pause(store, now, o) -> str:
     """' Pausing synth would ...': the running session whose pause moves the run-out time furthest."""
-    from . import dashboard, meter
+    from . import dashboard
     try:
-        rate = meter.rate(store)
-        sessions = [x for x in dashboard.top_sessions(store, now, rate)
-                    if (x.get("if_stopped") or {}).get("limit") == o["name"] and x["if_stopped"]["eta"]]
+        sessions = [x for x in dashboard.top_sessions(store, now)
+                    if (x.get("if_stopped") or {}).get("limit") == o["name"]
+                    and x["if_stopped"].get("pool") == o.get("pool") and x["if_stopped"]["eta"]]
     except Exception:
         return ""
     if not sessions:
@@ -89,11 +92,11 @@ def best_pause(store, now, o) -> str:
     return f" Pausing {name} would buy about {span(gain)}." if gain >= 1800 else ""
 
 
-def projection_flags(store, now, account, name="seven_day"):
-    """Jump and volatility flags on the recorded projection for the open window."""
-    o = {x["name"]: x for x in forecast.outlook(store, now)}.get(name)
+def projection_flags(store, now, o):
+    """Jump and volatility flags on the recorded projection for an outlook's open window."""
     if not o or not o["source"]:
         return []
+    account, name = o["account"], o["name"]
     rows = [tuple(r) for r in store.conn.execute(
         "SELECT made_at, p50 FROM outlook WHERE account = ? AND name = ? AND source = ? AND window_end = ?"
         " AND made_at <= ? AND p50 IS NOT NULL ORDER BY made_at", (account or "", name, o["source"], o["resets"], now))]
@@ -128,27 +131,27 @@ def check(store, now=None) -> list[dict]:
     now = now or time.time()
     found = []
     looks = forecast.outlook(store, now)
-    acct = looks[0]["account"] if looks else None
     for o in looks:
         st = stage(o, now)
+        if o["name"] != "five_hour":     # the weekly limit and budgets: watch how the projection moves
+            found += [{**f, "account": o["account"]} for f in projection_flags(store, now, o)]
         if not st:
             continue
         fired = {r[0] for r in store.conn.execute(
             "SELECT stage FROM alerts WHERE account = ? AND name = ? AND window_end = ?",
-            (acct or "", o["name"], o["resets"]))}
+            (o["account"] or "", o["name"], o["resets"]))}
         if any(STAGES.index(f) >= STAGES.index(st) for f in fired if f in STAGES):
             continue
         text = message(o, st, now)
         if st in ("act", "last_call"):
             text += best_pause(store, now, o)
-        found.append({"name": o["name"], "window_end": o["resets"], "stage": st, "message": text})
-    if looks:
-        found += projection_flags(store, now, acct)
+        found.append({"account": o["account"], "name": o["name"], "window_end": o["resets"], "stage": st,
+                      "message": text})
     new = []
     for a in found:
         cur = store.conn.execute("INSERT OR IGNORE INTO alerts (account, ts, name, window_end, stage, message)"
-                                 " VALUES (?,?,?,?,?,?)", (acct or "", now, a["name"], a["window_end"], a["stage"],
-                                                           a["message"]))
+                                 " VALUES (?,?,?,?,?,?)", (a["account"] or "", now, a["name"], a["window_end"],
+                                                           a["stage"], a["message"]))
         if cur.rowcount:
             new.append(a)
     store.conn.commit()

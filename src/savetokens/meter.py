@@ -1,15 +1,19 @@
-"""The meter: Claude's own limit readings, turned into hourly demand.
+"""The meter: a subscription's own limit readings, turned into hourly demand.
 
-Claude reports each limit as % used and a reset time. That counts usage from
-every device, claude.ai and every account's sessions, so it is the truth;
-captured usage only says where it went. Demand is the hourly rise in the weekly
-meter, in % of the weekly limit:
+Claude Code (statusline) and Codex (session logs) report each limit as % used
+and a reset time. That counts usage from every device and session on the plan,
+so it is the truth; captured usage only says where it went. Demand is the hourly
+rise in the weekly meter, in % of the weekly limit, per tool (`harness`):
 
   - a rise between two readings is spread over the hours between them, in
-    proportion to captured dollars (evenly when nothing was captured: usage
+    proportion to captured usage (evenly when nothing was captured: usage
     elsewhere);
-  - before the first reading, captured dollars are converted at the rate the
+  - before the first reading, captured usage is converted at the rate the
     meter shows (% per dollar), so history starts with the first transcript.
+
+Captured usage is weighed in API dollars where the model has a price, else in
+millions of tokens (Codex models): see WEIGHT. API-billed usage is left out;
+it has no meter and goes to its own budget.
 
 Demand sums over accounts, so switching accounts doesn't look like a drop: it
 is how much you use, whichever account carries it. The 5-hour meter moves
@@ -25,21 +29,25 @@ WEEK = 7 * 86400
 LIMITS = {"five_hour": 5 * HOUR, "seven_day": WEEK}
 DEFAULT_RATIO = 4.0      # 5-hour % per weekly %, until readings say otherwise
 HISTORY_HOURS = 28 * 24
+CLAUDE = "claude-code"
+# what a request weighs, for spreading meter rises: its API price, else millions of tokens
+WEIGHT = ("COALESCE(cost_usd, (input + output + cache_write_5m + cache_write_1h + 0.1 * cache_read) / 1e6)")
+SUBSCRIPTION = "billing IS NULL"
 
 
 def hour_floor(ts):
     return int(ts // HOUR) * HOUR
 
 
-def readings(store, name, since=0, until=None, account=None):
+def readings(store, name, since=0, until=None, account=None, harness=CLAUDE):
     """[(ts, account, pct, resets)] oldest first, each pct the highest seen so far in its window.
 
     Every open session reports the meter as it last saw it, so an idle session keeps sending an older,
     lower value. The meter never falls within a window, so a lower reading is stale: it is raised to
     the window's running maximum instead of looking like the meter went down and back up.
     """
-    q = "SELECT ts, account, pct, resets FROM meter WHERE name = ? AND ts >= ? AND resets IS NOT NULL"
-    p = [name, since]
+    q = "SELECT ts, account, pct, resets FROM meter WHERE harness = ? AND name = ? AND ts >= ? AND resets IS NOT NULL"
+    p = [harness, name, since]
     if until is not None:
         q += " AND ts < ?"
         p.append(until)
@@ -54,11 +62,11 @@ def readings(store, name, since=0, until=None, account=None):
     return out
 
 
-def latest(store, name, now, account=None):
+def latest(store, name, now, account=None, harness=CLAUDE):
     """The open window of a limit, from its newest reading: {ts, account, pct, resets}, pct being the
     highest reading in that window (lower ones are stale, from idle sessions)."""
-    q = "SELECT ts, account, pct, resets FROM meter WHERE name = ? AND resets > ? AND ts <= ?"
-    p = [name, now, now]
+    q = "SELECT ts, account, pct, resets FROM meter WHERE harness = ? AND name = ? AND resets > ? AND ts <= ?"
+    p = [harness, name, now, now]
     if account is not None:
         q += " AND account IS ?"
         p.append(account)
@@ -67,19 +75,25 @@ def latest(store, name, now, account=None):
         return None
     out = dict(r)
     out["pct"] = store.conn.execute(
-        "SELECT MAX(pct) FROM meter WHERE name = ? AND account IS ? AND ABS(resets - ?) < 1800 AND ts <= ?",
-        (name, r["account"], r["resets"], now)).fetchone()[0]
+        "SELECT MAX(pct) FROM meter WHERE harness = ? AND name = ? AND account IS ? AND ABS(resets - ?) < 1800"
+        " AND ts <= ?", (harness, name, r["account"], r["resets"], now)).fetchone()[0]
     return out
 
 
-def active_account(store, now=None):
-    q = "SELECT account FROM meter" + (" WHERE ts <= ?" if now else "") + " ORDER BY ts DESC LIMIT 1"
-    r = store.conn.execute(q, (now,) if now else ()).fetchone()
+def active_account(store, now=None, harness=CLAUDE):
+    q = "SELECT account FROM meter WHERE harness = ?" + (" AND ts <= ?" if now else "") + " ORDER BY ts DESC LIMIT 1"
+    r = store.conn.execute(q, (harness, now) if now else (harness,)).fetchone()
     return r[0] if r else None
 
 
-def accounts(store):
-    return [r[0] for r in store.conn.execute("SELECT DISTINCT account FROM meter")]
+def accounts(store, harness=CLAUDE):
+    return [r[0] for r in store.conn.execute("SELECT DISTINCT account FROM meter WHERE harness = ?", (harness,))]
+
+
+def harnesses(store, since=0):
+    """Tools with meter readings since `since`: each has a subscription pool."""
+    return [r[0] for r in store.conn.execute("SELECT DISTINCT harness FROM meter WHERE ts >= ? ORDER BY harness",
+                                             (since,))]
 
 
 def tier_multiple(tier) -> float:
@@ -88,31 +102,36 @@ def tier_multiple(tier) -> float:
 
 
 def _rises(rows):
-    """[(t0, t1, rise)] between consecutive readings of each account's windows."""
+    """[(t0, t1, rise)] between readings of the same window, per account.
+
+    Each window is followed on its own, so readings from two windows that interleave (two accounts
+    that can't be told apart, as with Codex) don't look like a window opening again and again."""
     by_acct = defaultdict(list)
     for ts, acct, pct, resets in rows:
         by_acct[acct].append((ts, pct, resets))
     out = []
     for seq in by_acct.values():
-        prev = None
+        last, prev_ts, first = {}, None, True
         for ts, pct, resets in seq:
             window = round(resets / HOUR)
-            if prev is None:
-                pass
-            elif round(prev[2] / HOUR) == window:
-                if pct > prev[1]:
-                    out.append((prev[0], ts, pct - prev[1]))
-            elif pct > 0:   # a new window: its usage so far happened since it opened, or since the last reading
-                out.append((max(resets - WEEK, prev[0]), ts, pct))
-            prev = (ts, pct, resets)
+            if window in last:
+                if pct > last[window][1]:
+                    out.append((last[window][0], ts, pct - last[window][1]))
+            elif not first and pct > 0:   # a new window: its usage so far happened since it opened, or since the last reading
+                out.append((max(resets - WEEK, prev_ts), ts, pct))
+            if window not in last or pct >= last[window][1]:
+                last[window] = (ts, pct)
+            prev_ts, first = ts, False
     return out
 
 
-def _hourly_usd(store, since, until):
+def _hourly_usd(store, since, until, harness=CLAUDE):
+    """Captured subscription usage per hour, by WEIGHT."""
     out = defaultdict(float)
-    for ts, c in store.conn.execute("SELECT ts, cost_usd FROM usage WHERE ts >= ? AND ts < ? AND cost_usd > 0",
-                                    (since, until)):
-        out[hour_floor(ts)] += c
+    for ts, c in store.conn.execute(f"SELECT ts, {WEIGHT} FROM usage WHERE harness = ? AND {SUBSCRIPTION}"
+                                    f" AND ts >= ? AND ts < ?", (harness, since, until)):
+        if c and c > 0:
+            out[hour_floor(ts)] += c
     return out
 
 
@@ -129,15 +148,15 @@ def _spread(t0, t1, amount, usd, into):
         into[h] += amount * x / total
 
 
-def rate(store, until=None, gap=2 * HOUR) -> float | None:
-    """% of the weekly limit per captured dollar, where both are known.
+def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE) -> float | None:
+    """% of the weekly limit per captured dollar (per WEIGHT unit), where both are known.
 
     Measured over runs of readings (same account and window, no gap over `gap`), so whole-%
     steps and the lag between a request and its reading average out.
     """
     import bisect
     runs, cur, key = [], None, None
-    for ts, acct, pct, resets in readings(store, "seven_day", until=until):
+    for ts, acct, pct, resets in readings(store, "seven_day", until=until, harness=harness):
         k = (acct, round(resets / HOUR))
         if cur and k == key and ts - cur[1] <= gap:
             cur[1], cur[3] = ts, pct
@@ -150,8 +169,9 @@ def rate(store, until=None, gap=2 * HOUR) -> float | None:
     runs = [r for r in runs if r[3] > r[2]]
     if not runs:
         return None
-    rows = store.conn.execute("SELECT ts, cost_usd FROM usage WHERE ts > ? AND ts <= ? AND cost_usd > 0 ORDER BY ts",
-                              (min(r[0] for r in runs), max(r[1] for r in runs))).fetchall()
+    rows = store.conn.execute(f"SELECT ts, {WEIGHT} AS w FROM usage WHERE harness = ? AND {SUBSCRIPTION}"
+                              f" AND ts > ? AND ts <= ? AND {WEIGHT} > 0 ORDER BY ts",
+                              (harness, min(r[0] for r in runs), max(r[1] for r in runs))).fetchall()
     ts, cum = [r[0] for r in rows], [0.0]
     for r in rows:
         cum.append(cum[-1] + r[1])
@@ -164,10 +184,12 @@ def rate(store, until=None, gap=2 * HOUR) -> float | None:
     return pct / dollars if dollars > 0 else None
 
 
-def five_hour_ratio(store, until=None) -> float:
+def five_hour_ratio(store, until=None, harness=CLAUDE) -> float:
     """How fast the 5-hour meter moves per weekly %: from readings taken together."""
-    five = {round(ts): (pct, resets) for ts, _, pct, resets in readings(store, "five_hour", until=until)}
-    week = [(round(ts), pct, resets) for ts, _, pct, resets in readings(store, "seven_day", until=until)]
+    five = {round(ts): (pct, resets) for ts, _, pct, resets in readings(store, "five_hour", until=until,
+                                                                        harness=harness)}
+    week = [(round(ts), pct, resets) for ts, _, pct, resets in readings(store, "seven_day", until=until,
+                                                                        harness=harness)]
     a = b = 0.0
     prev = None
     for ts, pct, resets in week:
@@ -181,17 +203,17 @@ def five_hour_ratio(store, until=None) -> float:
     return a / b if b >= 5 and a > 0 else DEFAULT_RATIO
 
 
-def demand(store, now, hours=HISTORY_HOURS):
+def demand(store, now, hours=HISTORY_HOURS, harness=CLAUDE):
     """Complete hours before now: [(hour, % of the weekly limit used)], oldest first, plus the $ rate used."""
     end = hour_floor(now)
     start = end - hours * HOUR
-    rows = readings(store, "seven_day", until=end)
+    rows = readings(store, "seven_day", until=end, harness=harness)
     rises = [r for r in _rises(rows) if r[1] > start]
-    usd = _hourly_usd(store, start - WEEK, end)
+    usd = _hourly_usd(store, start - WEEK, end, harness)
     series = defaultdict(float)
     for t0, t1, rise in rises:
         _spread(max(t0, start - WEEK), min(t1, end - 1), rise, usd, series)
-    r = rate(store, until=end)
+    r = rate(store, until=end, harness=harness)
     first = rows[0][0] if rows else end
     if r:
         for h, v in usd.items():
@@ -201,3 +223,15 @@ def demand(store, now, hours=HISTORY_HOURS):
     if not used:
         return [], r
     return [(h, series.get(h, 0.0)) for h in range(min(used), end, HOUR)], r
+
+
+def spend(store, now, hours=HISTORY_HOURS, harness=CLAUDE):
+    """API-billed dollars per complete hour before now: [(hour, $)], oldest first."""
+    end = hour_floor(now)
+    got = defaultdict(float)
+    for ts, c in store.conn.execute("SELECT ts, cost_usd FROM usage WHERE harness = ? AND billing = 'api'"
+                                    " AND ts >= ? AND ts < ? AND cost_usd > 0", (harness, end - hours * HOUR, end)):
+        got[hour_floor(ts)] += c
+    if not got:
+        return []
+    return [(h, got.get(h, 0.0)) for h in range(min(got), end, HOUR)]
