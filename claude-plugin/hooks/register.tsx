@@ -78,7 +78,8 @@ const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
 // What stopping a running session would change: the run-out time with and without it, or what it saves.
 const ifStopped = (x: NonNullable<Snapshot['sessions']>[number]) => {
   const w = x.if_stopped
-  if (!w) return '–'
+  if (!x.running) return 'not running'
+  if (!w) return 'no forecast yet'
   if (w.eta !== null) return `out ${clock(w.eta)} → ${w.eta_if_stopped !== null ? clock(w.eta_if_stopped) : 'after reset'}`
   return `saves ${w.adds.toFixed(1)}%`
 }

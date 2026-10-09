@@ -154,8 +154,10 @@ def what_if(store, now, sessions, hour_usd_total):
 def stopping(x, now) -> str:
     """'out Fri 01:10 → after reset' when you'd run out; else 'saves 2.1% of weekly'."""
     w = x.get("if_stopped")
+    if not x.get("running"):
+        return "not running"
     if not w:
-        return "–"
+        return "no forecast yet"
     if w["eta"]:
         after = alerts.when(w["eta_if_stopped"], now) if w["eta_if_stopped"] else "after reset"
         return f"out {alerts.when(w['eta'], now)} → {after}"
