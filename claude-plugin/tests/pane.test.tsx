@@ -2,7 +2,8 @@ import { expect, test } from 'claude-code/testing'
 
 const NOW = 1_790_000_000
 const SNAP = {
-  now: NOW, source: 'ephemeris', forecast_made_at: NOW - 600, synced_at: null,
+  now: NOW,
+  headline: { level: 'bad', text: "At this pace you'll run out of your weekly limit around Wed 05:33. Pausing synth would get you to the reset." }, source: 'ephemeris', forecast_made_at: NOW - 600, synced_at: null,
   limits: [
     { name: 'five_hour', label: '5-hour limit', used: 10, resets: NOW + 3600, p10: 11, p50: 15, p90: 23, p_hit: 0, eta: null, stage: null },
     { name: 'seven_day', label: 'weekly limit', used: 80, resets: NOW + 86400, p10: 95, p50: 120, p90: 140, p_hit: 0.9, eta: NOW + 7200, stage: 'act' },
@@ -31,13 +32,13 @@ test('the pane draws each limit and when you would run out', async ($, on) => {
       plugin: 'savetokens', surface, component: 'Pane', requestId: 'savetokens',
       props: { title: 'savetokens', isFocused: false } as never,
     })
-    expect(await ui.find({ type: 'Text', text: /act now: out ~/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /⚠ At this pace you'll run out of your weekly limit/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /likely 120%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /opus-5-5 98%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /synth .*58%.*5\.3%.*0\.7%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /MODELS .*opus-5-5 98%/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /synth .*5\.3%.*0\.7%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /1 running/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /out (\w+ )?\d\d:\d\d → after reset/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /project .*share .*of week .*last hr/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /project .*today .*last hr .*if you pause it/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^┌─+┐$/ })).toBeDefined()           // the chart's frame
     expect(await ui.find({ type: 'Text', text: /^└─+┘$/ })).toBeDefined()
     await ui.unmount()

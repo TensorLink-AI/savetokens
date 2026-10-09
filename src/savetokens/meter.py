@@ -32,6 +32,12 @@ def hour_floor(ts):
 
 
 def readings(store, name, since=0, until=None, account=None):
+    """[(ts, account, pct, resets)] oldest first, each pct the highest seen so far in its window.
+
+    Every open session reports the meter as it last saw it, so an idle session keeps sending an older,
+    lower value. The meter never falls within a window, so a lower reading is stale: it is raised to
+    the window's running maximum instead of looking like the meter went down and back up.
+    """
     q = "SELECT ts, account, pct, resets FROM meter WHERE name = ? AND ts >= ? AND resets IS NOT NULL"
     p = [name, since]
     if until is not None:
@@ -40,18 +46,30 @@ def readings(store, name, since=0, until=None, account=None):
     if account is not None:
         q += " AND account IS ?"
         p.append(account)
-    return [tuple(r) for r in store.conn.execute(q + " ORDER BY ts", p)]
+    top, out = {}, []
+    for ts, acct, pct, resets in store.conn.execute(q + " ORDER BY ts", p):
+        key = (acct, round(resets / HOUR))
+        top[key] = max(top.get(key, pct), pct)
+        out.append((ts, acct, top[key], resets))
+    return out
 
 
 def latest(store, name, now, account=None):
-    """The newest reading of a limit whose window is still open: {ts, account, pct, resets}."""
+    """The open window of a limit, from its newest reading: {ts, account, pct, resets}, pct being the
+    highest reading in that window (lower ones are stale, from idle sessions)."""
     q = "SELECT ts, account, pct, resets FROM meter WHERE name = ? AND resets > ? AND ts <= ?"
     p = [name, now, now]
     if account is not None:
         q += " AND account IS ?"
         p.append(account)
     r = store.conn.execute(q + " ORDER BY ts DESC LIMIT 1", p).fetchone()
-    return dict(r) if r else None
+    if not r:
+        return None
+    out = dict(r)
+    out["pct"] = store.conn.execute(
+        "SELECT MAX(pct) FROM meter WHERE name = ? AND account IS ? AND ABS(resets - ?) < 1800 AND ts <= ?",
+        (name, r["account"], r["resets"], now)).fetchone()[0]
+    return out
 
 
 def active_account(store, now=None):

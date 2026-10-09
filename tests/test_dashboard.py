@@ -26,8 +26,8 @@ def test_render_draws_bars_sparklines_and_the_run_out_time(store):
     maintain.update(store, T0, use_ephemeris=False)
     lines = dashboard.render(dashboard.snapshot(store, T0), width=90, color=False)
     text = "\n".join(lines)
-    assert "weekly limit" in text and "█" in text and "usage per hour" in text
-    assert "out around" in text                        # 72% used at 1.5% an hour, 20 hours to go
+    assert "LIMITS" in text and "weekly" in text and "█" in text and "USAGE PER HOUR" in text
+    assert lines[2].startswith("⚠ At this pace you'll run out of your")   # the answer comes first (here the 5-hour)
 
 
 def test_bar_shows_now_likely_and_high_end():
@@ -44,7 +44,7 @@ def test_sessions_show_who_used_the_most_and_who_is_running(store):
     assert rows["synth"]["share"] > rows["web"]["share"] and abs(rows["synth"]["pct_week"] - 6.0) < 1e-9
     assert abs(rows["synth"]["pace"] - 6.0) < 1e-9                      # all of it in the last hour
     text = "\n".join(dashboard.render(dashboard.snapshot(store, T0), width=100, color=False))
-    assert "sessions, last 24h" in text and "synth" in text
+    assert "SESSIONS" in text and "synth" in text
 
 
 def test_project_names_are_never_synced():

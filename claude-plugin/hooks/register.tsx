@@ -45,7 +45,7 @@ const niceTop = (v: number) => {
 // Hourly usage as bars in a plain frame: past solid; the forecast from the ┊, ▒ to likely, ░ to the high end.
 // Returns the frame's top and bottom, and each row as [past, forecast] so the forecast can be coloured.
 const chartRows = (d: Snapshot['demand'], width: number, height = 6) => {
-  const room = Math.max(12, width - 6)
+  const room = Math.max(12, width - 4)
   let past = d.past, next = d.next, hi = d.next_hi ?? d.next
   if (past.length + next.length > room) {
     const keepNext = Math.min(next.length, Math.floor(room / 2))
@@ -117,7 +117,7 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     const s = await read($, snap)
     const err = await read($, error)
-    const width = Math.max(20, (e.viewport?.columns ?? 60) - 22)
+    const cols = e.viewport?.columns ?? 60
     if (!s) {
       return (
         <Box flexDirection="column">
@@ -125,95 +125,104 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const top = Math.max(0.01, ...s.demand.past, ...s.demand.next)
-    const n = Math.max(6, Math.min(24, width))
+    const head = s.headline ?? { level: 'none', text: '' }
+    const headColor = head.level === 'bad' ? 'red' : head.level === 'warn' ? 'yellow' : head.level === 'ok' ? 'green' : undefined
+    const bw = Math.max(10, Math.min(30, cols - 34))
+    const sessions = s.sessions ?? []
+    const ch = chartRows(s.demand, cols - 2)
+    const used = s.demand.past.reduce((a, b) => a + b, 0)
+    const ahead = s.demand.next.reduce((a, b) => a + b, 0)
     return (
       <Box flexDirection="column">
+        <Text color={headColor} bold wrap="wrap">
+          {head.level === 'ok' ? '✓' : head.level === 'none' ? '·' : '⚠'} {head.text}
+        </Text>
         <Text dimColor wrap="truncate-end">
-          forecast: {s.source ?? 'none yet'}
+          {s.source === 'ephemeris' ? 'Ephemeris' : s.source ?? 'no'} forecast
           {s.forecast_made_at ? `, ${span(s.now - s.forecast_made_at)} ago` : ''}
           {s.synced_at ? ' · synced' : ''}
           {s.sync_error ? ' · server unreachable' : ''}
         </Text>
         <Text> </Text>
-        {s.limits.length === 0 && <Text dimColor>No limit readings yet: send a message in Claude Code.</Text>}
+
+        {s.limits.length > 0 && <Text bold>LIMITS</Text>}
         {s.limits.map(l => (
           <Box flexDirection="column">
             <Text wrap="truncate-end">
-              <Text bold>{l.name === 'five_hour' ? '5-hour ' : 'weekly '}</Text>
-              <Text color={l.stage ? STAGE_COLOR[l.stage] : 'green'}>{bar(l, width)}</Text>
-              <Text> {Math.round(l.used)}%</Text>
+              {'  ' + (l.name === 'five_hour' ? '5-hour' : 'weekly').padEnd(7)}
+              <Text color={l.stage ? STAGE_COLOR[l.stage] : 'green'}>{bar(l, bw)}</Text>
+              <Text bold> {`${Math.round(l.used)}%`.padStart(4)}</Text>
+              <Text dimColor> now</Text>
             </Text>
             <Text dimColor wrap="truncate-end">
-              {'        '}resets {clock(l.resets)}
-              {l.p50 !== null ? ` · likely ${Math.round(l.p50)}% (${Math.round(l.p10 ?? 0)}–${Math.round(l.p90 ?? 0)}%)` : ''}
+              {'         '}
+              {l.p50 !== null ? `likely ${Math.round(l.p50)}% (${Math.round(l.p10 ?? 0)}–${Math.round(l.p90 ?? 0)}%) · ` : ''}
+              resets {clock(l.resets)}
             </Text>
-            {l.eta !== null && (
-              <Text color={STAGE_COLOR[l.stage ?? 'act']} wrap="truncate-end">
-                {'        '}⚠ {STAGE[l.stage ?? 'act']}: out ~{clock(l.eta)}, {span(l.resets - l.eta)} early
-              </Text>
-            )}
           </Box>
         ))}
+        {s.limits.length > 0 && <Text dimColor>{'         '}█ used ▒ likely by reset ░ could reach</Text>}
         <Text> </Text>
-        {(s.demand.past.some(v => v > 0) || s.demand.next.length > 0) && (() => {
-          const ch = chartRows(s.demand, (e.viewport?.columns ?? 80) - 4)
-          const used = s.demand.past.reduce((a, b) => a + b, 0)
-          const ahead = s.demand.next.reduce((a, b) => a + b, 0)
-          return (
-            <Box flexDirection="column">
-              <Text>
-                <Text bold>usage per hour </Text>
-                <Text dimColor>last {s.demand.past.length}h ┊ next {s.demand.next.length}h: ▒ likely ░ could reach · used {used.toFixed(1)}% of the week, ~{ahead.toFixed(1)}% to come</Text>
-              </Text>
-              <Text dimColor>{ch.top}</Text>
-              {ch.rows.map(([p, f]) => (
-                <Text wrap="truncate-end">
-                  <Text dimColor>│</Text>
-                  {p}
-                  <Text color="cyan">{f}</Text>
-                  <Text dimColor>│</Text>
-                </Text>
-              ))}
-              <Text dimColor>{ch.bottom}</Text>
-            </Box>
-          )
-        })()}
-        <Text> </Text>
-        {s.models.slice(0, 3).map(m => (
-          <Text wrap="truncate-end">
-            {m.model.replace('claude-', '')} {Math.round(m.share * 100)}%
-            <Text dimColor>{m.subagents >= 0.01 ? ` (${Math.round(m.subagents * 100)}% subagents)` : ''}</Text>
-          </Text>
-        ))}
-        {(s.sessions ?? []).length > 0 && (
+
+        {(s.demand.past.some(v => v > 0) || s.demand.next.length > 0) && (
           <Box flexDirection="column">
-            <Text> </Text>
-            <Text bold>
-              sessions, last 24h <Text dimColor>({(s.sessions ?? []).filter(x => x.running).length} running)</Text>
+            <Text>
+              <Text bold>USAGE PER HOUR </Text>
+              <Text dimColor>last {s.demand.past.length}h ┊ next {s.demand.next.length}h</Text>
             </Text>
-            <Text dimColor wrap="truncate-end">
-              {'  ' + 'project'.padEnd(14)} {'share'.padStart(5)} {'of week'.padStart(8)} {'last hr'.padStart(8)}  {'if stopped'.padEnd(22)}session
-            </Text>
-            {(s.sessions ?? []).map(x => (
+            <Text dimColor>{ch.top}</Text>
+            {ch.rows.map(([p, f]) => (
               <Text wrap="truncate-end">
-                <Text color={x.running ? 'green' : undefined} dimColor={!x.running}>{x.running ? '●' : '○'}</Text>
-                {' ' + (x.project ?? '?').slice(0, 14).padEnd(14)} {`${Math.round(x.share * 100)}%`.padStart(5)}
-                {' ' + (x.pct_week !== null ? `${x.pct_week.toFixed(1)}%` : '–').padStart(8)}
-                <Text color={x.running && x.pace ? 'yellow' : undefined}>
-                  {' ' + (x.pace ? `${x.pace.toFixed(1)}%` : '–').padStart(8)}
-                </Text>
-                {'  ' + ifStopped(x).padEnd(22)}
-                <Text dimColor>{x.session ?? ''}</Text>
+                <Text dimColor>│</Text>
+                {p}
+                <Text color="cyan">{f}</Text>
+                <Text dimColor>│</Text>
               </Text>
             ))}
-            <Text dimColor wrap="wrap">of week and last hr: % of your weekly limit · if stopped: over the next 5h</Text>
+            <Text dimColor>{ch.bottom}</Text>
+            <Text dimColor wrap="wrap">
+              used {used.toFixed(1)}% of the week · ~{ahead.toFixed(1)}% to come · █ used ▒ likely ░ could reach
+            </Text>
+            <Text> </Text>
           </Box>
         )}
+
+        {sessions.length > 0 && (
+          <Box flexDirection="column">
+            <Text>
+              <Text bold>SESSIONS </Text>
+              <Text dimColor>last 24h · {sessions.filter(x => x.running).length} running</Text>
+            </Text>
+            <Text dimColor wrap="truncate-end">
+              {'  ' + 'project'.padEnd(15)}{'today'.padStart(6)}{'last hr'.padStart(9)}   if you pause it (5h)
+            </Text>
+            {sessions.map(x => (
+              <Text wrap="truncate-end" dimColor={!x.running}>
+                <Text color={x.running ? 'green' : undefined}>{x.running ? '●' : '○'}</Text>
+                {' ' + (x.project ?? x.session ?? '?').slice(0, 14).padEnd(15)}
+                {(x.pct_week !== null ? `${x.pct_week.toFixed(1)}%` : '–').padStart(6)}
+                {(x.running && x.pace ? `${x.pace.toFixed(1)}%` : '–').padStart(9)}
+                {x.session ? '   ' + ifStopped(x) : ''}
+              </Text>
+            ))}
+            <Text dimColor>today and last hr: % of your weekly limit</Text>
+            <Text> </Text>
+          </Box>
+        )}
+
+        {s.models.length > 0 && (
+          <Text wrap="wrap">
+            <Text bold>MODELS </Text>
+            {s.models.slice(0, 3).map(m => `${m.model.replace('claude-', '')} ${Math.round(m.share * 100)}%`
+              + (m.subagents >= 0.05 ? ` (${Math.round(m.subagents * 100)}% subagents)` : '')).join(' · ')}
+          </Text>
+        )}
         {s.machines.length > 1 && <Text dimColor>{s.machines.length} machines this week</Text>}
-        {s.alerts.slice(0, 2).map(a => (
-          <Text color="yellow" wrap="wrap">
-            {clock(a.ts)} {a.message}
+        {s.alerts.slice(0, 1).map(a => (
+          <Text wrap="wrap">
+            <Text bold>LATEST ALERT </Text>
+            <Text dimColor>{clock(a.ts)} </Text>
+            {a.message}
           </Text>
         ))}
         {err && <Text dimColor>last refresh failed: {err}</Text>}

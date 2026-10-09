@@ -104,3 +104,13 @@ def test_engine_makes_baseline_paths_and_records_the_outlook(store):
     maintain.update(store, T0, use_ephemeris=False)
     assert forecast.load_paths(store, "a1", "baseline")
     assert store.conn.execute("SELECT COUNT(*) FROM outlook").fetchone()[0] == 2
+
+
+def test_stale_readings_from_idle_sessions_are_not_counted_as_usage(store):
+    """Two sessions: the busy one sees 1→2→3%, the idle one keeps reporting 1%. Real use is 2 points."""
+    r = T0 + 86400
+    for i, pct in enumerate([1.0, 2.0, 1.0, 3.0, 1.0, 3.0, 1.0]):
+        store.add_meter("claude-code", "a1", {"seven_day": (pct, r)}, ts=T0 - 6 * H + i * 600)
+    hist, _ = meter.demand(store, T0)
+    assert abs(sum(v for _, v in hist) - 2.0) < 1e-9
+    assert meter.latest(store, "seven_day", T0, "a1")["pct"] == 3.0       # not the idle session's 1%

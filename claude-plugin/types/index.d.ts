@@ -13,6 +13,7 @@ export type Limit = {
 
 export type Snapshot = {
   now: number
+  headline?: { level: 'bad' | 'warn' | 'ok' | 'none'; text: string }
   source: string | null
   forecast_made_at: number | null
   synced_at: number | null

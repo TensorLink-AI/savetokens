@@ -66,7 +66,7 @@ def snapshot(store, now=None, hours=24) -> dict:
             hits.append(dict(h))
     tr = {k: v for k, v in (store.meta("track_record") or {}).items() if k != "at"}
     sessions = top_sessions(store, now, rate)
-    return {
+    snap = {
         "now": now, "account": acct, "source": source, "forecast_made_at": store.meta("forecast_made_at"),
         "synced_at": store.meta("synced_at"), "limits": looks,
         "demand": demand_view(hist, _hourly_forecast(store, acct, source, now, hours), now, hours),
@@ -77,6 +77,9 @@ def snapshot(store, now=None, hours=24) -> dict:
                      for r in machines],
         "sessions": sessions, "accounts": accounts, "alerts": recent, "hits": hits[:6], "track_record": tr,
     }
+    level, text = headline(snap)
+    snap["headline"] = {"level": level, "text": text}
+    return snap
 
 
 def demand_view(hist, fc, now, hours):
@@ -182,7 +185,7 @@ def chart(d, width=80, height=6, color=True) -> list[str]:
     def c(code, text):
         return f"\033[{code}m{text}\033[0m" if color and text.strip() else text
     past, nxt, hi = d["past"], d["next"], d.get("next_hi") or d["next"]
-    room = max(12, width - 6)
+    room = max(12, width - 4)
     if len(past) + len(nxt) > room:
         keep_next = min(len(nxt), room // 2)
         past, nxt, hi = past[-(room - keep_next):], nxt[:keep_next], hi[:keep_next]
@@ -234,91 +237,114 @@ def bar(used, p10, p50, p90, width=40) -> str:
     return "".join(cells)
 
 
-def render(snap, width=80, color=True) -> list[str]:
-    def c(code, text):
-        return f"\033[{code}m{text}\033[0m" if color else text
+def headline(snap):
+    """(level, text): the one line that says whether you're fine, for the top of every view."""
     now = snap["now"]
-    w = max(40, min(width, 120))
+    looks = [o for o in snap["limits"] if o.get("p50") is not None]
+    urgent = sorted((o for o in looks if o.get("eta")), key=lambda o: o["eta"])
+    if urgent:
+        o = urgent[0]
+        name = "5-hour" if o["name"] == "five_hour" else "weekly"
+        text = (f"At this pace you'll run out of your {name} limit around {alerts.when(o['eta'], now)},"
+                f" {alerts.span(o['resets'] - o['eta'])} before it resets.")
+        best = [x for x in snap.get("sessions") or [] if (x.get("if_stopped") or {}).get("eta")]
+        if best:
+            x = max(best, key=lambda x: x["if_stopped"]["eta_if_stopped"] or float("inf"))
+            later = x["if_stopped"]["eta_if_stopped"]
+            gain = "would get you to the reset" if later is None else f"buys about {alerts.span(later - o['eta'])}"
+            if later is None or later - o["eta"] >= 1800:
+                text += f" Pausing {x.get('project') or x['session']} {gain}."
+        return ("bad" if o.get("stage") in ("act", "last_call") else "warn"), text
+    week = next((o for o in looks if o["name"] == "seven_day"), None)
+    if week:
+        return "ok", (f"On track: weekly limit likely {week['p50']:.0f}% by {alerts.when(week['resets'], now)}"
+                      f" ({week['p_hit']:.0%} chance of running out first).")
+    if snap["limits"]:
+        return "ok", "Forecast on its way: the first one arrives within the hour."
+    return "none", "No limit readings yet: send a message in Claude Code with savetokens installed."
+
+
+def render(snap, width=80, color=True) -> list[str]:
+    """The dashboard as terminal lines: the answer first, then the detail behind it."""
+    def c(code, text):
+        return f"\033[{code}m{text}\033[0m" if color and text else text
+
+    def title(text, note=""):
+        return c("1", text) + (c("2", "  " + note) if note else "")
+    now = snap["now"]
+    w = max(50, min(width, 120))
     made = snap.get("forecast_made_at")
-    head = (f"savetokens · {time.strftime('%a %H:%M', time.localtime(now))} · forecast:"
-            f" {snap['source'] or 'none yet'}" + (f", {alerts.span(now - made)} ago" if made else ""))
-    if snap.get("synced_at"):
-        head += f" · synced {alerts.span(now - snap['synced_at'])} ago"
-    lines = [c("1", head), ""]
-    if not snap["limits"]:
-        lines.append("No limit readings yet: send a message in Claude Code with savetokens installed.")
-    bw = w - 30
-    for o in snap["limits"]:
-        stage = o.get("stage")
-        col = {"heads_up": "33", "act": "31", "last_call": "1;31"}.get(stage, "32")
-        label = f"{o['label']:13}"
-        lines.append(f"{c('1', label)} {c(col, bar(o['used'], o['p10'], o['p50'], o['p90'], bw))}"
-                     f" {o['used']:3.0f}% now")
-        detail = f"{'':13} resets {alerts.when(o['resets'], now)}"
-        if o["p50"] is not None:
-            detail += f" · likely {o['p50']:.0f}% ({o['p10']:.0f}–{o['p90']:.0f}%) · {o['p_hit']:.0%} chance of a hit"
-        lines.append(c("2", detail))
-        if o.get("eta"):
-            lines.append(c(col, f"{'':13} ⚠ {STAGE_TEXT.get(stage, '')}: out around {alerts.when(o['eta'], now)},"
-                                f" {alerts.span(o['resets'] - o['eta'])} before the reset"))
+    src = {"ephemeris": "Ephemeris", "baseline": "local baseline"}.get(snap.get("source"), "no forecast yet")
+    right = f"{time.strftime('%a %H:%M', time.localtime(now))} · {src}" + (
+        f", {alerts.span(now - made)} ago" if made else "") + (" · synced" if snap.get("synced_at") else "")
+    lines = [c("1", "savetokens") + " " * max(1, w - 10 - len(right)) + c("2", right), ""]
+    level, text = headline(snap)
+    mark = {"bad": ("1;31", "⚠"), "warn": ("33", "⚠"), "ok": ("32", "✓"), "none": ("2", "·")}[level]
+    import textwrap
+    for i, part in enumerate(textwrap.wrap(text, w - 2) or [""]):
+        lines.append(c(mark[0], f"{mark[1] if i == 0 else ' '} {part}"))
+    lines.append("")
+
+    # limits: one row each, the bar then the numbers that matter
+    if snap["limits"]:
+        bw = max(12, min(40, w - 52))
+        lines.append(title("LIMITS") + " " * (2 + 7 + 1 + bw - 6) + c("2", f"{'now':>5}   {'at reset (likely, range)':24} resets"))
+        for o in snap["limits"]:
+            col = {"heads_up": "33", "act": "31", "last_call": "1;31"}.get(o.get("stage"), "32")
+            name = "5-hour" if o["name"] == "five_hour" else "weekly"
+            at = f"{o['p50']:4.0f}%  ({o['p10']:.0f}–{o['p90']:.0f}%)" if o["p50"] is not None else "–"
+            lines.append(f"  {name:7} {c(col, bar(o['used'], o['p10'], o['p50'], o['p90'], bw))} {o['used']:4.0f}%"
+                         f"   {at:24} {alerts.when(o['resets'], now)}")
+        lines.append(c("2", f"  {'':7} █ used  ▒ likely by reset  ░ could reach  · room left"))
         lines.append("")
+
     d = snap["demand"]
     if any(d["past"]) or any(d["next"]):
-        used = sum(d["past"])
-        ahead = sum(d["next"])
-        lines.append(c("1", "usage per hour") + c("2", f"  last {len(d['past'])}h ┊ next {len(d['next'])}h: ▒ likely ░ could reach"
-                                                        f" · used {used:.1f}% of the week, ~{ahead:.1f}% to come"))
+        lines.append(title("USAGE PER HOUR", f"last {len(d['past'])}h ┊ next {len(d['next'])}h · used"
+                                             f" {sum(d['past']):.1f}% of the week, ~{sum(d['next']):.1f}% to come"))
         lines += chart(d, w, color=color)
+        lines.append(c("2", f"  {'':2}█ used   ▒ likely   ░ could reach"))
         lines.append("")
-    if snap["models"]:
-        lines.append(c("1", "this week by model"))
-        for m in snap["models"][:4]:
-            sub = f" ({m['subagents']:.0%} subagents)" if m["subagents"] >= 0.01 else ""
-            lines.append(f"  {m['model'][:26]:26} {m['share']:4.0%}{sub}")
-        lines.append("")
-    if snap.get("sessions"):
-        live = sum(1 for x in snap["sessions"] if x.get("running"))
-        lines.append(c("1", "sessions, last 24h") + c("2", f"  {live} running (●), idle (○)"))
-        lines.append(c("2", f"    {'project':16} {'session':8} {'share':>6} {'of week':>8} {'last hour':>10}"
-                            f"  {'if you stop it':26} model"))
-        for x in snap["sessions"]:
+
+    sessions = snap.get("sessions") or []
+    if sessions:
+        live = sum(1 for x in sessions if x.get("running"))
+        lines.append(title("SESSIONS", f"last 24h · {live} running"))
+        lines.append(c("2", f"    {'project':18} {'today':>6}  {'last hour':>9}   if you pause it (next 5h)"))
+        for x in sessions:
             dot = c("32", "●") if x.get("running") else c("2", "○")
-            share = f"{x['share']:.0%}"
-            week = f"{x['pct_week']:.1f}%" if x.get("pct_week") is not None else "–"
+            today = f"{x['pct_week']:.1f}%" if x.get("pct_week") is not None else "–"
             if x["session"] is None:
-                lines.append(c("2", f"  {dot} {x['project'][:16]:16} {'':8} {share:>6} {week:>8}"))
+                lines.append(c("2", f"  {dot} {x['project'][:18]:18} {today:>6}"))
                 continue
-            pace = f"{x['pace']:.1f}%" if x.get("pace") else "–"
-            model = (x.get("model") or "").replace("claude-", "")
-            sub = f", {x['subagents']:.0%} subagents" if x.get("subagents", 0) >= 0.05 else ""
-            lines.append(f"  {dot} {(x['project'] or '?')[:16]:16} {x['session']:8} {share:>6} {week:>8}"
-                         f" {c('33', f'{pace:>10}') if x.get('running') and x.get('pace') else f'{pace:>10}'}"
-                         f"  {stopping(x, now):26} {c('2', model + sub)}")
-        lines.append(c("2", "    share = of all usage in the last 24h · of week = % of your weekly limit"
-                            " · last hour = % of the weekly limit used in the past hour"))
-        lines.append(c("2", f"    if you stop it = over the next {WHAT_IF_HOURS}h at its current pace: when you'd run out"
-                            " with and without it, or how much of the limit it would use"))
+            pace = f"{x['pace']:.1f}%" if x.get("running") and x.get("pace") else "–"
+            pause = stopping(x, now)
+            lines.append(f"  {dot} {(x['project'] or x['session'])[:18]:18} {today:>6}  {pace:>9}   "
+                         + (c("2", pause) if not x.get("running") else pause))
+        lines.append(c("2", "    today and last hour are % of your weekly limit"))
         lines.append("")
+
+    if snap["models"]:
+        mix = " · ".join(f"{m['model'].replace('claude-', '')} {m['share']:.0%}"
+                         + (f" ({m['subagents']:.0%} via subagents)" if m["subagents"] >= 0.05 else "")
+                         for m in snap["models"][:3])
+        lines.append(title("MODELS") + "  " + mix + c("2", "  · this week"))
     if len(snap["machines"]) > 1 or len(snap["accounts"]) > 1:
-        lines.append(c("1", "machines and accounts"))
-        for m in snap["machines"][:4]:
-            lines.append(f"  machine {m['machine']}: {m['requests']:,} requests this week,"
-                         f" last {alerts.span(now - m['last_seen'])} ago")
-        for a in snap["accounts"][:4]:
-            pct = f"{a['weekly']:.0f}% of its week" if a["weekly"] is not None else "window closed"
-            lines.append(f"  account {a['account'] or '?'}{' (active)' if a['active'] else ''}: {pct}")
-        lines.append("")
+        accts = ", ".join(f"{a['account'] or '?'}{' (in use)' if a['active'] else ''}" for a in snap["accounts"][:4])
+        lines.append(title("MACHINES") + f"  {len(snap['machines'])} this week · accounts: {accts}")
     if snap["alerts"]:
-        lines.append(c("1", "alerts"))
-        for a in snap["alerts"][:3]:
-            lines.append(f"  {time.strftime('%a %H:%M', time.localtime(a['ts']))}  {a['message']}"[:w])
-        lines.append("")
+        import textwrap
+        a = snap["alerts"][0]
+        when = time.strftime("%a %H:%M", time.localtime(a["ts"]))
+        for i, part in enumerate(textwrap.wrap(a["message"], w - 26)):
+            lines.append((title("LATEST ALERT") + "  " + c("2", when) if i == 0 else " " * 25) + "  " + part)
     if snap["hits"]:
         what = lambda h: {"session": "5-hour", "weekly": "weekly"}.get(h["kind"]) or (h["model"] or "a").title()
-        lines.append(c("1", "limits hit (30 days)") + "  " + ", ".join(
-            f"{what(h)} {time.strftime('%d %b', time.localtime(h['ts']))}" for h in snap["hits"][:5]))
-    if snap["track_record"]:
+        lines.append(title("LIMITS HIT") + "  " + ", ".join(
+            f"{what(h)} {time.strftime('%d %b', time.localtime(h['ts']))}" for h in snap["hits"][:5])
+            + c("2", "  · last 30 days"))
+    if snap.get("track_record"):
         best = sorted(snap["track_record"].items(), key=lambda kv: kv[1]["mae"])
-        lines.append(c("2", "track record: " + ", ".join(
-            f"{k} off by {v['mae']:.2f}/h over {v['forecasts']}" for k, v in best)))
+        lines.append(c("2", "forecast accuracy: " + ", ".join(
+            f"{k} off by {v['mae']:.2f} points/h over {v['forecasts']} forecasts" for k, v in best)))
     return lines
