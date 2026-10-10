@@ -95,9 +95,8 @@ def save_key(key: str, cfg: dict) -> Path:
 
 
 def balance(key) -> float:
-    """Spendable credits."""
-    b = _call("balance", key)
-    return (int(b["balance_mc"]) - int(b["active_holds_mc"])) / 1000
+    """Spendable credits (balance_mc already has active holds taken off)."""
+    return int(_call("balance", key)["balance_mc"]) / 1000
 
 
 TOPUP = f"{SITE}/dashboard/billing"
