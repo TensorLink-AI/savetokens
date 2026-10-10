@@ -33,23 +33,40 @@ def model(cfg=None) -> str:
     return cfg.get("ephemeris_model") or DEFAULT_MODEL
 
 
-def api_key(cfg=None) -> str | None:
-    """From the environment, else from the env file named in config (the key is never copied)."""
-    for name in KEY_NAMES:
-        if os.environ.get(name):
-            return os.environ[name]
-    cfg = cfg or load_config()
-    path = cfg.get("ephemeris_env_file")
-    if not path:
-        return None
+def credentials_path() -> Path:
+    """The key file every Ephemeris tool on this machine shares (`ephemeris auth login`, `ephemeris-mcp login`):
+    one line EPHEMERIS_API_KEY=..., readable by its owner only."""
+    if os.environ.get("EPHEMERIS_CREDENTIALS_FILE"):
+        return Path(os.environ["EPHEMERIS_CREDENTIALS_FILE"]).expanduser()
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "ephemeris" / "credentials"
+
+
+def _read_env_file(path: Path, private=False) -> str | None:
     try:
-        for line in Path(path).expanduser().read_text().splitlines():
+        if private and os.name != "nt" and path.stat().st_mode & 0o077:
+            return None   # others can read it: don't trust it (the Ephemeris tools refuse it too)
+        for line in path.read_text().splitlines():
             name, _, value = line.strip().removeprefix("export ").partition("=")
             if name.strip() in KEY_NAMES and value.strip():
                 return value.strip().strip("'\"")
     except OSError:
         return None
     return None
+
+
+def api_key(cfg=None) -> str | None:
+    """From the environment, else the env file named in config, else the shared Ephemeris credentials file.
+    The key is never copied."""
+    for name in KEY_NAMES:
+        if os.environ.get(name):
+            return os.environ[name]
+    cfg = cfg or load_config()
+    path = cfg.get("ephemeris_env_file")
+    return (_read_env_file(Path(path).expanduser()) if path else None) or _read_env_file(credentials_path(), private=True)
 
 
 def _call(path, key, body=None, timeout=60, retries=0):
@@ -83,13 +100,15 @@ def enabled(cfg=None) -> bool:
 
 
 def save_key(key: str, cfg: dict) -> Path:
-    """Store a pasted key in savetokens' own home (owner-only) and point the config at it."""
-    from .store import home
-    path = home() / "ephemeris.env"
-    home().mkdir(parents=True, exist_ok=True)
-    path.touch(mode=0o600)
-    path.chmod(0o600)
-    path.write_text(f"EPHEMERIS_API_KEY={key.strip()}\n")
+    """Keep a key in the shared Ephemeris credentials file (owner-only), so the Ephemeris CLI and MCP use it
+    too, and point the config at it."""
+    path = credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.touch(mode=0o600)
+    tmp.chmod(0o600)
+    tmp.write_text(f"EPHEMERIS_API_KEY={key.strip()}\n")
+    tmp.replace(path)
     cfg["ephemeris_env_file"] = str(path)
     return path
 

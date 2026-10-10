@@ -151,7 +151,7 @@ def test_setup_signs_in_with_the_browser_and_falls_back_to_pasting(homes, monkey
     def unsupported(**k):
         raise ephemeris.NoDeviceLogin("404")
     monkeypatch.setattr(ephemeris, "device_login", unsupported)
-    (homes / "st" / "ephemeris.env").unlink()
+    (homes / "ephemeris" / "credentials").unlink()
     cfg = load_config()
     cfg.pop("ephemeris_env_file")
     keys = iter(["", "pasted"])          # Enter (sign in: not offered), then paste
@@ -207,3 +207,21 @@ def test_a_first_run_shows_what_it_found(homes, capsys):
         t.time = real
     out = capsys.readouterr().out
     assert "Found in your history" in out or "Codex weekly limit" in out
+
+
+def test_one_key_file_for_every_ephemeris_tool(homes, monkeypatch):
+    shared = homes / "ephemeris" / "credentials"
+    assert ephemeris.api_key() is None
+    shared.parent.mkdir()
+    shared.write_text("EPHEMERIS_API_KEY=from-ephemeris-cli\n")      # what `ephemeris auth login` saves
+    shared.chmod(0o644)
+    assert ephemeris.api_key() is None                               # others can read it: not trusted
+    shared.chmod(0o600)
+    assert ephemeris.api_key() == "from-ephemeris-cli"
+    monkeypatch.setenv("EPHEMERIS_API_KEY", "from-env")
+    assert ephemeris.api_key() == "from-env"                         # the environment wins
+    monkeypatch.delenv("EPHEMERIS_API_KEY")
+    cfg = load_config()
+    path = ephemeris.save_key("from-savetokens", cfg)                # savetokens' sign-in writes the same file
+    assert path == shared and shared.stat().st_mode & 0o777 == 0o600
+    assert shared.read_text() == "EPHEMERIS_API_KEY=from-savetokens\n"

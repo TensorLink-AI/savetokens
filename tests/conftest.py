@@ -31,6 +31,7 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("EPHEMERIS_CREDENTIALS_FILE", str(tmp_path / "ephemeris" / "credentials"))   # never the real one
     from savetokens import pricing
     pricing.reset()
     return tmp_path

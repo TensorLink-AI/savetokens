@@ -135,7 +135,7 @@ locally (only the plan's name, e.g. Claude Max 20x or ChatGPT Pro), and offers i
 default. Then it asks for what it can't know: a budget for tools paying by API, and an Ephemeris key.
 For the key, press Enter: it opens Ephemeris in your browser, you sign in (or sign up) and approve
 the code shown in your terminal, and the key arrives on its own. You can also paste a key; either way
-it's checked on the spot. If your Ephemeris credits run out, `status`, `setup` and the browser view
+it's checked on the spot. The key is kept in `~/.config/ephemeris/credentials` (readable by you only), the file the Ephemeris CLI (`ephemeris auth login`) and MCP bridge (`ephemeris-mcp login`) use too, so signing in with any of them covers all three. If your Ephemeris credits run out, `status`, `setup` and the browser view
 say so, with the top-up link, and forecasts fall back to the local baseline. Run it again any time. The browser view shows what's left, each step with a command
 to copy:
 
