@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>savetokens</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span>savetokens</div>
+  <div class="meta" id="meta"></div>
+  <div class="actions">
+    <button id="refresh" type="button" title="Refresh now">Refresh</button>
+    <button id="signout" type="button" hidden>Sign out</button>
+  </div>
+</header>
+
+<main id="app">
+  <section id="signin" class="signin" hidden>
+    <h1>Sign in</h1>
+    <p>Run <code>savetokens pair</code> on a machine that's connected to this server, then enter the code here.
+      It works once, for 10 minutes.</p>
+    <form id="signin-form">
+      <input id="code" name="code" autocomplete="one-time-code" placeholder="XXXX-XXXX" maxlength="9" required
+             spellcheck="false" autocapitalize="characters" aria-label="Join code">
+      <button type="submit">Sign in</button>
+    </form>
+    <p class="err" id="signin-err" role="alert"></p>
+  </section>
+
+  <div id="view" hidden>
+    <details id="setup" class="setup" hidden>
+      <summary><span id="setup-title">Finish setting up</span><span class="muted" id="setup-count"></span></summary>
+      <ol id="setup-steps"></ol>
+      <p class="note">Or run <code>savetokens setup</code>: it finds your plans and asks for the rest, one question at a time.</p>
+    </details>
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tab-spend" aria-controls="spend" aria-selected="true">Spend</button>
+      <button role="tab" id="tab-limits" aria-controls="limits-tab" aria-selected="false">Limits</button>
+    </nav>
+
+    <div id="spend" role="tabpanel" aria-labelledby="tab-spend">
+      <section>
+        <div class="h2row"><h2>Spend so far, and where it's heading</h2><span class="muted" id="spend-src"></span></div>
+        <div id="periods" class="cards three"></div>
+      </section>
+      <section>
+        <h2>Coming up</h2>
+        <div id="coming" class="cards three"></div>
+      </section>
+      <section>
+        <div class="h2row"><h2>By provider</h2>
+          <div class="seg" role="group" aria-label="Period">
+            <button type="button" data-period="day">Today</button><button type="button" data-period="week">This week</button><button type="button" data-period="month" aria-pressed="true">This month</button>
+          </div></div>
+        <div class="panel scroll"><table id="providers"><thead><tr>
+          <th>Provider</th><th class="num">Tokens</th><th class="num">Spend</th><th class="num">Likely by end</th>
+          <th class="num" id="next-h">Next 30 days</th><th class="num">$ / M tokens</th></tr></thead></table></div>
+        <p class="note" id="spend-note"></p>
+      </section>
+    </div>
+
+    <div id="limits-tab" role="tabpanel" aria-labelledby="tab-limits" hidden>
+    <div id="headline" class="headline" role="status"></div>
+
+    <section>
+      <h2>Limits</h2>
+      <div id="limits" class="cards"></div>
+    </section>
+
+    <section>
+      <div class="h2row"><h2>Usage per hour</h2><span class="muted" id="demand-label"></span></div>
+      <div class="panel"><div id="chart" class="chart"></div>
+        <div class="legend"><span><i class="sw past"></i>used</span><span><i class="sw next"></i>forecast</span>
+          <span><i class="sw band"></i>likely range</span></div></div>
+    </section>
+
+    <section>
+      <h2>Sessions, last 24 hours</h2>
+      <div class="panel scroll"><table id="sessions"><thead><tr>
+        <th></th><th>Session</th><th>Tool</th><th class="num">Today</th><th class="num">Last hour</th>
+        <th>If you stop it</th></tr></thead><tbody></tbody></table></div>
+      <p class="note">Today and last hour are % of each session's own limit: its plan's weekly limit, or its API budget.</p>
+    </section>
+
+    <div class="cols">
+      <section>
+        <h2>Models this week</h2>
+        <div id="models" class="panel"></div>
+      </section>
+      <section>
+        <h2>Machines this week</h2>
+        <div id="machines" class="panel"></div>
+      </section>
+    </div>
+
+    <div class="cols">
+      <section>
+        <h2>Recent alerts</h2>
+        <div id="alerts" class="panel"></div>
+      </section>
+      <section>
+        <h2>Limits you've hit</h2>
+        <div id="hits" class="panel"></div>
+      </section>
+    </div>
+
+    </div>
+
+    <p class="foot">Read-only. Only token counts, costs and limit readings reach this page: never prompts, replies,
+      code or file contents. <span id="track"></span></p>
+  </div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "savetokens",
+  "version": "0.2.0",
+  "description": "Live pane: when you'll run out of Claude, from savetokens",
+  "author": {
+    "name": "TensorLink"
+  },
+  "types": "./types/index.d.ts"
+}

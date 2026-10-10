@@ -1,0 +1,31 @@
+# savetokens server.
+#   EPHEMERIS_API_KEY=... docker compose up -d
+#   docker compose logs savetokens        # the first start prints your token
+#
+# For HTTPS (recommended when the server is reachable from the internet), point a domain at this
+# machine and also start Caddy:  DOMAIN=st.example.com docker compose --profile tls up -d
+services:
+  savetokens:
+    build: .
+    restart: unless-stopped
+    environment:
+      EPHEMERIS_API_KEY: ${EPHEMERIS_API_KEY:-}
+    ports:
+      - "8787:8787"
+    volumes:
+      - savetokens:/data
+
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${DOMAIN:?set DOMAIN} --to savetokens:8787
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy:/data
+
+volumes:
+  savetokens:
+  caddy:
