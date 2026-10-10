@@ -23,7 +23,7 @@ def test_two_machines_add_up_on_the_server(running, tmp_path):
         assert s.conn.execute("SELECT COUNT(DISTINCT machine) FROM meter").fetchone()[0] == 2
         maintain.update(s, T0, use_ephemeris=False)   # the server's engine
     got = sync.pull(a, cfg)
-    assert got["meter"] == 1 and got["paths"] == 1
+    assert got["meter"] == 1 and got["paths"] == 2                 # the plan's demand, and Anthropic's tokens
     o = {x["name"]: x for x in forecast.outlook(a, T0)}["seven_day"]
     assert o["used"] == 30.0 and o["source"] == "baseline"   # b's reading, the server's paths
 

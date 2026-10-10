@@ -465,3 +465,13 @@ def agent_note(store, now=None) -> str | None:
              " Before a big job, estimate it (savetokens estimate_job tool, or `savetokens estimate`) and tell"
              " the user what it costs. Never change settings without asking.")
     return text
+
+
+# ── setup the agent can propose (never run) ───────────────────────────────────
+
+def setup(store, now=None, cfg=None, found=None) -> list[dict]:
+    """What's left to set up here, each with the exact command for the user to run (or agree to). Nothing is
+    changed. The checklist itself is setup.steps."""
+    from . import setup as setup_
+    return [{"why": s["detail"], "command": s["command"], "ask": s["ask"], "default": s["default"]}
+            for s in setup_.todo(setup_.steps(store, now, cfg, found))]

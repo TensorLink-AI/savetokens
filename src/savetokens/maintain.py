@@ -94,12 +94,15 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
 
 def notices(store, now, cfg):
     """One-time notices: a tool found running on an API key with no budget set. Shown on the next prompt."""
-    from . import capture, codex, pools
+    from . import capture, codex, hermes, pools
     found = []
     if not (cfg.get("billing") or {}).get(capture.HARNESS) and capture.detect_billing(store, now) == "api":
         found.append(capture.HARNESS)
     if not (cfg.get("billing") or {}).get(codex.HARNESS) and codex.auth_mode() == "apikey":
         found.append(codex.HARNESS)
+    if store.conn.execute("SELECT 1 FROM usage WHERE harness = ? AND billing = 'api' LIMIT 1",
+                          (hermes.HARNESS,)).fetchone():
+        found.append(hermes.HARNESS)
     have = pools.budgets(store)
     for h in found:
         if h in have:
@@ -108,7 +111,8 @@ def notices(store, now, cfg):
         store.conn.execute(
             "INSERT OR IGNORE INTO alerts (account, ts, name, window_end, stage, message) VALUES (?,?,?,?,?,?)",
             (h, now, "setup", 0, "billing:api",
-             f"savetokens: {tool} here is on an API key, so its usage counts as API spend. Set a budget to get"
+             f"savetokens: {tool} here {'pays as it goes' if h == hermes.HARNESS else 'is on an API key'}, so its"
+             f" usage counts as API spend. Set a budget to get"
              f" forecasts and alerts for it: savetokens api {h} --budget 200 --per month"))
     store.conn.commit()
 

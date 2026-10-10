@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 3   # v2: usage.project (kept on the machine, never synced); v3: usage.billing
+SCHEMA_VERSION = 4   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     machine TEXT NOT NULL,
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS usage (
     account TEXT,
     project TEXT,                   -- the session's folder name; this machine only, never synced
     billing TEXT,                   -- 'api' when paid by API key; NULL for a subscription
+    provider TEXT,                  -- who serves it: anthropic, openai, openrouter, nous, an API host, ...
     UNIQUE (machine, harness, request_id)
 );
 CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
@@ -128,6 +129,7 @@ class Usage:
     machine: str = ""
     project: str | None = None
     billing: str | None = None    # "api" when paid by API key
+    provider: str | None = None   # who serves it (default: the tool's own company)
 
 
 USAGE_COLS = [f.name for f in fields(Usage)]
@@ -135,6 +137,19 @@ SYNCED_USAGE = [c for c in USAGE_COLS if c != "project"]   # folder names stay o
 METER_COLS = ["machine", "harness", "account", "ts", "name", "pct", "resets"]
 HIT_COLS = ["machine", "harness", "account", "session_id", "ts", "kind", "model"]
 SYNCED = {"usage": SYNCED_USAGE, "meter": METER_COLS, "hits": HIT_COLS}
+
+
+DEFAULT_PROVIDER = {"claude-code": "anthropic", "codex": "openai"}
+
+
+def _fill_providers(conn):
+    """Rows captured before v4: the tool's own company, or for Hermes the provider in the request id."""
+    from .hermes import provider_name
+    for h, p in DEFAULT_PROVIDER.items():
+        conn.execute("UPDATE usage SET provider = ? WHERE harness = ? AND provider IS NULL", (p, h))
+    rows = conn.execute("SELECT rowid, request_id FROM usage WHERE harness = 'hermes' AND provider IS NULL").fetchall()
+    conn.executemany("UPDATE usage SET provider = ? WHERE rowid = ?",
+                     [(provider_name(*(r[1].split("|") + ["", "", ""])[2:4]), r[0]) for r in rows])
 
 
 class Store:
@@ -147,12 +162,18 @@ class Store:
         if version != SCHEMA_VERSION:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.executescript(SCHEMA)
-            if version == 1:   # add the project, and read transcripts again to fill it in
+            # by the columns there, not the version: an older savetokens on the same machine sets it back
+            have = {r[1] for r in self.conn.execute("PRAGMA table_info(usage)")}
+            if "project" not in have:   # add the project, and read transcripts again to fill it in
                 self.conn.execute("ALTER TABLE usage ADD COLUMN project TEXT")
                 self.conn.execute("CREATE INDEX IF NOT EXISTS usage_session ON usage(session_id, ts)")
                 self.conn.execute("DELETE FROM offsets")
-            if version in (1, 2):
+            if "billing" not in have:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN billing TEXT")
+            if "provider" not in have:
+                self.conn.execute("ALTER TABLE usage ADD COLUMN provider TEXT")
+            if version < SCHEMA_VERSION:
+                _fill_providers(self.conn)   # also rows an older version wrote meanwhile
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -187,6 +208,7 @@ class Store:
         rows = []
         for e in events:
             e.machine = e.machine or machine
+            e.provider = e.provider or DEFAULT_PROVIDER.get(e.harness)
             rows.append([int(v) if isinstance(v, bool) else v for v in (getattr(e, c) for c in USAGE_COLS)])
         n = self.insert("usage", USAGE_COLS, rows)
         # rows read before projects were kept get theirs on the next read

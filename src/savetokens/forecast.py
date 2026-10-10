@@ -1,8 +1,8 @@
 """Forecast demand and project each limit to its reset.
 
 Each forecaster makes sample paths of hourly demand (% of the weekly limit):
-  ephemeris  hourly quantiles from the Ephemeris ensemble (zero-shot time-series
-             foundation models), sampled with a Gaussian copula (correlation RHO
+  ephemeris  hourly quantiles from an Ephemeris model (toto2-313m by default, or the
+             whole ensemble: zero-shot time-series foundation models), sampled with a Gaussian copula (correlation RHO
              between hours) so window totals get realistic widths. The default.
   baseline   past days replayed: each future day copies the hourly profile of a
              random recent day. Used when Ephemeris is off or unreachable.
@@ -166,21 +166,7 @@ def refresh(store, now=None, use_ephemeris=True, log=lambda *_: None):
             until = week["resets"] if week else now + 7 * 86400
             horizon = int(min(MAX_HORIZON, max(24, math.ceil((until - start) / HOUR))))
         eng = eng or Engine(ledger_path(store), use_ephemeris=use_ephemeris)
-        eng.record_actuals(pool.key, hist, now, pool.unit)
-        for provider in eng.providers:
-            try:
-                qs, ex = eng.forecast(provider, pool.key, hist, start, horizon, pool.unit)
-            except Exception as e:   # Ephemeris unreachable or out of credits: the baseline still runs
-                log(f"{pool.id}: {provider} failed: {e}")
-                store.set_meta(f"{provider}_error", {"at": now, "error": str(e)[:300]})
-                continue
-            save_paths(store, pool.key, provider, now, start, horizon, copula_paths(qs))
-            store.set_meta(f"{provider}_last", {"made_at": now, "horizon": horizon, "history_hours": len(hist),
-                                                "execution_id": ex.execution_id, "pool": pool.id,
-                                                "credits": (ex.result.metadata or {}).get("credits")})
-            log(f"{pool.id}: {provider} {horizon}h forecast from {len(hist)}h of history")
-            if provider not in made:
-                made.append(provider)
+        _series(store, eng, pool.key, pool.id, hist, now, start, horizon, pool.unit, made, log)
         try:
             tr = {"at": now, **eng.track_record(pool.key, limit=200)}
             store.set_meta(f"track_record:{pool.id}", tr)
@@ -188,11 +174,35 @@ def refresh(store, now=None, use_ephemeris=True, log=lambda *_: None):
                 store.set_meta("track_record", tr)
         except Exception as e:
             log(f"{pool.id}: scoring failed: {e}")
+    # each provider's hourly tokens, for spend by provider and model (a week, repeated over a month)
+    from . import spend
+    for prov, hist in spend.series(store, now):
+        eng = eng or Engine(ledger_path(store), use_ephemeris=use_ephemeris)
+        _series(store, eng, spend.key(prov), spend.key(prov), hist, now, start, MAX_HORIZON, spend.UNIT, made, log)
     if eng is None:
         return []
     store.set_meta("forecast_made_at", now)
     record(store, now)
     return made
+
+
+def _series(store, eng, key, name, hist, now, start, horizon, unit, made, log):
+    """One series: its actuals into the ledger, then paths from each forecaster (Ephemeris, then the baseline)."""
+    eng.record_actuals(key, hist, now, unit)
+    for provider in eng.providers:
+        try:
+            qs, ex = eng.forecast(provider, key, hist, start, horizon, unit)
+        except Exception as e:   # Ephemeris unreachable or out of credits: the baseline still runs
+            log(f"{name}: {provider} failed: {e}")
+            store.set_meta(f"{provider}_error", {"at": now, "error": str(e)[:300]})
+            continue
+        save_paths(store, key, provider, now, start, horizon, copula_paths(qs))
+        store.set_meta(f"{provider}_last", {"made_at": now, "horizon": horizon, "history_hours": len(hist),
+                                            "execution_id": ex.execution_id, "pool": name,
+                                            "credits": (ex.result.metadata or {}).get("credits")})
+        log(f"{name}: {provider} {horizon}h forecast from {len(hist)}h of history")
+        if provider not in made:
+            made.append(provider)
 
 
 # ── outlook ──────────────────────────────────────────────────────────────────

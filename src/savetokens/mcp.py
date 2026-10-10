@@ -1,9 +1,11 @@
 """savetokens as an MCP server (stdio): the brief and job estimates as tools, for any agent.
 
-Claude Code, Codex and other MCP clients start `savetokens mcp` and call:
+Claude Code, Codex, Hermes and other MCP clients start `savetokens mcp` and call:
 
   pacing_brief   where each limit stands, this session's usage, and the options ranked by effect
   estimate_job   a job's size in points and how long it would take, waits for resets included
+  spend_summary  tokens and $ by provider and model: today, this week, this month, and projected
+  suggest_setup  what to set up (budgets, prices, ...), each with the command for the user to run
 
 JSON-RPC 2.0, one message per line, on stdin and stdout. Read-only: nothing is changed.
 """
@@ -18,7 +20,7 @@ PROTOCOL = "2025-06-18"
 
 TOOLS = [
     {"name": "pacing_brief",
-     "description": "Where the user's Claude Code / Codex usage limits stand (plan limits or API budgets), how this"
+     "description": "Where the user's Claude Code / Codex / Hermes usage limits stand (plan limits or API budgets), how this"
                     " session is using them, and the options to pace usage, ranked by measured effect with the exact"
                     " change for each. Call before large jobs, when the user asks about limits or usage, or when a"
                     " limit alert appears. Suggest options to the user; never change settings without asking.",
@@ -37,12 +39,27 @@ TOOLS = [
          "hours": {"type": "number", "description": "hours of work at the current pace"},
          "parallel": {"type": "integer", "minimum": 1, "description": "sessions or subagents working at once"},
          "session_id": {"type": "string"}}}},
+    {"name": "spend_summary",
+     "description": "Tokens and dollars by provider (Anthropic, OpenAI, OpenRouter, ...) and by model: so far today,"
+                    " this week and this month, likely by each one's end, and over the next day, week and 30 days."
+                    " Pay-as-you-go spend plus subscriptions as a fixed cost. Use when the user asks what they're"
+                    " spending, where, or what it will cost.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "suggest_setup",
+     "description": "What would make savetokens more useful here (a budget for a tool paying by API, a price for a"
+                    " model it can't price, the forecaster, the browser view), each with the exact command and what"
+                    " to ask the user for. Changes nothing: show the user the command, fill in what they tell you,"
+                    " and run it only after they agree.",
+     "inputSchema": {"type": "object", "properties": {}}},
 ]
 
 
 def _harness(client):
     name = (client or {}).get("name", "").lower()
-    return "codex" if "codex" in name else "claude-code" if "claude" in name else None
+    for key, harness in (("codex", "codex"), ("hermes", "hermes"), ("claude", "claude-code")):
+        if key in name:
+            return harness
+    return None
 
 
 def call(name, args, client=None, store=None):
@@ -65,6 +82,15 @@ def call(name, args, client=None, store=None):
                                 hours=args.get("hours"), parallel=max(1, int(args.get("parallel") or 1)),
                                 session_id=args.get("session_id"), cwd=os.getcwd())
             return (e.get("summary") or e.get("error", "")) + "\n\n" + json.dumps(_clean(e), default=str)
+        if name == "spend_summary":
+            from . import spend
+            got = spend.summary(store, now)
+            return spend.text(got) + "\n\n" + json.dumps(_clean(got), default=str)
+        if name == "suggest_setup":
+            got = advise.setup(store, now)
+            text = "\n".join(f"- {x['why']}: `{x['command']}`" + (f" (ask for {x['ask']})" if x["ask"] else "")
+                             for x in got)
+            return (text or "Nothing to set up.") + "\n\n" + json.dumps(got)
         raise KeyError(name)
     finally:
         if own:
@@ -93,8 +119,9 @@ def handle(msg, state):
             state["client"] = (msg.get("params") or {}).get("clientInfo")
             result = {"protocolVersion": (msg.get("params") or {}).get("protocolVersion") or PROTOCOL,
                       "capabilities": {"tools": {}}, "serverInfo": {"name": "savetokens", "version": __version__},
-                      "instructions": "Usage limits for Claude Code and Codex: call pacing_brief when limits or"
-                                      " usage come up, and estimate_job before a large job."}
+                      "instructions": "Usage limits for Claude Code, Codex and Hermes: call pacing_brief when limits or"
+                                      " usage come up, estimate_job before a large job, and suggest_setup when"
+                                      " the user wants to set savetokens up (budgets, prices)."}
         elif method == "tools/list":
             result = {"tools": TOOLS}
         elif method == "tools/call":

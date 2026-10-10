@@ -42,7 +42,7 @@ def focus(looks, all_pools):
     return all_pools[0] if all_pools else None
 
 
-def snapshot(store, now=None, hours=24) -> dict:
+def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     now = now or time.time()
     acct = meter.active_account(store, now)
     looks = forecast.outlook(store, now)
@@ -99,6 +99,16 @@ def snapshot(store, now=None, hours=24) -> dict:
         "sessions": sessions, "accounts": accounts, "alerts": recent, "hits": hits[:6], "track_record": tr,
         "unpriced": {h: m for h in pools.TOOLS for m in [pools.unpriced(store, h, week)] if m},
     }
+    from . import spend
+    try:
+        snap["spend"] = spend.summary(store, now)
+    except Exception as e:   # the limits view must not depend on it
+        snap["spend"] = {"error": str(e)[:200]}
+    from . import setup
+    try:
+        snap["setup"] = setup.steps(store, now, on_server=on_server)
+    except Exception:   # nor on this
+        snap["setup"] = []
     level, text = headline(snap)
     snap["headline"] = {"level": level, "text": text}
     return snap
@@ -386,11 +396,11 @@ def render(snap, width=80, color=True) -> list[str]:
             pause = stopping(x, now)
             name = (x["project"] or x["session"])
             if many:
-                name = ("cx " if x.get("harness") == "codex" else "") + name
+                name = {"codex": "cx ", "hermes": "hm "}.get(x.get("harness"), "") + name
             lines.append(f"  {dot} {name[:18]:18} {today:>6}  {pace:>9}   "
                          + (c("2", pause) if not x.get("running") else pause))
         lines.append(c("2", "    today and last hour are % of each session's weekly limit"
-                       + (" (or API budget); cx = Codex" if many else "")))
+                       + (" (or API budget); cx = Codex, hm = Hermes" if many else "")))
         lines.append("")
 
     by_tool = {}

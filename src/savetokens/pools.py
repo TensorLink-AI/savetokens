@@ -2,8 +2,9 @@
 
   subscription  Claude Code or Codex on a plan: its 5-hour and weekly limits, read from the
                 tool's own meter (the Claude Code statusline, Codex's session logs)
-  api           Claude Code or Codex on an API key: a dollar budget per day, week or month,
-                set with `savetokens api`, against the API price of what was used
+  api           Claude Code or Codex on an API key, or Hermes on any provider's API: a dollar
+                budget per day, week or month, set with `savetokens api`, against the API
+                price of what was used
 
 Each pool has its own demand series, forecast paths and alerts. A subscription's demand is
 in % of its weekly limit an hour; an API pool's is in dollars an hour.
@@ -16,14 +17,14 @@ from datetime import datetime, timedelta, timezone
 
 from . import meter
 
-TOOLS = {"claude-code": "Claude Code", "codex": "Codex"}
+TOOLS = {"claude-code": "Claude Code", "codex": "Codex", "hermes": "Hermes"}
 PERIODS = ("day", "week", "month")
 ACTIVE_SECONDS = 8 * 86400   # a plan whose meter was read in this time still has a pool
 
 
 @dataclass
 class Pool:
-    id: str              # "claude-code", "codex", "claude-code:api", "codex:api"
+    id: str              # "claude-code", "codex", "claude-code:api", "codex:api", "hermes:api"
     harness: str
     kind: str            # "subscription" | "api"
     key: str | None      # forecast paths, ledger series and alerts: the account for Claude's plan, else the id
@@ -55,6 +56,25 @@ def set_budget(store, harness, usd, period, tz=None):
     store.set_meta("budgets", b)
     store.set_meta("budgets_at", time.time())   # the newest setting wins across machines
     return b
+
+
+def plans(store) -> dict:
+    """{provider: {"usd", "period", "tz"}}: subscriptions, a fixed cost (Claude Max, ChatGPT Pro, a flat-rate API)."""
+    return store.meta("plans") or {}
+
+
+def set_plan(store, provider, usd, period, tz=None):
+    p = plans(store)
+    if usd is None:
+        p.pop(provider, None)
+    else:
+        if period not in PERIODS:
+            raise ValueError(f"period is one of {', '.join(PERIODS)}")
+        tz = time.localtime().tm_gmtoff if tz is None else tz
+        p[provider] = {"usd": float(usd), "period": period, "tz": int(tz)}
+    store.set_meta("plans", p)
+    store.set_meta("budgets_at", time.time())   # synced with the budgets
+    return p
 
 
 def pools(store, now=None) -> list[Pool]:

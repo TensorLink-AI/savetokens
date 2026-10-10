@@ -30,6 +30,7 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("SAVETOKENS_HOME", str(tmp_path / "st"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     from savetokens import pricing
     pricing.reset()
     return tmp_path

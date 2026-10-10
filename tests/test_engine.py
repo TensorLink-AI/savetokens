@@ -39,7 +39,7 @@ def fake_ephemeris(monkeypatch):
 def test_ephemeris_forecasts_through_gnomon_and_lands_in_the_ledger(store, fake_ephemeris):
     week_of_readings(store, T0 - 72 * H, 72, per_hour=0.5, resets=T0 + 86400)
     assert forecast.refresh(store, T0, use_ephemeris=True) == ["ephemeris", "baseline"]
-    assert FakeEphemeris.calls == 1
+    assert FakeEphemeris.calls == 2                                  # the plan's demand, and Anthropic's tokens
     o = {x["name"]: x for x in forecast.outlook(store, T0)}["seven_day"]
     assert o["source"] == "ephemeris" and 55 < o["p50"] < 70        # 35.5% now + ~1% an hour for ~24h
     eng = engine.Engine(forecast.ledger_path(store), use_ephemeris=False)

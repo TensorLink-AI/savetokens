@@ -63,7 +63,9 @@ class Engine:
         key = key or ephemeris.api_key()
         if use_ephemeris and key:
             os.environ.setdefault("EPHEMERIS_API_KEY", key)   # Gnomon reads credentials from the environment
-            self.gnomon.register("ephemeris", EphemerisProvider(ephemeris.API, mode="ensemble",
+            name = ephemeris.model()
+            how = {"mode": "ensemble"} if name == "ensemble" else {"mode": "explicit", "model": name}
+            self.gnomon.register("ephemeris", EphemerisProvider(ephemeris.API, **how,
                                                                 token_env="EPHEMERIS_API_KEY", timeout=120),
                                  lifecycle="pretrained")
             self.providers.insert(0, "ephemeris")

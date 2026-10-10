@@ -79,7 +79,7 @@ def test_the_mcp_server_lists_and_calls_its_tools(store, monkeypatch):
     got = {r["id"]: r for r in map(json.loads, out.getvalue().splitlines())}
     assert set(got) == {1, 2, 3, 4, 5}                       # no reply to the notification
     assert got[1]["result"]["serverInfo"]["name"] == "savetokens"
-    assert {t["name"] for t in got[2]["result"]["tools"]} == {"pacing_brief", "estimate_job"}
+    assert {t["name"] for t in got[2]["result"]["tools"]} == {"pacing_brief", "estimate_job", "spend_summary", "suggest_setup"}
     assert "weekly limit" in got[3]["result"]["content"][0]["text"]
     assert "points" in got[4]["result"]["content"][0]["text"]
     assert got[5]["error"]["code"] == -32602

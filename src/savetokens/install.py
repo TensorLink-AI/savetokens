@@ -1,5 +1,5 @@
-"""Install into Claude Code (and Codex's skill folder, when Codex is here) and remove again.
-Every change is shown before it is made. Codex needs no hooks: its sessions are read by upkeep."""
+"""Install into Claude Code (and Codex and Hermes, when they are here) and remove again.
+Every change is shown before it is made. Codex and Hermes need no hooks: upkeep reads their sessions."""
 from __future__ import annotations
 
 import json
@@ -55,6 +55,11 @@ def skill_path() -> Path:
 def codex_skill_path() -> Path:
     from . import codex
     return codex.codex_home() / "skills" / "savetokens" / "SKILL.md"
+
+
+def hermes_skill_path() -> Path:
+    from . import hermes
+    return hermes.hermes_home() / "skills" / "savetokens" / "SKILL.md"
 
 
 def settings_path() -> Path:
@@ -137,6 +142,74 @@ def remove_codex_mcp():
         path.write_text(_without_codex_mcp(path.read_text()))
 
 
+def _hermes_config():
+    from . import hermes
+    return hermes.hermes_home() / "config.yaml"
+
+
+def _without_hermes_mcp(text):
+    """Hermes's config.yaml without our server: the marked block, or (once Hermes has rewritten the file and
+    dropped the comments) a `savetokens:` server under mcp_servers that runs `savetokens mcp`."""
+    text = _without_codex_mcp(text)
+    lines, out, i = text.splitlines(), [], 0
+    while i < len(lines):
+        line = lines[i]
+        indent = len(line) - len(line.lstrip())
+        if indent and line.strip() == "savetokens:":
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or len(lines[j]) - len(lines[j].lstrip()) > indent):
+                j += 1
+            body = "\n".join(lines[i + 1:j])
+            if "savetokens" in body and "mcp" in body:
+                i = j
+                continue
+        out.append(line)
+        i += 1
+    return "\n".join(out).rstrip() + ("\n" if out else "")
+
+
+def add_hermes_mcp(exe) -> bool:
+    """A savetokens server under mcp_servers in Hermes's config.yaml, between marker comments (one of yours is
+    kept). False when mcp_servers is written in a form this can't safely add to."""
+    path = _hermes_config()
+    text = _without_hermes_mcp(path.read_text()) if path.exists() else ""
+    parts = shlex.split(exe)
+    lines = text.splitlines()
+    at = next((i for i, l in enumerate(lines) if l.split("#")[0].rstrip() in ("mcp_servers:", "mcp_servers: {}")),
+              None)
+    if at is None and any(l.startswith("mcp_servers:") for l in lines):
+        return False                                   # a flow-style map: leave it to the user
+    if at is not None and any(l.strip() == "savetokens:" for l in lines[at + 1:]):
+        return True
+    pad = "  "
+    if at is not None:
+        nxt = next((l for l in lines[at + 1:] if l.strip() and not l.lstrip().startswith("#")), "")
+        pad = " " * ((len(nxt) - len(nxt.lstrip())) or 2)     # the file's own indent
+    server = ["savetokens:", f"{pad}command: {json.dumps(parts[0])}", f"{pad}args: {json.dumps(parts[1:] + ['mcp'])}"]
+    if at is None:
+        lines += ["", CODEX_MCP_START, "mcp_servers:"] + [pad + l for l in server] + [CODEX_MCP_END]
+    else:
+        lines[at] = "mcp_servers:"
+        lines[at + 1:at + 1] = [pad + CODEX_MCP_START] + [pad + l for l in server] + [pad + CODEX_MCP_END]
+    if path.exists():
+        backup = home() / "backups" / "hermes-config.yaml"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        if not backup.exists():
+            shutil.copy2(path, backup)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines).lstrip("\n") + "\n")
+    return True
+
+
+def remove_hermes_mcp():
+    path = _hermes_config()
+    if path.exists():
+        text = path.read_text()
+        new = _without_hermes_mcp(text)
+        if new != text:
+            path.write_text(new)
+
+
 def plan(exe=None):
     """(new settings, config updates, human-readable changes)."""
     exe = exe or executable()
@@ -182,22 +255,26 @@ def import_old_meter(store: Store, old: Path | None = None) -> int:
 
 
 def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, token=None, out=print, ask=input,
-            run=subprocess.run, code=None, tell_agent=None, mcp=True) -> bool:
+            run=subprocess.run, code=None, tell_agent=None, mcp=True, secret=None) -> bool:
     """server with token or code: connect to a savetokens server, which then makes the forecasts (no key
     needed here). tell_agent: also give the agent a pacing note when a limit is at risk (None: ask)."""
     data, cfg_updates, changes = plan()
     out(f"savetokens will change {settings_path()}:")
     for c in changes:
         out(f"  - {c}")
-    from . import codex
-    has_codex = codex.codex_home().is_dir()
-    out("  - read usage from ~/.claude/projects" + (" and ~/.codex/sessions" if has_codex else "")
-        + ": token counts, limit readings and limit errors only, kept in ~/.savetokens")
-    out(f"  - add the savetokens skill at {skill_path()}" + (f" and {codex_skill_path()}" if has_codex else "")
-        + ": ask your agent about your limits and how to pace them")
+    from . import codex, hermes
+    has_codex, has_hermes = codex.codex_home().is_dir(), hermes.hermes_home().is_dir()
+    others = [s for s, has in (("~/.codex/sessions", has_codex), ("~/.hermes/state.db", has_hermes)) if has]
+    out("  - read usage from " + " and ".join(["~/.claude/projects"] + others)
+        + ": token counts, costs, limit readings and limit errors only, kept in ~/.savetokens")
+    skills = [skill_path()] + [p for p, has in ((codex_skill_path(), has_codex), (hermes_skill_path(), has_hermes))
+                               if has]
+    out(f"  - add the savetokens skill at {' and '.join(map(str, skills))}"
+        ": ask your agent about your limits and how to pace them")
     if mcp:
         out("  - the savetokens MCP server (pacing_brief, estimate_job) for Claude Code"
-            + (" and Codex (a marked block in ~/.codex/config.toml)" if has_codex else "")
+            + (", Codex (a marked block in ~/.codex/config.toml)" if has_codex else "")
+            + (", Hermes (a marked block under mcp_servers in ~/.hermes/config.yaml)" if has_hermes else "")
             + ": your agent can check limits and size jobs without a shell command")
     if server:
         out(f"  - sync with {server}: token counts per request, limit readings and limit hits go there;"
@@ -209,7 +286,7 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
             " limit used. Nothing else. Hourly while you work, every 3 hours otherwise.")
     cron = cron and schedule.available()
     if cron:
-        out("  - one crontab line: upkeep every 10 minutes (reads Codex sessions, keeps forecasts current while"
+        out("  - one crontab line: upkeep every 10 minutes (reads Codex and Hermes sessions, keeps forecasts current while"
             " Claude Code is closed; skip with --no-schedule)")
     if not yes and ask("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
         out("Nothing changed.")
@@ -235,7 +312,7 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
         if not backup.exists():
             shutil.copy2(path, backup)
     _write_json(path, data)
-    for dest in [skill_path()] + ([codex_skill_path()] if has_codex else []):
+    for dest in skills:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SKILL_SRC, dest)
     cfg = load_config()
@@ -246,10 +323,6 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
         cfg.update(server_url=server, server_token=token)
     elif key:
         ephemeris.save_key(key, cfg)
-    elif not no_ephemeris and not ephemeris.api_key(cfg) and not yes:
-        pasted = ask(f"Ephemeris API key (from {ephemeris.SITE}; Enter to skip): ").strip()
-        if pasted:
-            ephemeris.save_key(pasted, cfg)
     save_config(cfg)
     if cron and not schedule.add(executable(), run):
         out("Could not update the crontab; upkeep still runs whenever Claude Code is open.")
@@ -259,6 +332,9 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
                 " Later: claude mcp add --scope user savetokens -- savetokens mcp")
         if has_codex:
             add_codex_mcp(executable())
+        if has_hermes and not add_hermes_mcp(executable()):
+            out("Hermes's mcp_servers is written inline, so the MCP server isn't added there; the skill still"
+                " works. Later: hermes mcp add savetokens --command savetokens --args mcp")
     from . import maintain
     with Store() as s:
         n = capture.backfill(s)
@@ -269,9 +345,9 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
     if server:
         out(f"Couldn't reach {server} yet ({err['error']}); it retries in the background." if err
             else f"Synced with {server}.")
-    elif not no_ephemeris and not ephemeris.api_key():
-        out(f"No Ephemeris key yet: forecasts use the local baseline. Add one with"
-            f" `savetokens ephemeris --key KEY` ({ephemeris.SITE}).")
+    from . import setup
+    with Store() as s:   # plans (their price detected), budgets, the Ephemeris key
+        setup.run(s, load_config(), interactive=not yes, accept=yes, out=out, ask=ask, secret=secret)
     out("The statusline updates on your next message. `savetokens status` shows the full picture.")
     return True
 
@@ -298,7 +374,8 @@ def uninstall(out=print, run=subprocess.run):
     schedule.remove(run)
     remove_claude_mcp(run)
     remove_codex_mcp()
-    for dest in (skill_path(), codex_skill_path()):
+    remove_hermes_mcp()
+    for dest in (skill_path(), codex_skill_path(), hermes_skill_path()):
         if dest.exists():
             shutil.rmtree(dest.parent, ignore_errors=True)
     out(f"Removed savetokens' hooks, statusline, skill, MCP server and crontab line. Your data stays in {home()}.")

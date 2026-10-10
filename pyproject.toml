@@ -27,7 +27,7 @@ savetokens = "savetokens.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/savetokens"]
-artifacts = ["src/savetokens/skill/SKILL.md"]
+artifacts = ["src/savetokens/skill/SKILL.md", "src/savetokens/web/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

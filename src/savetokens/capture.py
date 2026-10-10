@@ -1,5 +1,5 @@
 """Claude Code capture: usage and limit hits from transcripts, limit readings from the statusline.
-(Codex has its own reader, codex.py; backfill reads both.)
+(Codex and Hermes have their own readers, codex.py and hermes.py; backfill reads all three.)
 
 Transcripts repeat one assistant message per content block with the same message
 id and request id, so usage is keyed on both (as ccusage does). A limit error
@@ -187,13 +187,14 @@ def transcripts(root: Path | None = None):
 
 
 def backfill(store: Store, root: Path | None = None) -> int:
-    """Every Claude Code and Codex session on this machine. Older sessions' account is unknown, so it is
-    left empty."""
-    from . import codex
+    """Every Claude Code, Codex and Hermes session on this machine. Older sessions' account is unknown, so it
+    is left empty."""
+    from . import codex, hermes
     from .store import load_config
     bill = billing(store)
     n = sum(ingest_file(store, p, bill=bill) for p in transcripts(root))
-    return n + codex.backfill(store, billing=(load_config().get("billing") or {}).get(codex.HARNESS))
+    n += codex.backfill(store, billing=(load_config().get("billing") or {}).get(codex.HARNESS))
+    return n + hermes.backfill(store)
 
 
 def ingest_session(store: Store, transcript_path, acct=None):

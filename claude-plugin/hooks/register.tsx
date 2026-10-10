@@ -84,7 +84,7 @@ const ifStopped = (x: NonNullable<Snapshot['sessions']>[number]) => {
   return `saves ${w.adds.toFixed(1)}%${w.short ? ` of ${w.short}` : ''}`
 }
 
-const TOOLS: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex' }
+const TOOLS: Record<string, string> = { 'claude-code': 'Claude Code', codex: 'Codex', hermes: 'Hermes' }
 const STAGE: Record<string, string> = { heads_up: 'heads-up', act: 'act now', last_call: 'last call' }
 const STAGE_COLOR: Record<string, string> = { heads_up: 'yellow', act: 'red', last_call: 'red' }
 
@@ -210,13 +210,13 @@ export const register: Register = on => {
             {sessions.map(x => (
               <Text wrap="truncate-end" dimColor={!x.running}>
                 <Text color={x.running ? 'green' : undefined}>{x.running ? '●' : '○'}</Text>
-                {' ' + ((many && x.harness === 'codex' ? 'cx ' : '') + (x.project ?? x.session ?? '?')).slice(0, 14).padEnd(15)}
+                {' ' + ((many ? ({ codex: 'cx ', hermes: 'hm ' } as Record<string, string>)[x.harness ?? ''] ?? '' : '') + (x.project ?? x.session ?? '?')).slice(0, 14).padEnd(15)}
                 {(x.pct_week !== null ? `${x.pct_week.toFixed(1)}%` : '–').padStart(6)}
                 {(x.running && x.pace ? `${x.pace.toFixed(1)}%` : '–').padStart(9)}
                 {x.session ? '   ' + ifStopped(x) : ''}
               </Text>
             ))}
-            <Text dimColor>today and last hr: % of each session's weekly limit{many ? ' (or API budget); cx = Codex' : ''}</Text>
+            <Text dimColor>today and last hr: % of each session's weekly limit{many ? ' (or API budget); cx = Codex, hm = Hermes' : ''}</Text>
             <Text> </Text>
           </Box>
         )}

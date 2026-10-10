@@ -7,6 +7,7 @@
   GET  /v1/pull    other machines' meter readings and hits, and the newest forecast paths
   GET  /v1/status     the current outlook per limit (JSON)
   GET  /v1/dashboard  everything the dashboard draws, across every machine
+  GET  /           the browser view (sign in with a join code; it then reads /v1/dashboard)
 
 One SQLite database per user, with the same schema and engine as a machine:
 forecasts are made here (Ephemeris with the server's key) on the same cadence,
@@ -179,21 +180,45 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             self._send(200, {"added": added})
 
         def _settings(self, user, body):
-            budgets, at = body["budgets"], float(body["at"])
-            if not isinstance(budgets, dict) or not all(
+            if "detected" in body:
+                return self._detected(user, body)
+            budgets, plans, at = body["budgets"], body.get("plans") or {}, float(body["at"])
+            if not all(isinstance(d, dict) and all(
                     isinstance(b, dict) and isinstance(b.get("usd"), (int, float)) and b.get("period") in PERIODS
-                    for b in budgets.values()):
+                    for b in d.values()) for d in (budgets, plans)):
                 return self._send(400, {"error": "bad budgets"})
             with users.store(user) as s:
                 if at > (s.meta("budgets_at") or 0):
-                    s.set_meta("budgets", {h: {"usd": float(b["usd"]), "period": b["period"],
-                                               "tz": int(b.get("tz") or 0)} for h, b in budgets.items()})
+                    for key, d in (("budgets", budgets), ("plans", plans)):
+                        s.set_meta(key, {h: {"usd": float(b["usd"]), "period": b["period"],
+                                             "tz": int(b.get("tz") or 0)} for h, b in d.items()})
                     s.set_meta("budgets_at", at)
+                if isinstance(body.get("tz"), int):
+                    s.set_meta("tz", body["tz"])   # the user's clock, for days, weeks and months
             with lock:
                 dirty.add(user)
             self._send(200, {"ok": True})
 
+        def _detected(self, user, body):
+            """A machine's tools and plans (names and list prices only), for the setup list."""
+            from .pools import TOOLS
+            got, machine = body["detected"], str(body.get("machine") or "")[:64]
+            if not isinstance(got, dict) or not all(
+                    h in TOOLS and isinstance(d, dict) and d.get("billing") in ("api", "subscription", None)
+                    and isinstance(d.get("usd"), (int, float, type(None))) and isinstance(d.get("plan"), (str, type(None)))
+                    for h, d in got.items()):
+                return self._send(400, {"error": "bad detected"})
+            with users.store(user) as s:
+                all_ = s.meta("detected") or {}
+                all_[machine] = {h: {"billing": d.get("billing"), "plan": (d.get("plan") or None) and d["plan"][:40],
+                                     "usd": d.get("usd")} for h, d in got.items()}
+                s.set_meta("detected", all_)
+            self._send(200, {"ok": True})
+
         def do_GET(self):
+            from . import web
+            if web.send_static(self, self.path):
+                return
             if self.path == "/healthz":
                 from . import __version__
                 return self._send(200, {"ok": True, "version": __version__})
@@ -215,10 +240,11 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     out["ephemeris_last"] = s.meta("ephemeris_last")
                     out["track_record"] = s.meta("track_record")
                     out["budgets"], out["budgets_at"] = s.meta("budgets"), s.meta("budgets_at")
+                    out["plans"] = s.meta("plans")
                     return self._send(200, out)
                 if url.path == "/v1/dashboard":
                     from . import dashboard
-                    return self._send(200, dashboard.snapshot(s))
+                    return self._send(200, dashboard.snapshot(s, on_server=True))
                 if url.path == "/v1/status":
                     return self._send(200, {"outlook": forecast.outlook(s), "made_at": s.meta("forecast_made_at")})
             self._send(404, {"error": "not found"})
@@ -267,7 +293,7 @@ def serve(data: Path, host="127.0.0.1", port=8787, log=print):
     dirty, lock, stop = set(), threading.Lock(), threading.Event()
     threading.Thread(target=engine_loop, args=(users, dirty, lock, stop, log), daemon=True).start()
     httpd = ThreadingHTTPServer((host, port), make_handler(users, dirty, lock))
-    log(f"savetokens server on http://{host}:{port} (data in {data})")
+    log(f"savetokens server on http://{host}:{port} (data in {data}); the browser view is at /")
     try:
         httpd.serve_forever()
     finally:

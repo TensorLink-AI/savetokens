@@ -1,4 +1,4 @@
-"""savetokens: know when you'll run out of Claude Code or Codex, before you do."""
+"""savetokens: know when you'll run out of Claude Code, Codex or your Hermes budget, before you do."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,41 @@ import time
 from . import __version__
 
 HOOK_BUDGET_SECONDS = 2
+
+# exit codes, the same for every command (for agents and scripts)
+OK, ERROR, USAGE, AT_RISK, WONT_FIT = 0, 1, 2, 3, 4
+EXIT_CODES = """exit codes:
+  0  done; or (check) every limit on track and the job fits
+  1  failed: with --json, {"ok": false, "error": ..., "fix": a command to run} on stdout
+  2  bad arguments
+  3  (check) a limit is at risk, or the job has to wait for a reset
+  4  (check) the job doesn't fit before the limit resets
+
+Every command takes --json: one JSON object on stdout, with "ok": true or false."""
+
+
+class Fail(Exception):
+    """A failure the caller can act on: what went wrong, and the command that fixes it."""
+
+    def __init__(self, error, fix=None, code=ERROR):
+        super().__init__(error)
+        self.error, self.fix, self.code = error, fix, code
+
+
+def _out(args, data, text):
+    """One result: JSON when --json was given, else the text."""
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": True, **data}, default=str))
+    elif text:
+        print(text)
+
+
+def _fail(args, e: Fail):
+    if getattr(args, "json", False):
+        print(json.dumps({"ok": False, "error": e.error, "fix": e.fix, "exit": e.code}))
+    else:
+        print(f"savetokens: {e.error}" + (f"\n  fix: {e.fix}" if e.fix else ""), file=sys.stderr)
+    return e.code
 
 
 def _hook():
@@ -60,6 +95,41 @@ def models(store, since):
     return [(r[0], r[1] / total, r[2] / r[1]) for r in rows] if total else []
 
 
+def _found(s, now) -> list[str]:
+    """What the history holds, per tool, over the last 30 days: for a first run, before any limit reading."""
+    from . import pools
+    rows = s.conn.execute("SELECT harness, COUNT(*), SUM(input + output + cache_read + cache_write_5m + cache_write_1h),"
+                          " MIN(ts)"
+                          " FROM usage WHERE ts >= ? GROUP BY harness ORDER BY 3 DESC", (now - 30 * 86400,))
+    return [f"{pools.TOOLS.get(h, h)}: {_tok(t or 0)} tokens in {n:,} requests since"
+            f" {time.strftime('%d %b', time.localtime(first))}" for h, n, t, first in rows]
+
+
+def overview() -> int:
+    """`savetokens` on its own: what's here, and the next step."""
+    from . import install, setup
+    from .store import load_config
+    found = setup.detected()
+    done = install._our_statusline(install._read_json(install.settings_path()).get("statusLine"))
+    print(f"savetokens {__version__}: pacing alerts and spend forecasts for Claude Code, Codex and Hermes.")
+    if found:
+        from .pools import TOOLS
+        how = {k: v["plan"] or ("pay as you go" if k == "hermes" else v["billing"]) or "found" for k, v in found.items()}
+        print("Found here: " + "; ".join(f"{TOOLS[k]} ({h})" for k, h in how.items()))
+    if not done:
+        print("\nStart with:  savetokens install    (shows every change first, then sets up the rest)")
+    else:
+        from .store import Store
+        with Store() as st:
+            left = [x for x in setup.todo(setup.steps(st, cfg=load_config(), found=found)) if not x["optional"]]
+        if left:
+            print(f"\n{len(left)} thing{'s' if len(left) > 1 else ''} left to set up:  savetokens setup")
+    print("\n  savetokens status    each limit, and when you'd run out\n  savetokens spend     tokens and $ by"
+          " provider, and what's coming\n  savetokens web       all of it in your browser\n  savetokens --help    every"
+          " command")
+    return 0
+
+
 def cmd_status(args):
     from . import alerts, forecast, meter, sync
     from .store import Store, load_config
@@ -67,19 +137,34 @@ def cmd_status(args):
         now = time.time()
         looks = forecast.outlook(s, now)
         if args.json:
-            print(json.dumps({"outlook": looks, "models": [dict(zip(("model", "share", "subagents"), m))
+            print(json.dumps({"ok": True, "outlook": looks, "models": [dict(zip(("model", "share", "subagents"), m))
                                                            for m in models(s, now - 7 * 86400)], "hits": [dict(r) for r in s.conn.execute(
                 "SELECT ts, kind, model FROM hits ORDER BY ts DESC LIMIT 20")]}, indent=2))
             return 0
         cfg = load_config()
         acct = meter.active_account(s, now)
+        if not looks and not s.conn.execute("SELECT 1 FROM usage LIMIT 1").fetchone():
+            from . import capture, maintain
+            print("Reading your Claude Code, Codex and Hermes history (first run; counts only)...", flush=True)
+            capture.backfill(s)
+            maintain.update(s, now, use_ephemeris=False)   # a first forecast from what was read, at once
+            looks = forecast.outlook(s, now)
         if not looks:
-            print("No limit readings yet. They arrive through the Claude Code statusline and Codex's session"
-                  " logs: send a message in either, then run this again. On an API key: `savetokens api`.")
+            found = _found(s, now)
+            if found:
+                print("Found in your history (last 30 days):\n  " + "\n  ".join(found))
+            print("No limit readings yet: they arrive with your next message in Claude Code (through its statusline)"
+                  " or Codex. Then this shows each limit and when you'd run out."
+                  + ("" if found else " On an API key: `savetokens api`."))
+            print("Meanwhile: `savetokens spend` shows tokens and $ by provider.")
+        from . import ephemeris
+        trouble = ephemeris.problem(s) if not sync.connected(cfg) else None
+        if trouble:
+            print("⚠ " + ephemeris.problem_text(trouble))
         src = looks[0]["source"] if looks else None
         made = s.meta("forecast_made_at")
         how = {"ephemeris": "Ephemeris", "baseline": "local baseline", None: "none yet"}[src]
-        print(f"Claude account {acct or '?'} · forecast: {how}"
+        print((f"Claude account {acct} · " if acct else "") + f"forecast: {how}"
               + (f", made {(now - made) / 3600:.1f}h ago" if made else "")
               + (" · synced with " + sync.settings(cfg)["server_url"] if sync.connected(cfg) else ""))
         for o in looks:
@@ -131,14 +216,12 @@ def cmd_status(args):
 def cmd_maintain(args):
     from . import maintain
     from .store import Store
-    log = (lambda *_: None) if args.quiet else print
+    log = (lambda *_: None) if args.quiet or args.json else print
     with Store() as s:
         new = maintain.run(s, log=log)
     if not args.quiet:
-        for a in new:
-            print(a["message"])
-        if not new:
-            print("up to date; no new alerts")
+        _out(args, {"alerts": [a["message"] for a in new]},
+             "\n".join(a["message"] for a in new) or "up to date; no new alerts")
     return 0
 
 
@@ -148,24 +231,35 @@ def cmd_backfill(args):
     with Store() as s:
         n = capture.backfill(s)
         m = install.import_old_meter(s)
-    print(f"read {n:,} new requests" + (f" and {m:,} earlier limit readings" if m else ""))
+    _out(args, {"requests": n, "readings": m},
+         f"read {n:,} new requests" + (f" and {m:,} earlier limit readings" if m else ""))
     return 0
 
 
 def cmd_install(args):
     from . import install
     if bool(args.server) != bool(args.token or args.code):
-        print("--server goes with --code (from `savetokens pair`) or --token")
-        return 2
-    return 0 if install.install(yes=args.yes, key=args.key, no_ephemeris=args.no_ephemeris,
-                                cron=not args.no_schedule, server=args.server, token=args.token, code=args.code,
-                                tell_agent=True if args.tell_agent else (False if args.yes else None),
-                                mcp=not args.no_mcp) else 1
+        raise Fail("--server goes with --code (from `savetokens pair`) or --token",
+                   "savetokens install --server URL --code XXXX-XXXX", USAGE)
+    if args.json and not args.yes:
+        raise Fail("install shows its changes and asks first; with --json, agree up front with --yes",
+                   "savetokens install --yes --json", USAGE)
+    log = []
+    done = install.install(yes=args.yes, key=args.key, no_ephemeris=args.no_ephemeris, cron=not args.no_schedule,
+                           server=args.server, token=args.token, code=args.code,
+                           tell_agent=True if args.tell_agent else (False if args.yes else None),
+                           mcp=not args.no_mcp, out=log.append if args.json else print)
+    if not done:
+        raise Fail(log[-1] if log else "nothing changed")
+    _out(args, {"installed": True, "log": log}, None)
+    return 0
 
 
 def cmd_uninstall(args):
     from . import install
-    install.uninstall()
+    log = []
+    install.uninstall(out=log.append if args.json else print)
+    _out(args, {"removed": True, "log": log}, None)
     return 0
 
 
@@ -174,57 +268,81 @@ def cmd_ephemeris(args):
     from .store import Store, load_config, save_config
     cfg = load_config()
     if args.key:
-        ephemeris.save_key(args.key, cfg)
+        ephemeris.save_key(_key_arg(args.key), cfg)
         cfg["forecaster"] = "ephemeris"
     elif args.off:
         cfg["forecaster"] = "baseline"
     elif args.on:
         cfg["forecaster"] = "ephemeris"
+    if args.model:
+        cfg["ephemeris_model"] = None if args.model == ephemeris.DEFAULT_MODEL else args.model
     save_config(cfg)
     key = ephemeris.api_key(cfg)
-    print(f"forecaster: {cfg['forecaster']}; key: {'found' if key else 'none'} ({ephemeris.SITE})")
-    if key and cfg["forecaster"] == "ephemeris":
+    forecaster = cfg.get("forecaster", "ephemeris")
+    data, lines = {"forecaster": forecaster, "model": ephemeris.model(cfg), "key": bool(key), "site": ephemeris.SITE}, [
+        f"forecaster: {forecaster}, model {ephemeris.model(cfg)}; key: {'found' if key else 'none'} ({ephemeris.SITE})"]
+    if key and forecaster == "ephemeris":
         try:
-            print(f"credits available: {ephemeris.balance(key):,.0f}")
+            data["credits"] = ephemeris.balance(key)
+            lines.append(f"credits available: {data['credits']:,.0f}")
         except Exception as e:
-            print(f"key not accepted: {e}")
+            data["key_error"] = str(e)[:200]
+            lines.append(f"key not accepted: {e}")
     with Store() as s:
         last = s.meta("ephemeris_last")
     if last:
-        print(f"last forecast: {time.strftime('%a %H:%M', time.localtime(last['made_at']))},"
-              f" {last['horizon']}h ahead from {last['history_hours']}h of history, {last['credits']:g} credits")
+        data["last_forecast"] = last
+        lines.append(f"last forecast: {time.strftime('%a %H:%M', time.localtime(last['made_at']))},"
+                     f" {last['horizon']}h ahead from {last['history_hours']}h of history, {last['credits']:g} credits")
+    _out(args, data, "\n".join(lines))
+    if "key_error" in data:
+        raise Fail(f"Ephemeris didn't accept the key: {data['key_error']}", "savetokens ephemeris --key KEY")
     return 0
 
 
 def cmd_api(args):
-    """This machine's Claude Code or Codex runs on an API key: count its usage against a dollar budget."""
+    """This machine's Claude Code or Codex runs on an API key, or Hermes (always pay as you go): count its usage
+    against a dollar budget."""
     from . import pools, sync
     from .store import Store, load_config, save_config
     cfg = load_config()
     billing = cfg.setdefault("billing", {})
     tool = pools.TOOLS[args.tool]
+    lines = []
     with Store() as s:
         if args.off:
             billing.pop(args.tool, None)
             pools.set_budget(s, args.tool, None, None)
-            print(f"{tool} on this machine counts as a subscription again; its API budget is removed")
+            lines.append(f"{tool}'s API budget is removed" if args.tool == "hermes" else
+                         f"{tool} on this machine counts as a subscription again; its API budget is removed")
         else:
-            billing[args.tool] = "api"
+            if args.tool != "hermes":   # Hermes is always billed by its API provider
+                billing[args.tool] = "api"
             if args.budget is not None:
                 pools.set_budget(s, args.tool, args.budget, args.per)
             b = pools.budgets(s).get(args.tool)
-            print(f"{tool} on this machine is on an API key: its usage from now on counts against "
-                  + (f"a budget of ${b['usd']:,.0f} a {b['period']}" if b else
-                     "no budget yet (add one with --budget USD --per day|week|month)"))
+            lines.append(f"{tool} on this machine is on an API key: its usage counts against "
+                         + (f"a budget of ${b['usd']:,.0f} a {b['period']}" if b else
+                            "no budget yet (add one with --budget USD --per day|week|month)"))
             if args.tool == "codex":
-                print("Codex models have no built-in price: add each with `savetokens price MODEL INPUT OUTPUT`"
-                      " ($ per million tokens), or its usage can't count against the budget.")
+                lines.append("Codex models have no built-in price: add each with `savetokens price MODEL INPUT"
+                             " OUTPUT` ($ per million tokens), or its usage can't count against the budget.")
         save_config(cfg)
+        synced = None
         if sync.connected(cfg):
             try:
                 sync.push(s, cfg)
+                synced = True
             except Exception as e:
-                print(f"couldn't reach the server ({e}); it's sent on the next sync")
+                synced = False
+                lines.append(f"couldn't reach the server ({e}); it's sent on the next sync")
+        b = pools.budgets(s).get(args.tool)
+        unpriced = pools.unpriced(s, args.tool, time.time() - 7 * 86400)
+    _out(args, {"tool": args.tool, "billing": "subscription" if args.off else "api", "budget": b,
+                "unpriced_models": unpriced, "synced": synced,
+                "next": [f"savetokens price {m} INPUT OUTPUT" for m in unpriced]
+                + ([] if b or args.off else [f"savetokens api {args.tool} --budget USD --per month"])},
+         "\n".join(lines))
     return 0
 
 
@@ -248,7 +366,9 @@ def cmd_price(args):
                 s.conn.execute("UPDATE usage SET cost_usd = ? WHERE rowid = ?", (c, r["rowid"]))
                 n += 1
         s.conn.commit()
-    print(f"{args.model}: ${args.input:g} in, ${args.output:g} out per million tokens; {n:,} requests priced")
+    _out(args, {"model": args.model, "input": args.input, "output": args.output, "cache_read": args.cache_read,
+                "repriced": n},
+         f"{args.model}: ${args.input:g} in, ${args.output:g} out per million tokens; {n:,} requests priced")
     return 0
 
 
@@ -258,19 +378,183 @@ def cmd_advise(args):
     with Store() as s:
         capture.backfill(s)
         b = advise.brief(s, session_id=args.session)
-    print(json.dumps(mcp._clean(b), default=str) if args.json else advise.brief_text(b))
+    _out(args, mcp._clean(b), advise.brief_text(b))
     return 0
 
 
-def cmd_estimate(args):
-    from . import advise, capture, mcp
+def _money(v):
+    return "–" if v is None else f"${v:,.0f}" if v >= 100 else f"${v:,.2f}"
+
+
+def _tok(v):
+    if v is None:
+        return "–"
+    for unit, d in (("B", 1e9), ("M", 1e6), ("k", 1e3)):
+        if v >= d:
+            return f"{v / d:.1f}{unit}"
+    return f"{v:.0f}"
+
+
+def cmd_spend(args):
+    """Tokens and dollars by provider: today, this week, this month, projected, and the next day/week/month."""
+    from . import capture, spend
     from .store import Store
     with Store() as s:
         capture.backfill(s)
-        e = advise.estimate(s, points=args.points, usd=args.usd, like=args.like, hours=args.hours,
-                            parallel=args.parallel, session_id=args.session)
-    print(json.dumps(mcp._clean(e), default=str) if args.json else e.get("summary") or e.get("error"))
-    return 0 if "error" not in e else 1
+        got = spend.summary(s)
+    if args.json:
+        _out(args, got, None)
+        return 0
+    names = {"day": ("today", "next 24 h"), "week": ("this week", "next 7 days"), "month": ("this month", "next 30 days")}
+    lines = [f"{'':22}" + "".join(f"{names[k][0]:>26}" for k in spend.PERIODS)]
+
+    def row(name, cells):
+        """cells: {period: (cost so far, tokens so far, likely cost by its end or None)}"""
+        out = f"{name[:22]:22}"
+        for k in spend.PERIODS:
+            cost, tokens, proj = cells.get(k, (None, None, None))
+            out += (f"{_money(cost):>9} {_tok(tokens):>6}" + (f" → {_money(proj):>7}" if proj is not None else " " * 10)
+                    if cost is not None else " " * 26)
+        return out
+
+    def p50(x):
+        return (x.get("projected") or {}).get("cost", [None] * 3)[1] if (x.get("projected") or {}).get("cost") else None
+    lines.append(row("all providers", {k: (x["cost"], x["tokens"], p50(x)) for k, x in got["periods"].items()}))
+    for e in got["providers"]:
+        lines.append(row(e["label"] + (" (plan)" if e["plan"] else ""),
+                         {k: (x["cost"], x["tokens"], p50(x)) for k, x in e["periods"].items()}))
+        if args.models:
+            for m in e["models"][:6]:
+                lines.append(row("  " + m["model"], {k: (v["usd"], v["tokens"], v.get("projected_usd"))
+                                                     for k, v in m["periods"].items()}))
+    lines.append("")
+    lines.append("cost so far, tokens so far → likely total by the period's end. Cost is pay-as-you-go spend plus"
+                 " subscriptions spread over time.")
+    nxt = got["periods"]
+    lines.append("coming: " + "; ".join(f"{names[k][1]} {_money(nxt[k]['next']['cost'][1])}"
+                                        f" ({_money(nxt[k]['next']['cost'][0])}–{_money(nxt[k]['next']['cost'][2])})"
+                                        for k in spend.PERIODS if nxt[k]["next"]["cost"]))
+    from . import setup
+    with Store() as st:
+        unset = [x for x in setup.todo(setup.steps(st)) if x["id"].startswith("plan:")]
+    for x in unset:   # until a plan has its price, its cost shows as $0
+        lines.append(f"{x['title'].split(':')[0]} isn't counted yet: " + (
+            f"`savetokens setup --yes` counts it at ${x['default']:,.0f} a month" if x["default"] is not None
+            else f"`{x['command']}`"))
+    print("\n".join(lines))
+    return 0
+
+
+def cmd_plan(args):
+    """A subscription's fixed price, so spend counts it (and not the API value of what it covers)."""
+    from . import pools, sync
+    from .store import Store, load_config
+    with Store() as s:
+        pools.set_plan(s, args.provider, None if args.off else args.usd, args.per)
+        got = pools.plans(s).get(args.provider)
+        cfg = load_config()
+        if sync.connected(cfg):
+            try:
+                sync.push(s, cfg)
+            except Exception:
+                pass
+    _out(args, {"provider": args.provider, "plan": got},
+         f"{args.provider}: " + (f"${got['usd']:,.0f} a {got['period']}, counted as a fixed cost" if got
+                                 else "no subscription; its usage counts as pay as you go"))
+    return 0
+
+
+def _key_arg(value):
+    """--key -: read the key from stdin, so it stays out of shell history."""
+    return sys.stdin.readline().strip() if value == "-" else value
+
+
+def cmd_setup(args):
+    """One pass through what's left: plans (their price detected), budgets, the Ephemeris key."""
+    from . import setup
+    from .store import Store, load_config
+    key = _key_arg(args.key)
+    interactive = not (args.yes or args.json) and sys.stdin.isatty()
+    log = []
+    with Store() as s:
+        got = setup.run(s, load_config(), interactive=interactive, accept=args.yes, key=key,
+                        out=log.append if args.json else print)
+    left = setup.todo(got["steps"])
+    _out(args, {"changed": got["changed"], "steps": got["steps"], "left": [x["id"] for x in left], "log": log},
+         None)
+    if key and "ephemeris key" not in got["changed"]:
+        raise Fail("Ephemeris didn't accept that key", f"create one at {setup.SIGNUP}")
+    return 0
+
+
+def cmd_suggest(args):
+    from . import advise
+    from .store import Store
+    with Store() as s:
+        got = advise.setup(s)
+    _out(args, {"suggestions": got}, "\n".join(f"{x['why']}:\n  {x['command']}" for x in got) or "nothing to set up")
+    return 0
+
+
+def _estimate(s, args, pool=None):
+    from . import advise
+    e = advise.estimate(s, points=args.points, usd=args.usd, like=args.like, hours=args.hours,
+                        parallel=max(1, args.parallel), session_id=args.session, pool=pool)
+    if "error" in e:
+        raise Fail(e["error"], "savetokens estimate --hours H (or --points, --usd, --like small|typical|big)"
+                   if "size" in e["error"] else "savetokens status (it needs a few hours of usage first)")
+    return e
+
+
+def cmd_estimate(args):
+    from . import capture, mcp
+    from .store import Store
+    with Store() as s:
+        capture.backfill(s)
+        e = _estimate(s, args, args.pool)
+    _out(args, mcp._clean(e), e["summary"])
+    return 0
+
+
+def cmd_check(args):
+    """One verdict for a script or agent to act on, as the exit code: on track (0), at risk (3), won't fit (4)."""
+    from . import alerts, capture, forecast, mcp, pools
+    from .store import Store
+    sized = any(v is not None for v in (args.points, args.usd, args.like, args.hours))
+    with Store() as s:
+        capture.backfill(s)
+        now = time.time()
+        every = pools.pools(s, now)
+        if args.tool and not any(p.harness == args.tool for p in every):
+            raise Fail(f"no limits known for {args.tool} yet",
+                       f"savetokens api {args.tool} --budget USD --per month" if args.tool == "hermes"
+                       else "savetokens status")
+        looks = [o for o in forecast.outlook(s, now) if not args.tool or o["harness"] == args.tool]
+        pool = next((p.id for p in every if p.harness == args.tool), None) if args.tool else None
+        job = _estimate(s, args, pool) if sized else None
+    limits = [{k: o.get(k) for k in ("pool", "label", "kind", "used", "p50", "p10", "p90", "p_hit", "eta",
+                                       "resets", "spent_usd", "budget_usd")} | {"stage": alerts.stage(o, now)}
+              for o in looks]
+    risky = [x for x in limits if x["stage"]]
+    reasons = [f"{x['label']}: {x['stage'].replace('_', ' ')}" for x in risky]
+    code = AT_RISK if risky else OK
+    if job:
+        w = job.get("likely_at_reset_with_job")
+        if job["finish"] is None or (w is not None and w > 100):
+            code = WONT_FIT
+            reasons.insert(0, "the job doesn't fit before the limit resets")
+        elif job["waits"]:
+            code = max(code, AT_RISK)
+            reasons.insert(0, "the job has to wait for a 5-hour reset")
+    verdict = {OK: "on_track", AT_RISK: "at_risk", WONT_FIT: "wont_fit"}[code]
+    if not limits:
+        verdict = "no_data"
+    text = {"on_track": "on track", "at_risk": "at risk", "wont_fit": "won't fit",
+            "no_data": "no limits known yet (savetokens status)"}[verdict]
+    _out(args, {"verdict": verdict, "exit": code, "reasons": reasons, "limits": mcp._clean(limits),
+                "job": mcp._clean(job) if job else None},
+         "\n".join([text + (": " + "; ".join(reasons) if reasons else "")] + ([job["summary"]] if job else [])))
+    return code
 
 
 def cmd_mcp(args):
@@ -291,15 +575,16 @@ def cmd_join(args):
         with urllib.request.urlopen(req, timeout=30) as r:
             token = json.load(r)["token"]
     except Exception as e:
-        print(f"couldn't join: {e}")
-        return 1
+        raise Fail(f"couldn't join {args.url}: {e}",
+                   "get a fresh code (codes last 10 minutes, once): `savetokens pair` on a joined machine")
     cfg = load_config()
     cfg.update(server_url=args.url, server_token=token)
     save_config(cfg)
     with Store() as s:
         n = sync.push(s, cfg)
         got = sync.pull(s, cfg)
-    print(f"joined {args.url}: sent {n:,} rows, received {got['meter']:,} readings from other machines")
+    _out(args, {"server": args.url, "sent": n, "received": got["meter"]},
+         f"joined {args.url}: sent {n:,} rows, received {got['meter']:,} readings from other machines")
     return 0
 
 
@@ -309,10 +594,14 @@ def cmd_pair(args):
     from .store import load_config
     cfg = load_config()
     if not sync.connected(cfg):
-        print("this machine isn't connected to a server (savetokens join URL CODE, or connect URL --token T)")
-        return 1
-    code = sync._call(cfg, "/v1/pair", {})["code"]
-    print(f"On the other machine, within 10 minutes:\n  savetokens join {sync.settings(cfg)['server_url']} {code}")
+        raise Fail("this machine isn't connected to a server", "savetokens join URL CODE")
+    got = sync._call(cfg, "/v1/pair", {})
+    url = sync.settings(cfg)["server_url"]
+    cmd = f"savetokens join {url} {got['code']}"
+    _out(args, {"code": got["code"], "expires_in": got.get("expires_in"), "command": cmd,
+                "browser": f"{url.rstrip('/')}/#code={got['code']}"},
+         f"On the other machine, within 10 minutes:\n  {cmd}\nOr sign in to the browser view with the code:"
+         f" {url.rstrip('/')}/")
     return 0
 
 
@@ -324,14 +613,17 @@ def cmd_connect(args):
         cfg.pop("server_url", None)
         cfg.pop("server_token", None)
         save_config(cfg)
-        print("disconnected; forecasts are made on this machine again")
+        _out(args, {"connected": False}, "disconnected; forecasts are made on this machine again")
         return 0
+    if not (args.url and args.token):
+        raise Fail("connect needs URL and --token (or --off)", "savetokens join URL CODE (no token needed)", USAGE)
     cfg.update(server_url=args.url, server_token=args.token)
     with Store() as s:
         n = sync.push(s, cfg)
         got = sync.pull(s, cfg)
     save_config(cfg)
-    print(f"connected to {args.url}: sent {n:,} rows, received {got['meter']:,} readings from other machines")
+    _out(args, {"connected": True, "server": args.url, "sent": n, "received": got["meter"]},
+         f"connected to {args.url}: sent {n:,} rows, received {got['meter']:,} readings from other machines")
     return 0
 
 
@@ -363,7 +655,7 @@ def cmd_dashboard(args):
         capture.backfill(s)
         snap = _snapshot(s)
     if args.json:
-        print(json.dumps(snap))
+        print(json.dumps({"ok": True, **snap}))
     else:
         print("\n".join(dashboard.render(snap, shutil.get_terminal_size().columns, color=sys.stdout.isatty())))
     return 0
@@ -400,6 +692,13 @@ def cmd_watch(args):
     return 0
 
 
+def cmd_web(args):
+    """The dashboard in the browser, served on this machine only."""
+    from . import web
+    web.serve_local(web.local_snapshot, port=args.port, open_browser=not args.no_open)
+    return 0
+
+
 def cmd_server(args):
     from pathlib import Path
 
@@ -419,17 +718,38 @@ def cmd_server(args):
     return 0
 
 
+def _job_args(s, required):
+    g = s.add_mutually_exclusive_group(required=required)
+    g.add_argument("--points", type=float, help="points of the limit")
+    g.add_argument("--usd", type=float, help="API-equivalent dollars")
+    g.add_argument("--like", help="small, typical, big (past sessions here) or a session id")
+    g.add_argument("--hours", type=float, help="hours of work at your pace")
+    s.add_argument("--parallel", type=int, default=1, help="sessions or subagents at once")
+    s.add_argument("--session", help="a session id (default: the latest one in this folder)")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        return overview()
     if argv[:1] == ["hook"]:
         return _hook()
     if argv[:1] == ["statusline"]:
         return _statusline()
-    p = argparse.ArgumentParser(prog="savetokens", description=__doc__)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="one JSON object on stdout, for agents and scripts")
+    p = argparse.ArgumentParser(prog="savetokens", description=__doc__, epilog=EXIT_CODES,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("install", help="add the statusline and hooks to Claude Code, read history")
-    s.add_argument("--yes", action="store_true")
+
+    def cmd(name, fn, help, json=True, **kw):
+        s = sub.add_parser(name, help=help, description=help, parents=[common] if json else [], epilog=EXIT_CODES,
+                           formatter_class=argparse.RawDescriptionHelpFormatter, **kw)
+        s.set_defaults(fn=fn)
+        return s
+    s = cmd("install", cmd_install, "add the statusline, hooks, skill and MCP server; read history")
+    s.add_argument("--yes", action="store_true", help="don't ask (needed with --json)")
     s.add_argument("--key", help="Ephemeris API key")
     s.add_argument("--no-ephemeris", action="store_true", help="forecast locally only")
     s.add_argument("--no-schedule", action="store_true", help="no crontab line")
@@ -438,71 +758,73 @@ def main(argv=None):
     s.add_argument("--code", help="a join code from that server (instead of a token)")
     s.add_argument("--tell-agent", action="store_true", help="give the agent a pacing note when a limit is at risk")
     s.add_argument("--no-mcp", action="store_true", help="don't register the MCP server")
-    s.set_defaults(fn=cmd_install)
-    sub.add_parser("uninstall", help="remove the statusline, hooks and crontab line").set_defaults(fn=cmd_uninstall)
-    s = sub.add_parser("status", help="each limit: used now, at reset, and when you'd run out")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_status)
-    s = sub.add_parser("watch", help="live dashboard in the terminal (put it in a split pane next to Claude Code)")
+    cmd("uninstall", cmd_uninstall, "remove the statusline, hooks, skill, MCP server and crontab line")
+    cmd("status", cmd_status, "each limit: used now, at reset, and when you'd run out")
+    s = cmd("check", cmd_check, "one verdict in the exit code: 0 on track, 3 at risk, 4 the job won't fit")
+    _job_args(s, required=False)
+    s.add_argument("--tool", choices=["claude-code", "codex", "hermes"], help="only this tool's limits")
+    s = cmd("watch", cmd_watch, "live dashboard in the terminal (put it in a split pane next to your agent)", json=False)
     s.add_argument("--every", type=int, default=15, help="seconds between refreshes")
-    s.set_defaults(fn=cmd_watch)
-    s = sub.add_parser("dashboard", help="the dashboard once (--json for other tools, e.g. the Claude Code pane)")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_dashboard)
-    sub.add_parser("backfill", help="read transcripts again").set_defaults(fn=cmd_backfill)
-    s = sub.add_parser("maintain", help="forecast if due, raise alerts, sync (runs in the background)")
+    s = cmd("web", cmd_web, "the dashboard in your browser (every machine, when connected to a server)", json=False)
+    s.add_argument("--port", type=int, default=8788)
+    s.add_argument("--no-open", action="store_true", help="print the address instead of opening a browser")
+    cmd("dashboard", cmd_dashboard, "the dashboard once (--json for other tools, e.g. the Claude Code pane)")
+    cmd("backfill", cmd_backfill, "read Claude Code, Codex and Hermes sessions again")
+    s = cmd("maintain", cmd_maintain, "forecast if due, raise alerts, sync (runs in the background)")
     s.add_argument("--quiet", action="store_true")
-    s.set_defaults(fn=cmd_maintain)
-    s = sub.add_parser("ephemeris", help="the Ephemeris forecaster: key, on/off, credits")
-    s.add_argument("--key")
+    s = cmd("ephemeris", cmd_ephemeris, "the Ephemeris forecaster: key, on/off, credits")
+    s.add_argument("--key", help="your API key (- reads it from stdin)")
+    s.add_argument("--model", help="the model to forecast with (default toto2-313m), or ensemble: every"
+                                   " model, about 13x the credits")
     s.add_argument("--on", action="store_true")
     s.add_argument("--off", action="store_true")
-    s.set_defaults(fn=cmd_ephemeris)
-    s = sub.add_parser("api", help="Claude Code or Codex on this machine runs on an API key: set a $ budget")
-    s.add_argument("tool", choices=["claude-code", "codex"])
+    s = cmd("api", cmd_api, "Claude Code or Codex on an API key, or Hermes: set a $ budget")
+    s.add_argument("tool", choices=["claude-code", "codex", "hermes"])
     s.add_argument("--budget", type=float, metavar="USD")
     s.add_argument("--per", choices=["day", "week", "month"], default="month")
     s.add_argument("--off", action="store_true", help="back to a subscription")
-    s.set_defaults(fn=cmd_api)
-    s = sub.add_parser("price", help="the API price of a model savetokens doesn't know ($ per million tokens)")
+    s = cmd("spend", cmd_spend, "tokens and $ by provider: today, this week, this month, and what's coming")
+    s.add_argument("--models", action="store_true", help="each provider's models too")
+    s = cmd("plan", cmd_plan, "a subscription's fixed price (Claude Max, ChatGPT Pro, a flat-rate provider)")
+    s.add_argument("provider", help="anthropic, openai, or a provider Hermes uses (as `savetokens spend` names it)")
+    s.add_argument("--usd", type=float)
+    s.add_argument("--per", choices=["day", "week", "month"], default="month")
+    s.add_argument("--off", action="store_true", help="no subscription any more")
+    s = cmd("price", cmd_price, "the API price of a model savetokens doesn't know ($ per million tokens)")
     s.add_argument("model")
     s.add_argument("input", type=float)
     s.add_argument("output", type=float)
     s.add_argument("cache_read", type=float, nargs="?")
-    s.set_defaults(fn=cmd_price)
-    s = sub.add_parser("advise", help="where the limits stand and what to change, biggest effect first")
-    s.add_argument("--json", action="store_true")
+    s = cmd("advise", cmd_advise, "where the limits stand and what to change, biggest effect first")
     s.add_argument("--session", help="a session id (default: the latest one in this folder)")
-    s.set_defaults(fn=cmd_advise)
-    s = sub.add_parser("estimate", help="a job's size and how long it would take, waits for resets included")
-    g = s.add_mutually_exclusive_group(required=True)
-    g.add_argument("--points", type=float, help="points of the limit")
-    g.add_argument("--usd", type=float, help="API-equivalent dollars")
-    g.add_argument("--like", help="small, typical, big (past sessions here) or a session id")
-    g.add_argument("--hours", type=float, help="hours of work at your pace")
-    s.add_argument("--parallel", type=int, default=1, help="sessions or subagents at once")
-    s.add_argument("--session")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_estimate)
-    sub.add_parser("mcp", help="run as an MCP server (stdio) for your agent").set_defaults(fn=cmd_mcp)
-    s = sub.add_parser("join", help="join a savetokens server with a short code (XXXX-XXXX)")
+    s = cmd("estimate", cmd_estimate, "a job's size and how long it would take, waits for resets included")
+    _job_args(s, required=True)
+    s.add_argument("--pool", help="the limit to size it against, e.g. hermes:api (default: this session's)")
+    s = cmd("setup", cmd_setup, "set up subscriptions, API budgets and Ephemeris: detects what it can, asks the rest")
+    s.add_argument("--yes", action="store_true", help="take what was detected (plan prices) and ask nothing")
+    s.add_argument("--key", help="an Ephemeris API key to check and keep (- reads it from stdin)")
+    cmd("suggest", cmd_suggest, "what to set up here (budgets, prices, ...), each with its command; changes nothing")
+    cmd("mcp", cmd_mcp, "run as an MCP server (stdio) for your agent", json=False)
+    s = cmd("join", cmd_join, "join a savetokens server with a short code (XXXX-XXXX)")
     s.add_argument("url")
     s.add_argument("code")
-    s.set_defaults(fn=cmd_join)
-    sub.add_parser("pair", help="a join code for another machine").set_defaults(fn=cmd_pair)
-    s = sub.add_parser("connect", help="sync with a savetokens server, so all machines and accounts add up")
+    cmd("pair", cmd_pair, "a join code for another machine, or for the browser view")
+    s = cmd("connect", cmd_connect, "sync with a savetokens server, so all machines and accounts add up")
     s.add_argument("url", nargs="?")
     s.add_argument("--token")
     s.add_argument("--off", action="store_true")
-    s.set_defaults(fn=cmd_connect)
-    s = sub.add_parser("server", help="run the sync server, or add a user to it")
+    s = cmd("server", cmd_server, "run the sync server (with the browser view at /), or add a user to it", json=False)
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8787)
     s.add_argument("--data", help="data directory (default ~/.savetokens/server)")
     s.add_argument("--add-user", metavar="NAME")
     s.add_argument("--pair", metavar="NAME", help="a join code for one of NAME's machines")
-    s.set_defaults(fn=cmd_server)
     args = p.parse_args(argv)
-    if args.cmd == "connect" and not args.off and not (args.url and args.token):
-        p.error("connect needs URL and --token (or --off)")
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except Fail as e:
+        return _fail(args, e)
+    except KeyboardInterrupt:
+        return 130
+    except Exception as e:   # anything else still answers in the shape the caller asked for
+        return _fail(args, Fail(f"{type(e).__name__}: {str(e)[:300]}"))

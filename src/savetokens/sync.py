@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 import urllib.parse
 import urllib.request
 
@@ -60,8 +61,17 @@ def push(store: Store, cfg) -> int:
             sent += len(rows)
     at = store.meta("budgets_at")
     if at and at > (store.meta("pushed:budgets") or 0):
-        _call(cfg, "/v1/settings", {"budgets": store.meta("budgets") or {}, "at": at})
+        _call(cfg, "/v1/settings", {"budgets": store.meta("budgets") or {}, "plans": store.meta("plans") or {},
+                                    "tz": time.localtime().tm_gmtoff, "at": at})
         store.set_meta("pushed:budgets", at)
+    from . import setup
+    found = setup.detected()   # plan names and list prices, so the server's setup list can name them
+    if found != store.meta("pushed:detected"):
+        try:
+            _call(cfg, "/v1/settings", {"machine": machine, "detected": found})
+            store.set_meta("pushed:detected", found)
+        except Exception:   # an older server: it just can't name the plans
+            pass
     return sent
 
 
@@ -90,6 +100,7 @@ def pull(store: Store, cfg) -> dict:
             store.set_meta(key, got[key])
     if got.get("budgets_at") and got["budgets_at"] > (store.meta("budgets_at") or 0):   # set on another machine
         store.set_meta("budgets", got.get("budgets") or {})
+        store.set_meta("plans", got.get("plans") or {})
         store.set_meta("budgets_at", got["budgets_at"])
         store.set_meta("pushed:budgets", got["budgets_at"])
     return {"meter": len((got.get("meter") or {}).get("rows", [])), "paths": len(got.get("paths", []))}
