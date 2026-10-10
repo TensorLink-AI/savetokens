@@ -124,13 +124,14 @@ def test_signing_in_from_the_terminal(monkeypatch):
     replies = iter([(200, {"device_code": "dc", "user_code": "WDJB-MJHT", "verification_uri": "https://e/device",
                            "verification_uri_complete": "https://e/device?code=WDJB-MJHT", "interval": 1,
                            "expires_in": 600}),
-                    (400, {"error": "authorization_pending"}), (400, {"error": "slow_down"}), (200, {"key": "new-key"})])
+                    (400, {"error": "authorization_pending"}), (400, {"error": "slow_down"}), (400, {"error": "pending"}),
+                    (200, {"key": "new-key"})])
     sent, opened, waits, log = [], [], [], []
     monkeypatch.setattr(ephemeris, "_public", lambda path, body: (sent.append((path, body)), next(replies))[1])
     clock = iter(range(0, 10_000, 10))
     key = ephemeris.device_login(out=log.append, open_url=opened.append, sleep=waits.append, clock=lambda: next(clock))
     assert key == "new-key" and opened == ["https://e/device?code=WDJB-MJHT"] and "WDJB-MJHT" in log[0]
-    assert waits == [1.0, 1.0, 6.0] and sent[0][0] == "device/code" and sent[1] == ("device/token", {"device_code": "dc"})
+    assert waits == [1.0, 1.0, 6.0, 6.0] and sent[0][0] == "device/code" and sent[1] == ("device/token", {"device_code": "dc"})
     monkeypatch.setattr(ephemeris, "_public", lambda path, body: (404, {"error": "not found"}))
     try:
         ephemeris.device_login(out=log.append)

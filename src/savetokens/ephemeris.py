@@ -165,7 +165,7 @@ def device_login(out=print, open_url=None, sleep=time.sleep, clock=time.time, na
         error = r.get("error")
         if error == "slow_down":
             interval += 5
-        elif error != "authorization_pending":
+        elif error not in ("authorization_pending", "pending"):   # "pending": what Ephemeris first shipped
             raise RuntimeError({"access_denied": "you didn't approve it", "expired_token": "the code expired"}
                                .get(error, error or f"HTTP {status}"))
     raise RuntimeError("the code expired")
