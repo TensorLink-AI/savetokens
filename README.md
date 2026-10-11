@@ -1,6 +1,9 @@
 # savetokens
 
-Know when you'll run out of Claude Code, Codex or your Hermes budget, before you do.
+Set a token budget and stick to it, for Claude Code, Codex and Hermes.
+
+savetokens tells you when, at this pace, you'd run out, and what to cut before you do. It doesn't
+change how your tools run: you decide. Each week it shows how you did against your plan.
 
 savetokens watches your Claude Code and Codex limits (each plan's 5-hour and weekly
 limits, or a dollar budget when you're on an API key) and what Hermes Agent spends on
@@ -10,6 +13,13 @@ every account you use.
 
 ```
 5h 12%→34% · wk 41% ⚠ out ~Tue 15:00
+```
+
+```
+Last 7 days: Claude Code $412 (API-equivalent, on your plan), Hermes $38; spend 12% down on the 7 days before.
+  Hermes budget: $38 of the $70 planned for these days, $32 under plan.
+  Claude Code weekly limit: ended at 81% on Fri 17 Oct, 9 points under the 90% forecast early that week.
+  Limit hits: 0 (the 7 days before: 2).
 ```
 
 ## Quick start
@@ -268,6 +278,7 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | | |
 |---|---|
 | `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
+| `recap [--days N]` | the last week (or N days) against your plan: under or over budget and forecast, limit hits |
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |
 | `advise [--json]` | where the limits stand and the options, biggest effect first |
 | `estimate --like small\|typical\|big \| --hours H \| --points P \| --usd D [--parallel N]` | a job's size, run time and whether it fits |

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "savetokens"
 version = "0.3.0"
-description = "Know when you'll run out of Claude Code, Codex or your Hermes budget: limit forecasts, pace alerts and spend across machines."
+description = "Set a token budget and stick to it, for Claude Code, Codex and Hermes: forecasts, pace alerts and a weekly recap across machines."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
