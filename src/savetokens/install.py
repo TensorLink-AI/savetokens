@@ -349,6 +349,8 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
     with Store() as s:   # plans (their price detected), budgets, the Ephemeris key
         setup.run(s, load_config(), interactive=not yes, accept=yes, out=out, ask=ask, secret=secret)
     out("The statusline updates on your next message. `savetokens status` shows the full picture.")
+    if not server:
+        out("More than one machine? On the one that's always on: savetokens server --setup")
     return True
 
 

@@ -143,4 +143,6 @@ tr.total td { font-weight: 650; border-top: 2px solid var(--line); }
 .setup .st-title { font-weight: 600; }
 .setup .cmd { display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; min-width: 0; }
 .setup .cmd code { overflow-wrap: anywhere; }
+.setup #add-env { white-space: pre-wrap; }
+.setup p { margin: 6px 0; }
 .setup .copy { padding: 2px 8px; font-size: 12px; }

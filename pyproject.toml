@@ -4,23 +4,32 @@ build-backend = "hatchling.build"
 
 [project]
 name = "savetokens"
-version = "0.2.0"
-description = "Know when you'll run out of Claude: limit forecasts and pace alerts across machines and accounts."
+version = "0.3.0"
+description = "Know when you'll run out of Claude Code, Codex or your Hermes budget: limit forecasts, pace alerts and spend across machines."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "TensorLink" }]
-keywords = ["claude-code", "rate-limit", "forecasting", "usage", "llm"]
+keywords = ["claude-code", "codex", "hermes", "rate-limit", "usage", "budget", "forecasting", "llm", "mcp"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "Operating System :: POSIX",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development",
 ]
 requires-python = ">=3.11"
 dependencies = ["gnomon-forecast>=1.4"]
+
+[project.urls]
+Homepage = "https://github.com/TensorLink-AI/savetokens"
+Documentation = "https://github.com/TensorLink-AI/savetokens#readme"
+Issues = "https://github.com/TensorLink-AI/savetokens/issues"
 
 [project.scripts]
 savetokens = "savetokens.cli:main"
@@ -28,6 +37,9 @@ savetokens = "savetokens.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/savetokens"]
 artifacts = ["src/savetokens/skill/SKILL.md", "src/savetokens/web/*"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

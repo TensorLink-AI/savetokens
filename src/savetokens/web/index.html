@@ -20,8 +20,8 @@
 <main id="app">
   <section id="signin" class="signin" hidden>
     <h1>Sign in</h1>
-    <p>Run <code>savetokens pair</code> on a machine that's connected to this server, then enter the code here.
-      It works once, for 10 minutes.</p>
+    <p>Enter a join code: run <code>savetokens pair</code> on a machine connected to this hub, or use the code
+      from the line <code>savetokens server --setup</code> printed.</p>
     <form id="signin-form">
       <input id="code" name="code" autocomplete="one-time-code" placeholder="XXXX-XXXX" maxlength="9" required
              spellcheck="false" autocapitalize="characters" aria-label="Join code">
@@ -35,6 +35,16 @@
       <summary><span id="setup-title">Finish setting up</span><span class="muted" id="setup-count"></span></summary>
       <ol id="setup-steps"></ol>
       <p class="note">Or run <code>savetokens setup</code>: it finds your plans and asks for the rest, one question at a time.</p>
+    </details>
+    <details id="adder" class="setup" hidden>
+      <summary><span>Add a machine</span><span class="muted"> laptops, servers, CI, GPU boxes</span></summary>
+      <p>Paste this on each machine. It installs savetokens if needed and joins this hub. It works for 24 hours, for up to 10 machines.</p>
+      <div class="cmd"><code id="add-cmd">…</code><button class="copy" type="button" id="add-copy">Copy</button></div>
+      <p class="note">For CI, containers and short-lived machines, set two environment variables instead:
+        <button type="button" id="add-token">Make a token</button></p>
+      <div class="cmd" id="add-env-row" hidden><code id="add-env"></code><button class="copy" type="button" id="add-env-copy">Copy</button></div>
+      <p class="note" id="add-env-note" hidden>Shown once. Keep it in your CI's secret store; anyone with it can send usage to this hub.</p>
+      <p class="err" id="add-err" role="alert"></p>
     </details>
     <nav class="tabs" role="tablist">
       <button role="tab" id="tab-spend" aria-controls="spend" aria-selected="true">Spend</button>

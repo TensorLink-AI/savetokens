@@ -360,6 +360,37 @@ function drawSetup(s) {
 }
 $("setup").addEventListener("toggle", () => { if (!$("setup").open) store.set("st_setup_closed", $("setup").dataset.sig || ""); });
 
+// ── add a machine (on a hub, signed in with a token) ──
+function copyButton(btn, text) {
+  btn.onclick = () => navigator.clipboard?.writeText(text()).then(() => { btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1500); });
+}
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" },
+                                body: JSON.stringify(body || {}) });
+  const got = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(got.error || `HTTP ${r.status}`);
+  return got;
+}
+$("adder").addEventListener("toggle", async () => {
+  if (!$("adder").open || $("adder").dataset.made) return;
+  $("add-err").textContent = "";
+  try {
+    const got = await post("v1/pair", { machines: 10, hours: 24 });
+    $("add-cmd").textContent = got.command || `savetokens join ${location.origin} ${got.code}`;
+    $("adder").dataset.made = "1";
+  } catch (e) { $("add-err").textContent = `Couldn't make a code (${e.message}).`; }
+});
+copyButton($("add-copy"), () => $("add-cmd").textContent);
+$("add-token").addEventListener("click", async () => {
+  try {
+    const got = await post("v1/token");
+    $("add-env").textContent = `SAVETOKENS_SERVER=${got.url || location.origin}\nSAVETOKENS_TOKEN=${got.token}`;
+    $("add-env-row").hidden = $("add-env-note").hidden = false;
+    $("add-token").disabled = true;
+  } catch (e) { $("add-err").textContent = `Couldn't make a token (${e.message}).`; }
+});
+copyButton($("add-env-copy"), () => $("add-env").textContent);
+
 function showTab(t) {
   tab = t;
   store.set("st_tab", t);
@@ -383,6 +414,7 @@ function show(which) {
   $("signin").hidden = which !== "signin";
   $("view").hidden = which !== "view";
   $("signout").hidden = !store.get("st_token");
+  $("adder").hidden = which !== "view" || !store.get("st_token");   // a hub, not `savetokens web`
   $("refresh").hidden = which !== "view";
 }
 

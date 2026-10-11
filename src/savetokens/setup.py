@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 from pathlib import Path
 
@@ -34,10 +35,21 @@ def _read(path: Path) -> dict:
         return {}
 
 
+def claude_installed() -> bool:
+    """Claude Code is here: its CLI, its account file, a login or its sessions. Not just ~/.claude, which
+    `savetokens install` itself creates (for the statusline) on a machine without Claude Code."""
+    from .capture import claude_home
+    from .install import claude_cli
+    home = claude_home()
+    acct = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
+    return bool(claude_cli() or acct.exists() or (home / ".claude.json").exists()
+                or (home / ".credentials.json").exists() or (home / "projects").is_dir())
+
+
 def claude_plan() -> dict | None:
     """Claude Code's way of paying here: {"billing", "plan", "usd"}, or None when it isn't installed."""
     from .capture import account, api_key_signs, claude_home
-    if not claude_home().is_dir():
+    if not claude_installed():
         return None
     a = account()
     kind, tier = a["plan"], a["tier"]
@@ -173,9 +185,9 @@ def steps(store, now=None, cfg=None, found=None, on_server=False) -> list[dict]:
     # every machine in one view
     if not sync.connected(cfg) and not on_server:
         out.append(_step("server", False, "Other machines: not connected",
-                         "to see every machine together, run a server (savetokens server) or join one",
-                         "savetokens join URL CODE", "a join code from `savetokens pair` on a connected machine",
-                         optional=True))
+                         "using more than one machine? Make the one that's always on your hub; it prints the one"
+                         " line that adds the others (or paste that line here, from your hub)",
+                         "savetokens server --setup", None, optional=True))
     return out
 
 

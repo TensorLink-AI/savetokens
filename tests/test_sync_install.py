@@ -93,3 +93,9 @@ def test_api_mode_is_per_machine_and_tags_new_usage(homes, transcript):
     with Store() as s:
         assert pools.budgets(s) == {}
 
+
+
+def test_the_plugin_ships_the_same_skill_install_does():
+    from pathlib import Path
+    plugin = Path(__file__).parents[1] / "claude-plugin" / "skills" / "savetokens" / "SKILL.md"
+    assert plugin.read_text() == install.SKILL_SRC.read_text()
