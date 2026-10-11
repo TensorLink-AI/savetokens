@@ -303,8 +303,11 @@ def brief(store, now=None, session_id=None, cwd=None, harness=None) -> dict:
         s = sizes(store, now, p.harness, project, scale) or sizes(store, now, p.harness, None, scale)
         if s:
             sizing[p.id] = s | {"usd_per_point": scale.usd_per_point(p.harness, "api" if p.kind == "api" else None)}
+    options = levers(store, now, looks, sessions, me, scale)
+    from . import effects
+    effects.record_shown(store, options, now)   # so a week on, what happened after can be measured
     return {"now": now, "headline": {"level": level, "text": text}, "limits": limits, "this_session": me,
-            "options": levers(store, now, looks, sessions, me, scale),
+            "options": options, "measured": [m for m in effects.followups(store, now)][:3],
             "sessions": [{k: x.get(k) for k in ("project", "harness", "pool", "pct_week", "pace", "subagents",
                                                 "running")} for x in sessions if x.get("session")][:5],
             "sizing": sizing}
@@ -328,9 +331,11 @@ def brief_text(b) -> str:
                      + (f", re-reading ~{me['context_tokens'] / 1000:.0f}k tokens a request" if me["context_tokens"] else "")
                      + ".")
     if b["options"]:
-        lines.append("Options, biggest first:")
+        lines.append("Options, biggest first (each a fact, a what-if under its stated assumption, or a forecast):")
         for o in b["options"][:4]:
-            lines.append(f"- {o['title']}: {o['effect']} How: {o['how']}")
+            lines.append(f"- [{o.get('kind', 'forecast')}] {o['title']}: {o['effect']} How: {o['how']}")
+    for m in b.get("measured") or []:
+        lines.append(f"- [measured] {m['text']}")
     return "\n".join(lines)
 
 

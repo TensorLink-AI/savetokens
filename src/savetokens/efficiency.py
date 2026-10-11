@@ -209,8 +209,11 @@ def what_ifs(f: dict) -> list[dict]:
 def report(store, days=7, now=None, where=None, model=None) -> dict:
     now = now or time.time()
     f = facts(store, now - days * DAY, now, where)
+    from . import effects
+    pids = (where or {}).get("project_id")
     return {"days": days, "facts": f, "what_ifs": what_ifs(f),
-            "other_models": as_model(store, now - days * DAY, now, where, model)[:5]}
+            "other_models": as_model(store, now - days * DAY, now, where, model)[:5],
+            "measured": effects.compare(store, pids if isinstance(pids, list) else None) + effects.followups(store, now)}
 
 
 def _usd(v):
@@ -250,6 +253,9 @@ def text(r) -> str:
         for s in r["other_models"]:
             sub = f", {s['subagent_share']:.0%} of it subagent work" if s["subagent_share"] else ""
             lines.append(f"  {s['model']} at {s['as']}'s prices: {_usd(s['usd'])} -> {_usd(s['usd_as'])}{sub}.")
+    measured = r.get("measured") or []
+    if measured:
+        lines += ["", "Measured (your own history):"] + [f"  {m['text']}" for m in measured]
     gaps = []
     if c and c["unthreaded_tokens"]:
         gaps.append(f"{_n(c['unthreaded_tokens'])} tokens from tools that report per-session totals have no context facts")

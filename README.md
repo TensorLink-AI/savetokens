@@ -90,6 +90,13 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
         $72  Cache the context that's re-sent: at the provider's cache-read price instead.
   ```
 
+  A third kind comes from your own history, once there's enough of it: **measured** effects. Finished tasks
+  compared by how they were worked ("tasks started in a fresh session: median $3.10 against $8.20 for ones that
+  continued an existing session; measured across 9 and 11 finished tasks"), and every suggestion followed up a
+  week after it was first shown, before against after ("share of subagent $ on Sonnet 0% → 82%; $ per
+  finished task $6.40 → $4.90; n 12 and 9. Measured; other things changed too."). Below three tasks on a side,
+  it says "not enough data yet" rather than a number.
+
   There are no rules of thumb inside: prices come from a catalogue of every model OpenRouter lists, from every
   provider (refreshed daily, with your own `savetokens price` on top), so a model released tomorrow is priced
   without an update. `advise`, the agent's tools and the weekly recap use the same numbers.
