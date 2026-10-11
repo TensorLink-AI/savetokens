@@ -14,13 +14,92 @@ HOOK_BUDGET_SECONDS = 2
 # exit codes, the same for every command (for agents and scripts)
 OK, ERROR, USAGE, AT_RISK, WONT_FIT = 0, 1, 2, 3, 4
 EXIT_CODES = """exit codes:
-  0  done; or (check) every limit on track and the job fits
-  1  failed: with --json, {"ok": false, "error": ..., "fix": a command to run} on stdout
-  2  bad arguments
-  3  (check) a limit is at risk, or the job has to wait for a reset
-  4  (check) the job doesn't fit before the limit resets
+  0  done
+  1  failed: with --json, {"ok": false, "error": ..., "fix": the command that fixes it} on stdout
+  2  bad arguments"""
+CHECK_CODES = """
+  3  a limit is at risk, or the job has to wait for a 5-hour reset (--json gives the reasons)
+  4  the job doesn't fit before the limit resets"""
+JSON_NOTE = '\n\n--json prints one JSON object on stdout with "ok": true or false, and asks nothing.'
 
-Every command takes --json: one JSON object on stdout, with "ok": true or false."""
+# `savetokens --help`: the commands by what you'd want, then the jobs people do most (one call answers most tasks)
+GROUPS = [
+    ("start", ["install", "setup", "suggest", "uninstall"]),
+    ("see where you stand", ["status", "advise", "spend", "watch", "web", "dashboard"]),
+    ("before a big job", ["estimate", "check"]),
+    ("budgets and prices", ["api", "plan", "price", "ephemeris"]),
+    ("several machines", ["server", "pair", "join", "connect"]),
+    ("run by install, in the background", ["maintain", "backfill", "mcp"]),
+]
+COMMON = """common jobs:
+  savetokens install                            set up this machine (shows every change first)
+  savetokens status --json                      every limit: used, likely at reset, when you'd run out
+  savetokens check --like big || echo "wait"    gate a big job on the exit code (0 fits, 3 at risk, 4 won't fit)
+  savetokens advise                             what to change, biggest effect first
+  savetokens api hermes --budget 100 --per month   a $ budget for a tool on an API key
+  savetokens server --setup                     make this machine the hub for all your machines
+  curl -fsSL http://HUB:8787/join | sh -s CODE  add another machine (server --setup prints this line)
+
+`savetokens COMMAND --help` shows each command's options and examples.
+Docs: https://github.com/TensorLink-AI/savetokens"""
+
+# examples shown under each command's --help
+EXAMPLES = {
+    "install": ["savetokens install                           # shows every change, asks before making it",
+                "savetokens install --yes --json              # nothing asked (agents, scripts)",
+                "savetokens install --server URL --code CODE  # and join your hub",
+                "savetokens install --no-ephemeris            # forecast on this machine only; nothing leaves it"],
+    "uninstall": ["savetokens uninstall                         # your data stays in ~/.savetokens"],
+    "status": ["savetokens status", "savetokens status --json"],
+    "check": ["savetokens check                             # is every limit on track?",
+              "savetokens check --hours 3 --parallel 4 || echo 'not now'",
+              "savetokens check --like big --tool codex"],
+    "watch": ["savetokens watch --every 30"],
+    "web": ["savetokens web", "savetokens web --no-open --port 9000"],
+    "dashboard": ["savetokens dashboard --json"],
+    "backfill": ["savetokens backfill"],
+    "maintain": ["savetokens maintain --quiet                  # what the crontab line runs"],
+    "ephemeris": ["savetokens ephemeris                         # key, model and credits left",
+                  "echo \"$KEY\" | savetokens ephemeris --key -   # a key, kept out of shell history",
+                  "savetokens ephemeris --model ensemble          # every model (about 13x the credits)",
+                  "savetokens ephemeris --off                     # the local baseline only"],
+    "api": ["savetokens api claude-code --budget 200 --per month",
+            "savetokens api hermes --budget 100 --per week",
+            "savetokens api codex --off                     # back to the plan"],
+    "spend": ["savetokens spend", "savetokens spend --models --json"],
+    "plan": ["savetokens plan anthropic --usd 200 --per month    # Claude Max",
+             "savetokens plan openai --usd 200 --per month       # ChatGPT Pro",
+             "savetokens plan synthetic.new --off"],
+    "price": ["savetokens price gpt-6-astra 2 8              # $2 in, $8 out per million tokens",
+              "savetokens price my-model 3 15 0.3            # with a cache-read price"],
+    "advise": ["savetokens advise", "savetokens advise --json"],
+    "estimate": ["savetokens estimate --like big",
+                 "savetokens estimate --hours 3 --parallel 4",
+                 "savetokens estimate --usd 20 --pool hermes:api"],
+    "setup": ["savetokens setup                             # one question at a time; Enter takes the default",
+              "savetokens setup --yes                       # take the detected plan prices",
+              "savetokens setup --json                      # what's left, each with its command (changes nothing)"],
+    "suggest": ["savetokens suggest --json"],
+    "mcp": ["claude mcp add savetokens -- savetokens mcp   # install does this for you"],
+    "join": ["savetokens join http://HUB:8787 KXQT-7MBD"],
+    "pair": ["savetokens pair                               # one machine, 15 minutes",
+             "savetokens pair --machines 5 --hours 24"],
+    "connect": ["savetokens connect https://hub.example.com --token TOKEN",
+                "savetokens connect --off"],
+    "server": ["savetokens server --setup                     # this machine is the hub, from now on",
+               "savetokens server --stop",
+               "savetokens server --host 0.0.0.0 --port 8787  # run it yourself, in the foreground",
+               "savetokens server --add-user sam              # a teammate's own view and token"],
+}
+
+
+def _epilog(name, json):
+    ex = "examples:\n" + "\n".join("  " + e for e in EXAMPLES[name])
+    return f"{ex}\n\n{EXIT_CODES}{CHECK_CODES if name == 'check' else ''}{JSON_NOTE if json else ''}"
+
+
+def _overview_help(helps):
+    return "\n\n".join(f"{title}:\n" + "\n".join(f"  {c:<11}{helps[c]}" for c in cmds) for title, cmds in GROUPS)
 
 
 class Fail(Exception):
@@ -745,7 +824,7 @@ def _job_args(s, required):
     g.add_argument("--points", type=float, help="points of the limit")
     g.add_argument("--usd", type=float, help="API-equivalent dollars")
     g.add_argument("--like", help="small, typical, big (past sessions here) or a session id")
-    g.add_argument("--hours", type=float, help="hours of work at your pace")
+    g.add_argument("--hours", type=float, help="hours the agent will work (sized at your usual usage per hour)")
     s.add_argument("--parallel", type=int, default=1, help="sessions or subagents at once")
     s.add_argument("--session", help="a session id (default: the latest one in this folder)")
 
@@ -760,13 +839,15 @@ def main(argv=None):
         return _statusline()
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="one JSON object on stdout, for agents and scripts")
-    p = argparse.ArgumentParser(prog="savetokens", description=__doc__, epilog=EXIT_CODES,
+    p = argparse.ArgumentParser(prog="savetokens", usage="savetokens COMMAND [options]", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=__version__)
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=True, metavar="COMMAND", help=argparse.SUPPRESS)
+    helps = {}
 
     def cmd(name, fn, help, json=True, **kw):
-        s = sub.add_parser(name, help=help, description=help, parents=[common] if json else [], epilog=EXIT_CODES,
+        helps[name] = help
+        s = sub.add_parser(name, prog=f"savetokens {name}", description=help, parents=[common] if json else [], epilog=_epilog(name, json),
                            formatter_class=argparse.RawDescriptionHelpFormatter, **kw)
         s.set_defaults(fn=fn)
         return s
@@ -788,35 +869,35 @@ def main(argv=None):
     s = cmd("watch", cmd_watch, "live dashboard in the terminal (put it in a split pane next to your agent)", json=False)
     s.add_argument("--every", type=int, default=15, help="seconds between refreshes")
     s = cmd("web", cmd_web, "the dashboard in your browser (every machine, when connected to a server)", json=False)
-    s.add_argument("--port", type=int, default=8788)
+    s.add_argument("--port", type=int, default=8788, help="port on 127.0.0.1 (default 8788)")
     s.add_argument("--no-open", action="store_true", help="print the address instead of opening a browser")
     cmd("dashboard", cmd_dashboard, "the dashboard once (--json for other tools, e.g. the Claude Code pane)")
     cmd("backfill", cmd_backfill, "read Claude Code, Codex and Hermes sessions again")
     s = cmd("maintain", cmd_maintain, "forecast if due, raise alerts, sync (runs in the background)")
-    s.add_argument("--quiet", action="store_true")
+    s.add_argument("--quiet", action="store_true", help="print nothing unless something failed")
     s = cmd("ephemeris", cmd_ephemeris, "the Ephemeris forecaster: key, on/off, credits")
     s.add_argument("--key", help="your API key (- reads it from stdin)")
-    s.add_argument("--model", help="the model to forecast with (default toto2-313m), or ensemble: every"
-                                   " model, about 13x the credits")
-    s.add_argument("--on", action="store_true")
-    s.add_argument("--off", action="store_true")
+    s.add_argument("--model", help="the model every forecast uses from now on (default toto2-313m), or"
+                                   " ensemble: every model, about 13x the credits. Forecasts run in the background")
+    s.add_argument("--on", action="store_true", help="forecast with Ephemeris again")
+    s.add_argument("--off", action="store_true", help="the local baseline only; nothing sent to Ephemeris")
     s = cmd("api", cmd_api, "Claude Code or Codex on an API key, or Hermes: set a $ budget")
-    s.add_argument("tool", choices=["claude-code", "codex", "hermes"])
-    s.add_argument("--budget", type=float, metavar="USD")
-    s.add_argument("--per", choices=["day", "week", "month"], default="month")
+    s.add_argument("tool", choices=["claude-code", "codex", "hermes"], help="claude-code, codex or hermes")
+    s.add_argument("--budget", type=float, metavar="USD", help="dollars per period")
+    s.add_argument("--per", choices=["day", "week", "month"], default="month", help="the period (default month)")
     s.add_argument("--off", action="store_true", help="back to a subscription")
     s = cmd("spend", cmd_spend, "tokens and $ by provider: today, this week, this month, and what's coming")
     s.add_argument("--models", action="store_true", help="each provider's models too")
     s = cmd("plan", cmd_plan, "a subscription's fixed price (Claude Max, ChatGPT Pro, a flat-rate provider)")
     s.add_argument("provider", help="anthropic, openai, or a provider Hermes uses (as `savetokens spend` names it)")
-    s.add_argument("--usd", type=float)
-    s.add_argument("--per", choices=["day", "week", "month"], default="month")
+    s.add_argument("--usd", type=float, help="what it costs per period")
+    s.add_argument("--per", choices=["day", "week", "month"], default="month", help="the period (default month)")
     s.add_argument("--off", action="store_true", help="no subscription any more")
     s = cmd("price", cmd_price, "the API price of a model savetokens doesn't know ($ per million tokens)")
-    s.add_argument("model")
-    s.add_argument("input", type=float)
-    s.add_argument("output", type=float)
-    s.add_argument("cache_read", type=float, nargs="?")
+    s.add_argument("model", help="the model's name, as the tool reports it")
+    s.add_argument("input", type=float, help="$ per million input tokens")
+    s.add_argument("output", type=float, help="$ per million output tokens")
+    s.add_argument("cache_read", type=float, nargs="?", help="$ per million cached input tokens (default: a tenth of input)")
     s = cmd("advise", cmd_advise, "where the limits stand and what to change, biggest effect first")
     s.add_argument("--session", help="a session id (default: the latest one in this folder)")
     s = cmd("estimate", cmd_estimate, "a job's size and how long it would take, waits for resets included")
@@ -828,24 +909,25 @@ def main(argv=None):
     cmd("suggest", cmd_suggest, "what to set up here (budgets, prices, ...), each with its command; changes nothing")
     cmd("mcp", cmd_mcp, "run as an MCP server (stdio) for your agent", json=False)
     s = cmd("join", cmd_join, "join a savetokens server with a short code (XXXX-XXXX)")
-    s.add_argument("url")
-    s.add_argument("code")
-    s = cmd("pair", cmd_pair, "a join code (and the one line to paste) for more machines, or the browser view")
-    s.add_argument("--machines", type=int, default=1, help="how many machines may join with it (up to 50)")
+    s.add_argument("url", help="the hub's address, e.g. http://box.tail1234.ts.net:8787")
+    s.add_argument("code", help="the join code, XXXX-XXXX")
+    s = cmd("pair", cmd_pair, "a join code (and the one line to paste) for more machines; run it on a machine joined to your hub")
+    s.add_argument("--machines", type=int, default=1, help="how many more machines may join with it (up to 50; the hub is already in)")
     s.add_argument("--hours", type=float, default=0.25, help="how long it works (up to 168)")
     s = cmd("connect", cmd_connect, "sync with a savetokens server, so all machines and accounts add up")
-    s.add_argument("url", nargs="?")
-    s.add_argument("--token")
-    s.add_argument("--off", action="store_true")
+    s.add_argument("url", nargs="?", help="the server's address")
+    s.add_argument("--token", help="your token on it (`savetokens join` with a code is easier)")
+    s.add_argument("--off", action="store_true", help="stop syncing; this machine works on its own")
     s = cmd("server", cmd_server, "run the sync server (with the browser view at /), or add a user to it", json=False)
-    s.add_argument("--host", default="127.0.0.1")
-    s.add_argument("--port", type=int, default=8787)
+    s.add_argument("--host", default="127.0.0.1", help="address to listen on (0.0.0.0: every network; default 127.0.0.1)")
+    s.add_argument("--port", type=int, default=8787, help="port (default 8787)")
     s.add_argument("--data", help="data directory (default ~/.savetokens/server)")
-    s.add_argument("--add-user", metavar="NAME")
+    s.add_argument("--add-user", metavar="NAME", help="a teammate: their own view, and a token for them")
     s.add_argument("--pair", metavar="NAME", help="a join code for one of NAME's machines")
     s.add_argument("--setup", action="store_true",
                    help="make this machine the hub: starts on boot, prints the line that adds other machines")
     s.add_argument("--stop", action="store_true", help="stop the hub set up with --setup (the data stays)")
+    p.epilog = _overview_help(helps) + "\n\n" + COMMON + "\n\n" + EXIT_CODES
     args = p.parse_args(argv)
     try:
         return args.fn(args)
