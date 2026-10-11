@@ -14,13 +14,15 @@ every account you use.
 
 ## Quick start
 
-One machine:
+One machine, one line (installs uv if needed, then savetokens, then sets it up; shows every change first):
 
 ```sh
-uv tool install git+https://github.com/TensorLink-AI/savetokens   # or: pipx install git+...
-savetokens install       # shows every change first; asks for a budget and an Ephemeris key only if it needs them
+curl -fsSL https://raw.githubusercontent.com/TensorLink-AI/savetokens/main/install.sh | sh
 savetokens status        # each limit, and when you'd run out
 ```
+
+Or by hand: `uv tool install git+https://github.com/TensorLink-AI/savetokens` (or `pipx install ...`),
+then `savetokens install`. Options go after `sh -s --`, e.g. `| sh -s -- --no-ephemeris`.
 
 Several machines (your limits are per account, so add them up in one place):
 
@@ -160,8 +162,8 @@ The MCP server never changes anything. Its `suggest_setup` tool hands the agent 
 ## Install
 
 ```sh
-uv tool install git+https://github.com/TensorLink-AI/savetokens
-savetokens install            # shows every change first, then sets up what it can't detect
+curl -fsSL https://raw.githubusercontent.com/TensorLink-AI/savetokens/main/install.sh | sh
+# or: uv tool install git+https://github.com/TensorLink-AI/savetokens && savetokens install
 savetokens status
 ```
 

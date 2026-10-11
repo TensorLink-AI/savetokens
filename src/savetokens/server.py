@@ -328,10 +328,14 @@ def join_command(base, code):
     return f"curl -fsSL {base}/join | sh -s {code}"
 
 
-def join_script(base):
-    """What GET /join serves: install savetokens if it's missing, then join this server with the code."""
-    return f"""#!/bin/sh
-# savetokens: install it (if needed) and join the hub at {base}
+INSTALL_URL = "https://raw.githubusercontent.com/TensorLink-AI/savetokens/main/install.sh"
+
+
+def install_script(base=None):
+    """The one-line installer: install savetokens if it's missing, then set this machine up.
+    With a hub (what GET /join serves) it also joins it, with the code given; install.sh is the one without."""
+    if base:
+        head = f"""# savetokens: install it (if needed) and join the hub at {base}
 #   curl -fsSL {base}/join | sh -s CODE
 set -eu
 HUB='{base}'
@@ -340,7 +344,17 @@ if [ -z "$CODE" ]; then
   echo "usage: curl -fsSL $HUB/join | sh -s CODE   (a code: savetokens pair, or 'Add a machine' in $HUB)" >&2
   exit 2
 fi
-SOURCE="${{SAVETOKENS_SOURCE:-{SOURCE}}}"
+"""
+        run = 'savetokens install --server "$HUB" --code "$CODE"'
+    else:
+        head = f"""# savetokens: install it (if needed) and set up this machine
+#   curl -fsSL {INSTALL_URL} | sh
+#   ... | sh -s -- --no-ephemeris      (any `savetokens install` options after --)
+set -eu
+"""
+        run = 'savetokens install "$@"'
+    return f"""#!/bin/sh
+{head}SOURCE="${{SAVETOKENS_SOURCE:-{SOURCE}}}"
 PATH="$HOME/.local/bin:$PATH"; export PATH
 if ! command -v savetokens >/dev/null 2>&1; then
   echo "Installing savetokens..."
@@ -353,11 +367,16 @@ if ! command -v savetokens >/dev/null 2>&1; then
   fi
 fi
 if ( : </dev/tty ) 2>/dev/null; then
-  exec savetokens install --server "$HUB" --code "$CODE" </dev/tty
+  exec {run} </dev/tty
 else
-  exec savetokens install --server "$HUB" --code "$CODE" --yes
+  exec {run} --yes
 fi
 """
+
+
+def join_script(base):
+    """What GET /join serves: install savetokens if it's missing, then join this server with the code."""
+    return install_script(base)
 
 
 def public_url():

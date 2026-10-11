@@ -137,3 +137,20 @@ def test_server_flags_are_listed(flag, capsys):
     with pytest.raises(SystemExit):
         cli.main(["server", "--help"])
     assert flag in capsys.readouterr().out
+
+
+def test_install_sh_is_the_one_line_installer_without_a_hub(tmp_path):
+    from pathlib import Path
+    script = (Path(__file__).parents[1] / "install.sh").read_text()
+    assert script == server.install_script()          # after changing it: python -c 'from savetokens import server; open("install.sh", "w").write(server.install_script())'
+    assert subprocess.run(["sh", "-n"], input=script, text=True).returncode == 0
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    fake = bin_ / "savetokens"
+    fake.write_text(f"#!/bin/sh\necho \"$@\" > {tmp_path / 'args'}\n")
+    fake.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    r = subprocess.run(["setsid", "sh", "-c", script, "sh", "--no-ephemeris"], env=env, capture_output=True,
+                       stdin=subprocess.DEVNULL)
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "args").read_text().split() == ["install", "--no-ephemeris", "--yes"]

@@ -225,3 +225,12 @@ def test_one_key_file_for_every_ephemeris_tool(homes, monkeypatch):
     path = ephemeris.save_key("from-savetokens", cfg)                # savetokens' sign-in writes the same file
     assert path == shared and shared.stat().st_mode & 0o777 == 0o600
     assert shared.read_text() == "EPHEMERIS_API_KEY=from-savetokens\n"
+
+
+def test_an_empty_claude_folder_is_not_claude_code(homes, monkeypatch):
+    from savetokens import setup
+    (homes / "claude").mkdir(exist_ok=True)
+    (homes / "claude" / "settings.json").write_text("{}")      # what install writes on a machine without it
+    assert setup.claude_plan() is None
+    (homes / "claude" / "projects").mkdir()                     # it has run here
+    assert setup.claude_plan() is not None
