@@ -25,14 +25,14 @@ def run(capsys, *argv):
 
 def test_failures_say_what_went_wrong_and_the_fix(capsys):
     code, out = run(capsys, "pair", "--json")
-    assert code == cli.ERROR and out["ok"] is False and out["fix"] == "savetokens join URL CODE"
+    assert code == cli.ERROR and out["ok"] is False and out["fix"].startswith("savetokens server --setup")
     code, out = run(capsys, "connect", "http://x", "--json")
     assert code == cli.USAGE and "--token" in out["error"]
     code, out = run(capsys, "install", "--json")                       # would ask: refused, with the fix
     assert code == cli.USAGE and out["fix"] == "savetokens install --yes --json"
     assert cli.main(["pair"]) == cli.ERROR
     err = capsys.readouterr().err
-    assert err.startswith("savetokens: ") and "fix: savetokens join" in err
+    assert err.startswith("savetokens: ") and "fix: savetokens server --setup" in err
 
 
 def test_setup_commands_answer_in_json(capsys):

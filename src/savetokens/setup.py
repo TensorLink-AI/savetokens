@@ -173,9 +173,9 @@ def steps(store, now=None, cfg=None, found=None, on_server=False) -> list[dict]:
     # every machine in one view
     if not sync.connected(cfg) and not on_server:
         out.append(_step("server", False, "Other machines: not connected",
-                         "to see every machine together, run a server (savetokens server) or join one",
-                         "savetokens join URL CODE", "a join code from `savetokens pair` on a connected machine",
-                         optional=True))
+                         "using more than one machine? Make the one that's always on your hub; it prints the one"
+                         " line that adds the others (or paste that line here, from your hub)",
+                         "savetokens server --setup", None, optional=True))
     return out
 
 

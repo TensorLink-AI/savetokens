@@ -576,7 +576,7 @@ def cmd_join(args):
             token = json.load(r)["token"]
     except Exception as e:
         raise Fail(f"couldn't join {args.url}: {e}",
-                   "get a fresh code (codes last 10 minutes, once): `savetokens pair` on a joined machine")
+                   "get a fresh code: `savetokens pair` on a joined machine, or 'Add a machine' in the hub's browser view")
     cfg = load_config()
     cfg.update(server_url=args.url, server_token=token)
     save_config(cfg)
@@ -594,15 +594,29 @@ def cmd_pair(args):
     from .store import load_config
     cfg = load_config()
     if not sync.connected(cfg):
-        raise Fail("this machine isn't connected to a server", "savetokens join URL CODE")
-    got = sync._call(cfg, "/v1/pair", {})
-    url = sync.settings(cfg)["server_url"]
-    cmd = f"savetokens join {url} {got['code']}"
-    _out(args, {"code": got["code"], "expires_in": got.get("expires_in"), "command": cmd,
-                "browser": f"{url.rstrip('/')}/#code={got['code']}"},
-         f"On the other machine, within 10 minutes:\n  {cmd}\nOr sign in to the browser view with the code:"
-         f" {url.rstrip('/')}/")
+        raise Fail("this machine isn't connected to a hub",
+                   "savetokens server --setup (make this machine the hub), or paste the join line from your hub")
+    import urllib.parse
+
+    from .server import join_command
+    got = sync._call(cfg, "/v1/pair", {"machines": args.machines, "hours": args.hours})
+    url = sync.settings(cfg)["server_url"].rstrip("/")
+    if url.startswith(("http://127.0.0.1", "http://localhost")):   # this is the hub: give the address others use
+        from . import hub
+        url = hub.address(urllib.parse.urlparse(url).port or 8787)[0]
+    cmd = join_command(url, got["code"])
+    n = got.get("machines", 1)
+    _out(args, {"code": got["code"], "expires_in": got.get("expires_in"), "machines": n, "command": cmd,
+                "join": f"savetokens join {url} {got['code']}", "browser": f"{url}/#code={got['code']}"},
+         f"On {'each' if n > 1 else 'the'} other machine (works for {_span(got.get('expires_in') or 600)}"
+         f"{f', up to {n} machines' if n > 1 else ', once'}):\n  {cmd}\n"
+         f"(savetokens already installed there? savetokens join {url} {got['code']})\n"
+         f"Or open the browser view: {url}/#code={got['code']}")
     return 0
+
+
+def _span(seconds):
+    return f"{seconds // 3600:g} hours" if seconds >= 7200 else f"{max(1, round(seconds / 60))} minutes"
 
 
 def cmd_connect(args):
@@ -714,6 +728,14 @@ def cmd_server(args):
     if args.pair:
         print(f"savetokens join URL {server.Users(data).pair(args.pair)}  (valid 10 minutes, once)")
         return 0
+    if args.setup:
+        from . import hub
+        return 0 if hub.setup(args.port, data, interactive=sys.stdin.isatty()) else 1
+    if args.stop:
+        from . import hub
+        print("Stopped the hub; it won't start at boot. Your data stays in " + str(data) if hub.stop()
+              else "No hub set up by `savetokens server --setup` here.")
+        return 0
     server.serve(data, args.host, args.port)
     return 0
 
@@ -808,7 +830,9 @@ def main(argv=None):
     s = cmd("join", cmd_join, "join a savetokens server with a short code (XXXX-XXXX)")
     s.add_argument("url")
     s.add_argument("code")
-    cmd("pair", cmd_pair, "a join code for another machine, or for the browser view")
+    s = cmd("pair", cmd_pair, "a join code (and the one line to paste) for more machines, or the browser view")
+    s.add_argument("--machines", type=int, default=1, help="how many machines may join with it (up to 50)")
+    s.add_argument("--hours", type=float, default=0.25, help="how long it works (up to 168)")
     s = cmd("connect", cmd_connect, "sync with a savetokens server, so all machines and accounts add up")
     s.add_argument("url", nargs="?")
     s.add_argument("--token")
@@ -819,6 +843,9 @@ def main(argv=None):
     s.add_argument("--data", help="data directory (default ~/.savetokens/server)")
     s.add_argument("--add-user", metavar="NAME")
     s.add_argument("--pair", metavar="NAME", help="a join code for one of NAME's machines")
+    s.add_argument("--setup", action="store_true",
+                   help="make this machine the hub: starts on boot, prints the line that adds other machines")
+    s.add_argument("--stop", action="store_true", help="stop the hub set up with --setup (the data stays)")
     args = p.parse_args(argv)
     try:
         return args.fn(args)

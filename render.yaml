@@ -1,0 +1,16 @@
+# One-click hub on Render: https://render.com/deploy?repo=https://github.com/TensorLink-AI/savetokens
+# Render asks for your Ephemeris key, builds the Dockerfile, and gives the hub an https:// address.
+# The service's Logs show the line that adds your machines.
+services:
+  - type: web
+    name: savetokens
+    runtime: docker
+    plan: starter            # a disk needs a paid instance; the free one forgets everything on restart
+    healthCheckPath: /healthz
+    envVars:
+      - key: EPHEMERIS_API_KEY
+        sync: false          # asked for at deploy; leave empty to forecast with the local baseline
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

@@ -151,37 +151,55 @@ skill, and one crontab line (every 10 minutes; Codex and Hermes have no hooks, s
 when their sessions are read). It reads your Claude Code, Codex and Hermes history. `savetokens uninstall`
 removes all of it; your data stays in `~/.savetokens`.
 
-## Run a server (all your machines and accounts in one place)
+## Run a hub (all your machines in one place)
 
-A small CPU box is plenty. Start the server with your Ephemeris key:
-
-```sh
-docker run -d --name savetokens --restart unless-stopped -p 8787:8787 \
-  -v savetokens:/data -e EPHEMERIS_API_KEY=... ghcr.io/tensorlink-ai/savetokens
-docker logs savetokens          # the first start prints your token
-```
-
-Or `EPHEMERIS_API_KEY=... docker compose up -d` from this repo. The first start prints a join
-code; on each machine:
+Your plan's limits are per account, not per machine, so savetokens adds every machine up in one
+place: a hub. Pick the machine that's always on (a desktop, a home server, a small VPS) and run:
 
 ```sh
-savetokens install --server http://your-server:8787 --code ABCD-2345
+savetokens server --setup
 ```
 
-Codes are short, single-use and last 10 minutes. For the next machine, run `savetokens pair` on
-one that's already joined (or `savetokens join URL CODE` to join without reinstalling).
+It signs you in to Ephemeris if you haven't (the hub makes the forecasts for every machine),
+starts the hub now and at every boot, connects this machine, and prints one line. Paste that line
+on every other machine:
 
-That's it: each machine sends its usage and Claude's limit readings, the server forecasts
-with Ephemeris (through [Gnomon](https://github.com/TensorLink-AI/Gnomon), which keeps every
-forecast and scores it against what happened), and every machine alerts from the result.
-Containers and cloud sessions can use `SAVETOKENS_SERVER` and `SAVETOKENS_TOKEN` (the token is in
-`first-token.txt` in the data volume) instead of a config file. More users:
-`docker exec savetokens savetokens server --data /data --add-user NAME`.
+```sh
+curl -fsSL http://your-hub:8787/join | sh -s KXQT-7MBD
+```
 
-The token travels with every request, so use HTTPS when the server is reachable from the
-internet: `DOMAIN=st.example.com docker compose --profile tls up -d` puts Caddy in front.
+It installs savetokens if it's missing and joins. The code works for 24 hours, for up to 10
+machines. More later: `savetokens pair --machines 5 --hours 24`, or **Add a machine** in the
+hub's browser view (it also makes a token for CI).
 
-Without a server, everything runs on your machine (`savetokens install` on its own).
+**How machines reach the hub.** With [Tailscale](https://tailscale.com) (free) on your machines,
+setup uses the hub's Tailscale name: private and encrypted, no domain or certificates. Otherwise it
+uses the hub's local network address, fine for machines on the same network.
+
+**No always-on machine?** Deploy a hub with HTTPS in a couple of minutes:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/TensorLink-AI/savetokens)
+
+Paste your Ephemeris key when Render asks, then open the service's Logs: the first start prints
+the join line, with your hub's https address. (A starter instance with a 1 GB disk, about $7 a month.)
+Or anywhere with Docker:
+
+```sh
+docker compose up -d                                 # EPHEMERIS_API_KEY=... in front, or in .env
+DOMAIN=st.example.com docker compose --profile tls up -d   # with HTTPS (Caddy), for the open internet
+docker compose logs savetokens                       # the join line
+```
+
+**CI, containers, GPU pods:** no install needed, set `SAVETOKENS_SERVER` and `SAVETOKENS_TOKEN`
+(**Add a machine** → Make a token). Teammates get their own view:
+`savetokens server --add-user NAME`. `savetokens server --stop` stops a hub set up with `--setup`.
+
+Each machine sends its usage and Claude's limit readings; the hub forecasts with Ephemeris
+(through [Gnomon](https://github.com/TensorLink-AI/Gnomon), which keeps every forecast and scores
+it against what happened), and every machine alerts from the result. Tokens travel with every
+request, so use Tailscale or HTTPS when the hub is reachable from the internet.
+
+Without a hub, everything runs on your machine (`savetokens install` on its own).
 
 ## What leaves your machine
 
@@ -207,12 +225,12 @@ Without a server, everything runs on your machine (`savetokens install` on its o
 | `suggest` | what to set up here, each with its command (changes nothing) |
 | `web [--port P]` | the dashboard in your browser |
 | `mcp` | the MCP server your agent uses (install registers it) |
-| `join URL CODE` / `pair` | join a server with a short code / make a code for another machine |
+| `join URL CODE` / `pair` | join a hub with a code / a code and join line for more machines |
 | `api TOOL [--budget USD --per day\|week\|month \| --off]` | Claude Code or Codex on an API key, or Hermes: its budget |
 | `price MODEL INPUT OUTPUT [CACHE_READ]` | the price of a model savetokens doesn't know |
 | `ephemeris [--key KEY \| --on \| --off]` | the forecaster, and credits left |
 | `connect URL --token T` / `connect --off` | sync with a server |
-| `server [--add-user NAME]` | run the sync server, with the browser view at its address |
+| `server --setup` / `server [--add-user NAME]` | make this machine the hub (starts on boot) / run the hub, with the browser view at its address |
 | `watch` | the live dashboard in your terminal |
 | `dashboard [--json]` | the dashboard once (JSON for other tools) |
 | `maintain` | forecast if due and raise alerts (runs in the background) |

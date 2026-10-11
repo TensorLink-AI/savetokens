@@ -2,11 +2,13 @@
 
   POST /v1/push    a machine's new rows (usage, meter, hits)
   POST /v1/settings   API budgets (the newest setting wins)
-  POST /v1/pair    a short join code for another machine (authenticated)
-  POST /v1/join    a join code in, that user's new token out (no token needed; codes expire in 10 minutes)
+  POST /v1/pair    a short join code for more machines (authenticated; {"machines": N, "hours": H})
+  POST /v1/join    a join code in, that user's new token out (no token needed; codes expire)
+  POST /v1/token   a new token for this user, for CI and containers (SAVETOKENS_TOKEN)
   GET  /v1/pull    other machines' meter readings and hits, and the newest forecast paths
   GET  /v1/status     the current outlook per limit (JSON)
   GET  /v1/dashboard  everything the dashboard draws, across every machine
+  GET  /join       a shell script that installs savetokens and joins: curl -fsSL URL/join | sh -s CODE
   GET  /           the browser view (sign in with a join code; it then reads /v1/dashboard)
 
 One SQLite database per user, with the same schema and engine as a machine:
@@ -19,6 +21,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import secrets
 import threading
@@ -35,6 +38,11 @@ MAX_BODY = 16 * 1024 * 1024
 ENGINE_SECONDS = 60
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no 0/O, 1/I/L
 CODE_SECONDS = 600
+INVITE_SECONDS = 24 * 3600   # a code for "add my machines": a day, up to INVITE_MACHINES of them
+INVITE_MACHINES = 10
+MAX_INVITE_SECONDS = 7 * 86400
+MAX_INVITE_MACHINES = 50
+SOURCE = "git+https://github.com/TensorLink-AI/savetokens"
 JOIN_FAILURES_PER_MINUTE = 20
 
 
@@ -64,23 +72,29 @@ class Users:
         self.path.chmod(0o600)
         return token
 
-    def pair(self, name, seconds=CODE_SECONDS) -> str:
-        """A one-time join code for `name`: XXXX-XXXX, valid for `seconds`."""
+    def pair(self, name, seconds=CODE_SECONDS, uses=1) -> str:
+        """A join code for `name`: XXXX-XXXX, valid for `seconds` and `uses` machines."""
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(8))
         codes = {k: v for k, v in self._codes().items() if v["expires"] > time.time()}
-        codes[_hash(code)] = {"user": name, "expires": time.time() + seconds}
+        codes[_hash(code)] = {"user": name, "expires": time.time() + seconds, "uses": uses}
         self._save_codes(codes)
         return f"{code[:4]}-{code[4:]}"
 
     def join(self, code):
-        """The user's new token for a valid code (used up), else None."""
+        """The user's new token for a valid code (one use of it), else None."""
         key = _hash(re.sub(r"[^A-Z0-9]", "", (code or "").upper()))
         codes = self._codes()
         c = codes.pop(key, None)
+        if c and c.get("uses", 1) > 1 and c["expires"] >= time.time():
+            codes[key] = {**c, "uses": c["uses"] - 1}
         self._save_codes(codes)
         if not c or c["expires"] < time.time():
             return None
         return self.add(c["user"])
+
+    def joined(self, name) -> bool:
+        """Has any machine of `name`'s sent data yet?"""
+        return (self.data / "users" / f"{name}.db").exists()
 
     def _codes(self):
         try:
@@ -127,6 +141,44 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             self.end_headers()
             self.wfile.write(data)
 
+        def _base(self):
+            """This server's address as the caller reached it (behind a proxy too), or None if odd."""
+            fixed = os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL")
+            if fixed:
+                return fixed.rstrip("/")
+            host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",")[0].strip()
+            proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip()
+            if proto not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9.\-]+(:\d{1,5})?|\[[0-9a-fA-F:.]+\](:\d{1,5})?",
+                                                                    host):
+                return None
+            return f"{proto}://{host}"
+
+        def _script(self):
+            base = self._base()
+            if not base:
+                return self._send(400, {"error": "odd Host header"})
+            data = join_script(base).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _pair(self, user):
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
+                machines = int(body.get("machines") or 1)
+                seconds = float(body["hours"]) * 3600 if body.get("hours") else CODE_SECONDS
+            except (ValueError, TypeError, AttributeError):
+                return self._send(400, {"error": "bad body"})
+            if not (1 <= machines <= MAX_INVITE_MACHINES and 60 <= seconds <= MAX_INVITE_SECONDS):
+                return self._send(400, {"error": f"machines is 1 to {MAX_INVITE_MACHINES}, hours at most"
+                                                 f" {MAX_INVITE_SECONDS // 3600}"})
+            code, base = users.pair(user, seconds, machines), self._base()
+            self._send(200, {"code": code, "expires_in": int(seconds), "machines": machines, "url": base,
+                             "command": join_command(base, code) if base else None})
+
         def _user(self):
             auth = self.headers.get("Authorization", "")
             return users.who(auth.removeprefix("Bearer ").strip())
@@ -156,7 +208,9 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             if not user:
                 return self._send(401, {"error": "unknown token"})
             if path == "/v1/pair":
-                return self._send(200, {"code": users.pair(user), "expires_in": CODE_SECONDS})
+                return self._pair(user)
+            if path == "/v1/token":
+                return self._send(200, {"token": users.add(user), "url": self._base()})
             if path not in ("/v1/push", "/v1/settings"):
                 return self._send(404, {"error": "not found"})
             n = int(self.headers.get("Content-Length") or 0)
@@ -219,6 +273,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             from . import web
             if web.send_static(self, self.path):
                 return
+            if urllib.parse.urlparse(self.path).path == "/join":
+                return self._script()
             if self.path == "/healthz":
                 from . import __version__
                 return self._send(200, {"ok": True, "version": __version__})
@@ -268,19 +324,62 @@ def engine_loop(users: Users, dirty: set, lock: threading.Lock, stop: threading.
         stop.wait(ENGINE_SECONDS)
 
 
+def join_command(base, code):
+    return f"curl -fsSL {base}/join | sh -s {code}"
+
+
+def join_script(base):
+    """What GET /join serves: install savetokens if it's missing, then join this server with the code."""
+    return f"""#!/bin/sh
+# savetokens: install it (if needed) and join the hub at {base}
+#   curl -fsSL {base}/join | sh -s CODE
+set -eu
+HUB='{base}'
+CODE="${{1:-}}"
+if [ -z "$CODE" ]; then
+  echo "usage: curl -fsSL $HUB/join | sh -s CODE   (a code: savetokens pair, or 'Add a machine' in $HUB)" >&2
+  exit 2
+fi
+SOURCE="${{SAVETOKENS_SOURCE:-{SOURCE}}}"
+PATH="$HOME/.local/bin:$PATH"; export PATH
+if ! command -v savetokens >/dev/null 2>&1; then
+  echo "Installing savetokens..."
+  if command -v uv >/dev/null 2>&1; then uv tool install --quiet "$SOURCE"
+  elif command -v pipx >/dev/null 2>&1; then pipx install --quiet "$SOURCE"
+  else
+    echo "(first uv, the Python installer: https://docs.astral.sh/uv)"
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
+    uv tool install --quiet "$SOURCE"
+  fi
+fi
+if ( : </dev/tty ) 2>/dev/null; then
+  exec savetokens install --server "$HUB" --code "$CODE" </dev/tty
+else
+  exec savetokens install --server "$HUB" --code "$CODE" --yes
+fi
+"""
+
+
+def public_url():
+    return (os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/") or None
+
+
 def first_user(users: Users, log=print):
-    """On a fresh server, make the first user and show its token once (also saved to first-token.txt)."""
-    if users.names():
-        return None
-    token = users.add("me")
-    path = users.data / "first-token.txt"
-    path.write_text(token + "\n")
-    path.chmod(0o600)
-    code = users.pair("me", seconds=3600)
-    log("No users yet, so one was made. To add a machine, run on it (this code works for an hour, once;")
-    log("  more codes: `savetokens pair` on a joined machine, or `savetokens server --pair me` here):")
-    log(f"  savetokens join <this server's URL> {code}")
-    log("Your token, for containers and cloud sessions (SAVETOKENS_TOKEN), is in first-token.txt.")
+    """On a fresh server, make the first user (its token saved to first-token.txt, for SAVETOKENS_TOKEN).
+    Until a machine has joined, every start also prints a join line for the first machines."""
+    token = None
+    if not users.names():
+        token = users.add("me")
+        path = users.data / "first-token.txt"
+        path.write_text(token + "\n")
+        path.chmod(0o600)
+        log("Your token, for containers and cloud sessions (SAVETOKENS_TOKEN), is in first-token.txt.")
+    if users.names() == ["me"] and not users.joined("me"):
+        code = users.pair("me", seconds=7 * 86400, uses=INVITE_MACHINES)
+        base = public_url() or "<this server's URL>"
+        log(f"Add your machines (this code works for a week, for up to {INVITE_MACHINES} machines):")
+        log(f"  {join_command(base, code)}")
+        log("More codes later: `savetokens pair` on a joined machine, or 'Add a machine' in the browser view.")
     return token
 
 

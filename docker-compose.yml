@@ -1,6 +1,6 @@
 # savetokens server.
 #   EPHEMERIS_API_KEY=... docker compose up -d
-#   docker compose logs savetokens        # the first start prints your token
+#   docker compose logs savetokens        # the first start prints the line that adds your machines
 #
 # For HTTPS (recommended when the server is reachable from the internet), point a domain at this
 # machine and also start Caddy:  DOMAIN=st.example.com docker compose --profile tls up -d
