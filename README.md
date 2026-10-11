@@ -12,6 +12,27 @@ every account you use.
 5h 12%→34% · wk 41% ⚠ out ~Tue 15:00
 ```
 
+## Quick start
+
+One machine:
+
+```sh
+uv tool install git+https://github.com/TensorLink-AI/savetokens   # or: pipx install git+...
+savetokens install       # shows every change first; asks for a budget and an Ephemeris key only if it needs them
+savetokens status        # each limit, and when you'd run out
+```
+
+Several machines (your limits are per account, so add them up in one place):
+
+```sh
+savetokens server --setup                              # on the machine that's always on
+curl -fsSL http://your-hub:8787/join | sh -s KXQT-7MBD # on each other machine: setup prints this line
+```
+
+Then watch it in Claude Code's statusline, `savetokens web`, or ask your agent "how are my limits?".
+More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-place) and
+[Troubleshooting](#troubleshooting).
+
 ## What it does
 
 - **Reads each tool's own meter.** Claude Code's statusline and Codex's session logs
@@ -106,7 +127,7 @@ every account you use.
 
 ## For agents and scripts
 
-Every command takes `--json` and prints one JSON object with `"ok"`. A failure exits 1 with
+Every command except `watch`, `web`, `mcp` and `server` takes `--json` and prints one JSON object with `"ok"`. A failure exits 1 with
 `{"ok": false, "error": ..., "fix": "<the command that fixes it>"}`. `savetokens check` gives its
 verdict as the exit code, so a script or an agent loop can gate a big job without parsing anything:
 
@@ -118,6 +139,20 @@ savetokens check --hours 3 --parallel 4 || echo "not now"
 savetokens check --tool hermes --json      # one tool's limits only
 savetokens setup --json                    # the setup checklist: done, and what's left with its command
 ```
+
+**Setting it up for the user.** Everything has a non-interactive form, but installing and
+connecting change the user's machine, so show the command and run it only once they agree:
+
+```sh
+savetokens install --yes --json                       # this machine, nothing asked
+savetokens install --yes --server URL --code CODE     # and join a hub (what the join line runs without a terminal)
+savetokens setup --json                               # what's still missing, each with its command
+savetokens suggest --json                             # the same, as proposals with what to ask the user
+```
+
+Leave the Ephemeris key to the user (`savetokens setup` signs them in in the browser), so it never
+passes through the conversation. The skill installed for Claude Code, Codex and Hermes says all of
+this to the agent; it's in [`src/savetokens/skill/SKILL.md`](src/savetokens/skill/SKILL.md).
 
 The MCP server never changes anything. Its `suggest_setup` tool hands the agent the exact command
 (a budget, a model's price) to show you, and you decide whether it runs.
@@ -201,6 +236,22 @@ request, so use Tailscale or HTTPS when the hub is reachable from the internet.
 
 Without a hub, everything runs on your machine (`savetokens install` on its own).
 
+## Troubleshooting
+
+Start with `savetokens setup --json` (or the browser view): it lists what's missing, each with its fix.
+Every failure with `--json` also says `"fix"`: the command to run.
+
+| | |
+|---|---|
+| The join line hangs or says it can't connect | The other machine can't reach the hub. Try `curl http://HUB:8787/healthz` from it. Use Tailscale on both, open port 8787 on the hub's firewall, or deploy a hub with HTTPS. |
+| The hub is on WSL | Other machines can't reach WSL's address. Install Tailscale inside WSL, or turn on [mirrored networking](https://learn.microsoft.com/windows/wsl/networking#mirrored-mode-networking) (`networkingMode=mirrored` in `.wslconfig`). |
+| "unknown or expired code" | Codes expire (24 hours from `--setup`) or run out of machines. Make another on the hub: `savetokens pair --machines 5 --hours 24`, or **Add a machine** in its browser view. |
+| `savetokens: command not found` after the join line | The installer put it in `~/.local/bin`. Open a new terminal, or add that to your `PATH`. |
+| The hub stopped after a reboot | `systemctl --user status savetokens-server` (Linux) or `~/.savetokens/server.log`. Run `savetokens server --setup` again; it's safe to repeat. |
+| Forecasts say "local baseline" | No Ephemeris key on the hub, or its credits ran out: `savetokens ephemeris` says which, with the top-up link. |
+| The statusline shows nothing | Run `savetokens status`. If it's empty, Claude Code hasn't sent a reading yet: send one message, then look again. |
+| Start over | `savetokens uninstall` removes everything it added; your data stays in `~/.savetokens`. |
+
 ## What leaves your machine
 
 - **Nothing**, with `savetokens install --no-ephemeris` and no server.
@@ -214,23 +265,25 @@ Without a hub, everything runs on your machine (`savetokens install` on its own)
 
 | | |
 |---|---|
+| `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |
 | `advise [--json]` | where the limits stand and the options, biggest effect first |
 | `estimate --like small\|typical\|big \| --hours H \| --points P \| --usd D [--parallel N]` | a job's size, run time and whether it fits |
 | `check [--hours H \| --like ... ] [--tool T]` | one verdict in the exit code: 0 on track, 3 at risk, 4 won't fit |
 | `spend [--models]` | tokens and $ by provider and model: so far, by each period's end, and coming |
 | `plan PROVIDER --usd USD [--per day\|week\|month \| --off]` | a subscription's fixed price |
-| `ephemeris [--key K\|-] [--model M\|ensemble]` | the forecaster: key, model (toto2-313m by default), credits |
 | `setup [--yes] [--key K\|-]` | plans (prices detected), API budgets, the Ephemeris key: one guided pass |
 | `suggest` | what to set up here, each with its command (changes nothing) |
 | `web [--port P]` | the dashboard in your browser |
 | `mcp` | the MCP server your agent uses (install registers it) |
-| `join URL CODE` / `pair` | join a hub with a code / a code and join line for more machines |
 | `api TOOL [--budget USD --per day\|week\|month \| --off]` | Claude Code or Codex on an API key, or Hermes: its budget |
 | `price MODEL INPUT OUTPUT [CACHE_READ]` | the price of a model savetokens doesn't know |
-| `ephemeris [--key KEY \| --on \| --off]` | the forecaster, and credits left |
+| `ephemeris [--key K\|- \| --model M\|ensemble \| --on \| --off]` | the forecaster: key, model (toto2-313m by default), credits left |
+| `server --setup` / `server --stop` | make this machine the hub, starting on boot / stop it (the data stays) |
+| `server [--host H --port P --add-user NAME]` | run the hub yourself, with the browser view at its address |
+| `pair [--machines N --hours H]` | a join code and the one line to paste on more machines |
+| `join URL CODE` | join a hub with a code |
 | `connect URL --token T` / `connect --off` | sync with a server |
-| `server --setup` / `server [--add-user NAME]` | make this machine the hub (starts on boot) / run the hub, with the browser view at its address |
 | `watch` | the live dashboard in your terminal |
 | `dashboard [--json]` | the dashboard once (JSON for other tools) |
 | `maintain` | forecast if due and raise alerts (runs in the background) |
