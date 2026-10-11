@@ -211,6 +211,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                 return self._pair(user)
             if path == "/v1/token":
                 return self._send(200, {"token": users.add(user), "url": self._base()})
+            if path in ("/v1/logs", "/v1/traces"):   # OpenTelemetry (OTLP over HTTP, JSON)
+                return self._otel(user)
             if path not in ("/v1/push", "/v1/settings"):
                 return self._send(404, {"error": "not found"})
             n = int(self.headers.get("Content-Length") or 0)
@@ -229,6 +231,9 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                 return self._send(400, {"error": "unexpected table or columns"})
             with users.store(user) as s:
                 added = s.upsert_usage(cols, rows) if table == "usage" else s.insert(table, cols, rows)
+                if table == "usage":
+                    from . import otel
+                    otel.replace_with_reader(s, cols, rows)
             with lock:
                 dirty.add(user)
             self._send(200, {"added": added})
@@ -254,6 +259,31 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             with lock:
                 dirty.add(user)
             self._send(200, {"ok": True})
+
+        def _otel(self, user):
+            from . import otel
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > MAX_BODY:
+                return self._send(413, {"error": "too large"})
+            raw = self.rfile.read(n)
+            if self.headers.get("Content-Encoding", "").lower() == "gzip":
+                import gzip
+                try:
+                    raw = gzip.decompress(raw)
+                except OSError:
+                    return self._send(400, {"error": "bad gzip"})
+            if "json" not in self.headers.get("Content-Type", "application/json"):
+                return self._send(415, {"error": "send OTLP as JSON: OTEL_EXPORTER_OTLP_PROTOCOL=http/json"})
+            try:
+                payload = json.loads(raw or b"{}")
+            except ValueError:
+                return self._send(400, {"error": "bad body"})
+            with users.store(user) as s:
+                added = otel.ingest(s, payload)
+            if added:
+                with lock:
+                    dirty.add(user)
+            self._send(200, {"partialSuccess": {}})
 
         def _goals(self, user, body):
             """The budgets you set (`savetokens budget`); the newest setting wins."""
@@ -362,6 +392,9 @@ def engine_loop(users: Users, dirty: set, lock: threading.Lock, stop: threading.
             try:
                 with users.store(name) as s:
                     now = time.time()
+                    from . import providers   # opted in with an admin key: API usage no reader saw
+                    if providers.sync(s, users.data, name, now, log=lambda m, n=name: log(f"{n}: {m}")):
+                        fresh.add(name)
                     if name in fresh or maintain.refresh_due(s, s.meta("forecast_made_at"), now):
                         maintain.update(s, now, log=lambda m, n=name: log(f"{n}: {m}"))
             except Exception as e:   # one user's failure must not stop the others

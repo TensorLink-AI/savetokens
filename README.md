@@ -302,6 +302,30 @@ docker compose logs savetokens                       # the join line
 (**Add a machine** → Make a token). Teammates get their own view:
 `savetokens server --add-user NAME`. `savetokens server --stop` stops a hub set up with `--setup`.
 
+**Any other agent or app, through OpenTelemetry.** A hub takes OTLP over HTTP with JSON at its own address,
+so anything that exports the GenAI conventions (or Claude Code's own events) is counted with no reader for it.
+`savetokens otel` prints the lines to paste where it runs (with a token of its own):
+
+```sh
+export OTEL_EXPORTER_OTLP_ENDPOINT='https://your-hub'
+export OTEL_EXPORTER_OTLP_PROTOCOL='http/json'
+export OTEL_EXPORTER_OTLP_HEADERS='Authorization=Bearer st_...'
+export OTEL_LOGS_EXPORTER=otlp OTEL_TRACES_EXPORTER=otlp
+```
+
+A tool savetokens also reads on a machine is counted once: the reader's rows replace the telemetry for the
+same session.
+
+**API usage no agent reported: the providers' own reports (opt in).** With an admin key on the hub, it reads
+Anthropic's and OpenAI's hourly usage by model and adds only what readers and telemetry didn't already send
+for that hour and model (your apps, CI, scripts). The key is read from stdin, kept in a file only you can read
+beside your data, and never synced:
+
+```sh
+echo "$ANTHROPIC_ADMIN_KEY" | savetokens server --provider-key anthropic
+echo "$OPENAI_ADMIN_KEY"    | savetokens server --provider-key openai
+```
+
 Each machine sends its usage and Claude's limit readings; the hub forecasts with Ephemeris
 (through [Gnomon](https://github.com/TensorLink-AI/Gnomon), which keeps every forecast and scores
 it against what happened), and every machine alerts from the result. Tokens travel with every
@@ -331,8 +355,10 @@ Every failure with `--json` also says `"fix"`: the command to run.
 - **To Ephemeris:** one number per hour for each tool, the % of its weekly limit used
   (or the dollars spent, on an API budget). No tokens, prompts, models, projects or sessions.
 - **To your own server, if you connect one:** token counts per request (model, time,
-  session id), limit readings and the times you hit a limit. Never prompts, replies,
-  code or file names.
+  session id), limit readings and the times you hit a limit, plus ids for projects and tasks
+  (keyed hashes, not names). Never prompts, replies, code, file, folder, branch or project names.
+- **Telemetry and provider reports, if you turn them on:** OpenTelemetry goes from the agent to your hub;
+  a provider admin key stays on the hub machine and is used only to read that provider's usage report.
 
 ## Commands
 
