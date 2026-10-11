@@ -54,6 +54,7 @@ Never stop the user's task on your own; tell them and let them decide.
 ## Rules
 
 - **Never change settings, models or sessions without asking.** Propose; the user decides.
+- **Budgets and projects are the user's.** `savetokens budget` lists their budgets (overall or per project) with forecasts; `savetokens projects` shows spend per project. Propose a budget with its command (e.g. `savetokens budget --project . --usd 150 --per month`) and run it only after they agree.
 - **Facts and what-ifs are different.** A fact is accounting; a what-if is arithmetic under the assumption it states. Say "would cost $X less at the cache price", never "saves $X". A price comparison with another model says nothing about whether that model can do the work.
 - **Dollar figures on a plan are API-equivalent, not charges.** On an API budget (`kind: api`) they are real spend.
 - **If savetokens isn't installed**, say so and point to `savetokens install`.

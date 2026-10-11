@@ -19,7 +19,7 @@ from . import pricing
 
 DAY = 86400
 HISTORY_DAYS = 30   # "models you already use": the ones in your records this recently
-FIELDS = ("harness", "provider", "model", "project", "session_id", "billing", "subagent", "thread")
+FIELDS = ("harness", "provider", "model", "project", "project_id", "session_id", "billing", "subagent", "thread")
 
 
 def _rows(store, since, until, where):
@@ -32,6 +32,9 @@ def _rows(store, since, until, where):
         if k == "session_id":
             q += " AND session_id LIKE ?"
             p.append(v + "%")
+        elif isinstance(v, (list, tuple)):
+            q += f" AND {k} IN ({','.join('?' * len(v))})"
+            p += list(v)
         else:
             q += f" AND {k} = ?"
             p.append(v)

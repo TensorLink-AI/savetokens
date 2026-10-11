@@ -154,11 +154,11 @@ def refresh(store, now=None, use_ephemeris=True, log=lambda *_: None):
     start = hour_floor(now)
     eng = None
     made = []
-    for i, pool in enumerate(pools_.pools(store, now)):
+    for i, pool in enumerate(pools_.pools(store, now, goals=True)):
         hist, _ = pools_.history(store, pool, now)
         if not hist:
             continue
-        if pool.kind == "api":
+        if pool.kind in ("api", "goal"):
             horizon = MAX_HORIZON          # a week, repeated to the end of a longer budget period
         else:
             week = meter.latest(store, "seven_day", now, pool.key if pool.harness == meter.CLAUDE else None,
@@ -211,7 +211,7 @@ def preferred_source(store, account=None):
     return "ephemeris" if load_paths(store, account, "ephemeris") else "baseline"
 
 
-def outlook(store, now=None, source=None, cut=1.0, cut_hours=None, pool=None):
+def outlook(store, now=None, source=None, cut=1.0, cut_hours=None, pool=None, goals=False):
     """Per limit of every pool (or just `pool`, an id): used now, reset, projected % at reset, chance
     and time of a hit. For an API pool the limit is its budget, in % of the budget.
 
@@ -219,7 +219,7 @@ def outlook(store, now=None, source=None, cut=1.0, cut_hours=None, pool=None):
     usage stops for the next five hours")."""
     now = now or time.time()
     out = []
-    for p in pools_.pools(store, now):
+    for p in pools_.pools(store, now, goals=goals or bool(pool and pool.startswith("goal:"))):
         if pool is None or p.id == pool:
             out += _pool_outlook(store, p, now, source, cut, cut_hours)
     return out
@@ -242,6 +242,21 @@ def _pool_outlook(store, p, now, source, cut, cut_hours):
     paths = load_paths(store, p.key, src)
     base = {"pool": p.id, "harness": p.harness, "kind": p.kind, "account": p.key,
             "source": src if paths else None, "p10": None, "p50": None, "p90": None}
+    if p.kind == "goal":
+        g = p.budget
+        since, until = pools_.period(g, now)
+        spent = pools_.spent(store, p, since, now)
+        amount = g["amount"]
+        used = 100.0 * spent / amount if amount > 0 else 0.0
+        per = {"day": "a day", "week": "a week", "month": "a month"}.get(g.get("period"), "")
+        o = {**base, "name": "goal", "label": f"{g['label']} budget", "short": g["label"][:12], "used": used,
+             "read_at": now, "resets": until, "unit": p.unit, "spent": spent, "amount": amount,
+             "period": g.get("period"), "per": per or f"by {datetime.fromtimestamp(until):%a %-d %b}",
+             "p_hit": 1.0 if used >= 100 else None, "eta": now if used >= 100 else None}
+        if p.unit == "usd":
+            o.update(spent_usd=spent, budget_usd=amount)
+        return [_project(o, paths, now, max(0.0, 100 - used), 100.0 / amount if amount > 0 else 0.0,
+                         cut, cut_hours, extend=True)]
     if p.kind == "api":
         b = p.budget
         since, until = pools_.period(b, now)
@@ -281,7 +296,7 @@ def record(store, now=None):
     now = now or time.time()
     rows = []
     for source in ("ephemeris", "baseline"):
-        for o in outlook(store, now, source):
+        for o in outlook(store, now, source, goals=True):
             if o["source"] == source:
                 rows.append((o["account"] or "", o["name"], source, now, o["resets"], o["used"],
                              o["p10"], o["p50"], o["p90"], o["p_hit"], o["eta"]))

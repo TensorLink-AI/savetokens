@@ -82,9 +82,14 @@ def _weeks(store, since, until):
 
 
 def _budget(store, pool, since, until, now):
-    """An API budget over these days: spent against its share, and where its current period is heading."""
+    """A budget over these days: spent against its share, and where its current period is heading."""
     b = pool.budget
-    per_day = b["usd"] / PERIOD_DAYS[b["period"]]
+    if pool.kind == "goal":
+        b = {**b, "usd": b["amount"]}
+        days_in = (b["by"] - b["start"]) / DAY if b.get("by") else PERIOD_DAYS[b["period"]]
+        per_day = b["usd"] / max(days_in, 1.0)
+    else:
+        per_day = b["usd"] / PERIOD_DAYS[b["period"]]
     days = (until - since) / DAY
     spent = pools_.spent(store, pool, since, until)
     start, end = pools_.period(b, now)
@@ -94,8 +99,9 @@ def _budget(store, pool, since, until, now):
     runs_out = None
     if pace > 0 and likely > b["usd"]:
         runs_out = now + max(0.0, b["usd"] - so_far) / pace * DAY
-    return {"tool": pool.harness, "budget_usd": b["usd"], "per": b["period"], "planned_usd": per_day * days,
-            "spent_usd": spent, "under_usd": per_day * days - spent, "period_end": end,
+    return {"tool": pool.harness, "label": b.get("label"), "unit": pool.unit, "budget_usd": b["usd"],
+            "per": b.get("period") or "period", "planned_usd": per_day * days,
+            "spent_usd": spent, "under_usd": per_day * days - spent, "period_end": end, "so_far_usd": so_far,
             "likely_usd": likely, "runs_out": runs_out}
 
 
@@ -109,7 +115,8 @@ def recap(store, now=None, days=7) -> dict:
         "previous_usd": sum(v["usd"] for v in prev.values()),
         "hits": _hits(store, since, now), "previous_hits": _hits(store, before, since),
         "weeks": _weeks(store, since, now),
-        "budgets": [_budget(store, p, since, now, now) for p in pools_.pools(store, now) if p.kind == "api"],
+        "budgets": [_budget(store, p, since, now, now) for p in pools_.pools(store, now, goals=True)
+                    if p.kind in ("api", "goal")],
         "efficiency": _efficiency(store, since, now),
     }
 
@@ -158,14 +165,21 @@ def text(r) -> str | None:
     else:
         lines.append(f"{head}: no usage.")
     for b in r["budgets"]:
-        tool = TOOLS.get(b["tool"], b["tool"])
+        tool = b["label"] or TOOLS.get(b["tool"], b["tool"])
+        if b["unit"] == "tokens":
+            diff = b["under_usd"]
+            lines.append(f"  {tool} budget: {_tokens(b['spent_usd'])} of the {_tokens(b['planned_usd'])} tokens planned"
+                         f" for these days, {_tokens(abs(diff))} {'under' if diff >= 0 else 'over'} plan.")
+            continue
         if b["under_usd"] >= 0:
             lines.append(f"  {tool} budget: {_usd(b['spent_usd'])} of the {_usd(b['planned_usd'])} planned for these days,"
                          f" {_usd(b['under_usd'])} under plan.")
         else:
             lines.append(f"  {tool} budget: {_usd(b['spent_usd'])} against {_usd(b['planned_usd'])} planned,"
                          f" {_usd(-b['under_usd'])} over plan.")
-        if b["runs_out"]:
+        if b["so_far_usd"] >= b["budget_usd"]:
+            lines.append(f"    Already over: {_usd(b['so_far_usd'])} of your {_usd(b['budget_usd'])} this {b['per']}.")
+        elif b["runs_out"]:
             lines.append(f"    At this pace your {_usd(b['budget_usd'])} a {b['per']} runs out around {_date(b['runs_out'])}.")
         else:
             lines.append(f"    At this pace it ends the {b['per']} around {_usd(b['likely_usd'])} of {_usd(b['budget_usd'])}.")

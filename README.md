@@ -93,6 +93,26 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   There are no rules of thumb inside: prices come from a catalogue of every model OpenRouter lists, from every
   provider (refreshed daily, with your own `savetokens price` on top), so a model released tomorrow is priced
   without an update. `advise`, the agent's tools and the weekly recap use the same numbers.
+- **Budgets for anything: overall, or per project.** Every tool, provider and machine counts:
+
+  ```sh
+  savetokens budget --usd 500 --per month                       # overall
+  savetokens budget --project webapp --usd 150 --per month      # one project
+  savetokens budget --project . --tokens 30M --by 2026-12-15    # this folder's project: a total by a date
+  savetokens budget                                             # each with its forecast
+  ```
+  ```
+  Overall budget: $2,140 of $3,000 a month (71%); likely 96% by the end, 41% chance of going over
+  webapp budget: $183 of $400 a month (46%); likely 153% by the end, 78% chance of going over
+  ```
+
+  Each budget is forecast like a limit, alerts in the same three stages, and has a line in the weekly recap.
+  `savetokens projects` shows every project's tokens and dollars.
+
+  A project is its git repository, the same on every machine however it was cloned. A folder without one is a
+  project on that machine only, unless you mark it: `savetokens project link NAME` writes a `.savetokens` file,
+  and committing it makes the folder (or several repos under it) one project everywhere. Only an id goes to
+  your hub, never a project's name.
 - **Spend by provider and model.** `savetokens spend` (and the browser view's Spend tab) shows tokens and
   dollars today, this week and this month, for each provider and each model within it. That covers Anthropic,
   OpenAI, and whatever Hermes uses: OpenRouter, Nous, Chutes, Synthetic, or any API host. It also shows the
@@ -299,6 +319,8 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | | |
 |---|---|
 | `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
+| `budget [--project NAME] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE)` / `budget` / `budget --off NAME` | a budget, overall or for a project / every budget with its forecast / remove one |
+| `projects [--days N]` / `project link [NAME]` | every project's tokens and $ (every machine, on a hub) / make this folder one project everywhere |
 | `efficiency [--days N] [--tool T] [--provider P] [--project NAME] [--as MODEL]` | where tokens go (facts) and what the same work would cost done differently (what-ifs) |
 | `recap [--days N]` | the last week (or N days) against your plan: under or over budget and forecast, limit hits |
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |

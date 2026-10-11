@@ -57,7 +57,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "days": {"type": "integer", "minimum": 1, "description": "how many days back (default 7)"},
          "tool": {"type": "string", "enum": ["claude-code", "codex", "hermes"]},
-         "provider": {"type": "string"}, "project": {"type": "string", "description": "a project's folder name"},
+         "provider": {"type": "string"}, "project": {"type": "string", "description": "a project's name (as savetokens projects shows it)"},
          "model": {"type": "string", "description": "only this model"},
          "as_model": {"type": "string", "description": "price the same tokens at this model's prices"}}}},
     {"name": "suggest_setup",
@@ -103,8 +103,11 @@ def call(name, args, client=None, store=None):
             return spend.text(got) + "\n\n" + json.dumps(_clean(got), default=str)
         if name == "efficiency":
             from . import efficiency
-            where = {k: args.get(a) for k, a in (("harness", "tool"), ("provider", "provider"), ("project", "project"),
-                                                 ("model", "model")) if args.get(a)}
+            from . import projects
+            where = {k: args.get(a) for k, a in (("harness", "tool"), ("provider", "provider"), ("model", "model"))
+                     if args.get(a)}
+            if args.get("project"):
+                where["project_id"] = [i for i in projects.by_name(store, args["project"]) if i] or ["-"]
             r = efficiency.report(store, days=max(1, int(args.get("days") or 7)), now=now, where=where or None,
                                   model=args.get("as_model"))
             return efficiency.text(r) + "\n\n" + json.dumps(_clean(r), default=str)

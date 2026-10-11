@@ -61,6 +61,9 @@ def message(o, st, now):
     head = f"{o['label']}: {o['used']:.0f}% used"
     if o.get("kind") == "api":
         head += f" (${o['spent_usd']:,.2f} of ${o['budget_usd']:,.0f} {o['per']})"
+    elif o.get("kind") == "goal":
+        amt = (lambda v: f"${v:,.2f}") if o["unit"] == "usd" else (lambda v: f"{v / 1e6:,.1f}M tokens")
+        head += f" ({amt(o['spent'])} of {amt(o['amount'])} {o['per']})"
     if o.get("eta"):
         pace = (f"at this pace you'll reach it around {when(o['eta'], now)} (in {span(o['eta'] - now)}),"
                 f" {span(o['resets'] - o['eta'])} before it resets at {when(o['resets'], now)}")
@@ -130,7 +133,7 @@ def check(store, now=None) -> list[dict]:
     """Raise any new alerts; returns them."""
     now = now or time.time()
     found = []
-    looks = forecast.outlook(store, now)
+    looks = forecast.outlook(store, now, goals=True)
     for o in looks:
         st = stage(o, now)
         if o["name"] != "five_hour":     # the weekly limit and budgets: watch how the projection moves
@@ -143,7 +146,7 @@ def check(store, now=None) -> list[dict]:
         if any(STAGES.index(f) >= STAGES.index(st) for f in fired if f in STAGES):
             continue
         text = message(o, st, now)
-        if st in ("act", "last_call"):
+        if st in ("act", "last_call") and o["kind"] != "goal":
             text += best_pause(store, now, o)
         found.append({"account": o["account"], "name": o["name"], "window_end": o["resets"], "stage": st,
                       "message": text})
