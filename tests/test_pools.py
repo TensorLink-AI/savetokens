@@ -161,8 +161,8 @@ def test_budgets_and_api_usage_reach_other_machines(running, tmp_path):
 
 def test_an_older_client_without_billing_can_still_push(running):
     _, token, url = running
-    from savetokens.store import USAGE_COLS
-    cols = [c for c in USAGE_COLS if c not in ("project", "billing")]
+    from savetokens.store import NEW_USAGE, SYNCED_USAGE
+    cols = [c for c in SYNCED_USAGE if c not in ["billing"] + NEW_USAGE]
     row = [{"harness": "claude-code", "session_id": "s", "request_id": "r", "ts": T0, "machine": "old"}.get(c, 0)
            for c in cols]
     assert sync._call({"server_url": url, "server_token": token}, "/v1/push",
@@ -181,3 +181,15 @@ def test_a_price_counts_codex_usage_against_its_budget(store, homes, monkeypatch
         usd = s.conn.execute("SELECT cost_usd FROM usage").fetchone()[0]
     assert abs(usd - (500_000 * 2 + 500_000 * 0.2 + 100 * 8) / 1e6) < 1e-9   # half the input was cached
     assert pricing.rates("gpt-6-astra") == (2.0, 8.0, 0.2)
+
+
+def test_a_newer_client_still_pushes_to_an_older_hub(store, running, monkeypatch):
+    """A hub from before v5 doesn't know reasoning or thread: the machine sends what it knows."""
+    from savetokens import server
+    from savetokens.store import NEW_USAGE, SYNCED
+    _, token, url = running
+    old = {**SYNCED, "usage": [c for c in SYNCED["usage"] if c not in NEW_USAGE]}
+    monkeypatch.setattr(server, "SYNCED", old)
+    store.add_usage([Usage("claude-code", "s", "r1", T0, "m", reasoning=5, thread="s")])
+    assert sync.push(store, {"server_url": url, "server_token": token}) >= 1
+    assert store.meta("hub_legacy_usage")

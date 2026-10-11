@@ -138,6 +138,7 @@ def ingest_db(store: Store, path: Path) -> int:
                                input=share(tokens_in), cache_read=share(cr), cache_write_5m=share(cw),
                                output=share(out + reason), cost_usd=None if usd is None else usd / parts,
                                project=Path(r["cwd"]).name if r["cwd"] else None, billing=bill,
+                               reasoning=share(reason), cwd=r["cwd"] or None,   # per-session totals: no thread
                                provider=provider_name(r["billing_provider"], r["billing_base_url"])))
     added = store.add_usage(usage)
     store.set_meta(key, {"seen": seen, "since": newest})

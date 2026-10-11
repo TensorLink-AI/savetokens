@@ -27,6 +27,8 @@ def homes(tmp_path, monkeypatch):
     def no_network(*a, **k):
         raise RuntimeError("no network in tests")
     monkeypatch.setattr(ephemeris, "_call", no_network)
+    from savetokens import pricing as _pricing
+    monkeypatch.setattr(_pricing, "_fetch", no_network)   # the price catalogue too
     monkeypatch.setenv("SAVETOKENS_HOME", str(tmp_path / "st"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))

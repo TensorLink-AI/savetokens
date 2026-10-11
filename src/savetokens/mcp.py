@@ -6,6 +6,7 @@ Claude Code, Codex, Hermes and other MCP clients start `savetokens mcp` and call
   estimate_job   a job's size in points and how long it would take, waits for resets included
   spend_summary  tokens and $ by provider and model: today, this week, this month, and projected
   suggest_setup  what to set up (budgets, prices, ...), each with the command for the user to run
+  efficiency     where tokens go and what the same work would cost done differently: facts and what-ifs
 
 JSON-RPC 2.0, one message per line, on stdin and stdout. Read-only: nothing is changed.
 """
@@ -45,6 +46,20 @@ TOOLS = [
                     " Pay-as-you-go spend plus subscriptions as a fixed cost. Use when the user asks what they're"
                     " spending, where, or what it will cost.",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "efficiency",
+     "description": "Where the user's tokens go, for any tool and provider: facts (tokens and $ by provider, model and"
+                    " project; how much of each prompt is context re-sent from earlier in the conversation and how much"
+                    " of that the cache served; how far prompts grew; the share of output spent reasoning) and"
+                    " what-ifs, each with its assumption stated (caching the re-sent context; keeping conversations"
+                    " near their starting size; the same tokens at another model's prices, price only). Use it to"
+                    " decide how to work more cheaply, e.g. when to start fresh or which model to use for a"
+                    " subtask. Every number is labelled fact or what-if; don't present a what-if as a saving made.",
+     "inputSchema": {"type": "object", "properties": {
+         "days": {"type": "integer", "minimum": 1, "description": "how many days back (default 7)"},
+         "tool": {"type": "string", "enum": ["claude-code", "codex", "hermes"]},
+         "provider": {"type": "string"}, "project": {"type": "string", "description": "a project's folder name"},
+         "model": {"type": "string", "description": "only this model"},
+         "as_model": {"type": "string", "description": "price the same tokens at this model's prices"}}}},
     {"name": "suggest_setup",
      "description": "What would make savetokens more useful here (a budget for a tool paying by API, a price for a"
                     " model it can't price, the forecaster, the browser view), each with the exact command and what"
@@ -86,6 +101,13 @@ def call(name, args, client=None, store=None):
             from . import spend
             got = spend.summary(store, now)
             return spend.text(got) + "\n\n" + json.dumps(_clean(got), default=str)
+        if name == "efficiency":
+            from . import efficiency
+            where = {k: args.get(a) for k, a in (("harness", "tool"), ("provider", "provider"), ("project", "project"),
+                                                 ("model", "model")) if args.get(a)}
+            r = efficiency.report(store, days=max(1, int(args.get("days") or 7)), now=now, where=where or None,
+                                  model=args.get("as_model"))
+            return efficiency.text(r) + "\n\n" + json.dumps(_clean(r), default=str)
         if name == "suggest_setup":
             got = advise.setup(store, now)
             text = "\n".join(f"- {x['why']}: `{x['command']}`" + (f" (ask for {x['ask']})" if x["ask"] else "")

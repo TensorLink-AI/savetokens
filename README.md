@@ -72,6 +72,27 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   You rarely need to switch it yourself: Claude Code on an API key is detected (its
   statusline sends no limit meter), as is Codex logged in with a key, and savetokens asks
   once for a budget.
+- **Where your tokens go, and what the same work would cost done differently.** `savetokens efficiency`
+  works the same for every tool, provider and way of paying. Every number is one of two kinds:
+  - **facts**, plain accounting: tokens and $ by provider, model and project; how much of each prompt is
+    context re-sent from earlier in the conversation, and how much of that the cache served; how far prompts
+    grew; the share of output spent reasoning;
+  - **what-ifs**, exact arithmetic under one assumption shown beside the number: caching the re-sent context
+    that was billed as fresh input; keeping conversations near their starting size (an upper bound); the same
+    tokens at another model's prices (price only: whether it would do the work as well isn't claimed).
+
+  ```
+  Facts:
+    99% of prompt tokens were re-sent from earlier in the conversation; 94% of that came from the cache.
+    Prompts grew 2.73B tokens past where their conversations started ($1,786).
+  Same work, done differently (what-ifs):
+     $1,786  Keep conversations near their starting size: an upper bound; starting fresh still costs a handover.
+        $72  Cache the context that's re-sent: at the provider's cache-read price instead.
+  ```
+
+  There are no rules of thumb inside: prices come from a catalogue of every model OpenRouter lists, from every
+  provider (refreshed daily, with your own `savetokens price` on top), so a model released tomorrow is priced
+  without an update. `advise`, the agent's tools and the weekly recap use the same numbers.
 - **Spend by provider and model.** `savetokens spend` (and the browser view's Spend tab) shows tokens and
   dollars today, this week and this month, for each provider and each model within it. That covers Anthropic,
   OpenAI, and whatever Hermes uses: OpenRouter, Nous, Chutes, Synthetic, or any API host. It also shows the
@@ -278,6 +299,7 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | | |
 |---|---|
 | `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
+| `efficiency [--days N] [--tool T] [--provider P] [--project NAME] [--as MODEL]` | where tokens go (facts) and what the same work would cost done differently (what-ifs) |
 | `recap [--days N]` | the last week (or N days) against your plan: under or over budget and forecast, limit hits |
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |
 | `advise [--json]` | where the limits stand and the options, biggest effect first |

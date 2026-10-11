@@ -68,6 +68,9 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
     now = now or time.time()
     cfg = load_config()
     notices(store, now, cfg)
+    from . import pricing
+    if pricing.refresh(now=now):   # the price catalogue, once a day: new models are priced without an update
+        log(f"price catalogue refreshed; {pricing.reprice(store)} requests priced")
     capture.backfill(store)
     if sync.connected(cfg):
         try:

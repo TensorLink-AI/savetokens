@@ -19,7 +19,8 @@ import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 4   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider
+SCHEMA_VERSION = 5   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider;
+                     # v5: usage.reasoning, usage.thread, usage.cwd (the cwd stays on the machine)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     machine TEXT NOT NULL,
@@ -39,6 +40,10 @@ CREATE TABLE IF NOT EXISTS usage (
     project TEXT,                   -- the session's folder name; this machine only, never synced
     billing TEXT,                   -- 'api' when paid by API key; NULL for a subscription
     provider TEXT,                  -- who serves it: anthropic, openai, openrouter, nous, an API host, ...
+    reasoning INTEGER,              -- of the output, tokens spent reasoning; NULL when the source doesn't say
+    thread TEXT,                    -- one conversation's requests, in order (a session, or one subagent in it);
+                                    -- NULL when the source gives totals per session, not per request
+    cwd TEXT,                       -- the folder it ran in; this machine only, never synced
     UNIQUE (machine, harness, request_id)
 );
 CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
@@ -130,10 +135,14 @@ class Usage:
     project: str | None = None
     billing: str | None = None    # "api" when paid by API key
     provider: str | None = None   # who serves it (default: the tool's own company)
+    reasoning: int | None = None  # of the output, tokens spent reasoning (None: not reported)
+    thread: str | None = None     # the conversation it belongs to (None: the source has per-session totals only)
+    cwd: str | None = None        # the folder it ran in (never synced)
 
 
 USAGE_COLS = [f.name for f in fields(Usage)]
-SYNCED_USAGE = [c for c in USAGE_COLS if c != "project"]   # folder names stay on the machine
+SYNCED_USAGE = [c for c in USAGE_COLS if c not in ("project", "cwd")]   # folder names stay on the machine
+NEW_USAGE = ["reasoning", "thread"]   # not known to hubs older than v5: pushed without them there
 METER_COLS = ["machine", "harness", "account", "ts", "name", "pct", "resets"]
 HIT_COLS = ["machine", "harness", "account", "session_id", "ts", "kind", "model"]
 SYNCED = {"usage": SYNCED_USAGE, "meter": METER_COLS, "hits": HIT_COLS}
@@ -172,6 +181,13 @@ class Store:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN billing TEXT")
             if "provider" not in have:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN provider TEXT")
+            new = [c for c in ("reasoning", "thread", "cwd") if c not in have]
+            for c in new:
+                self.conn.execute(f"ALTER TABLE usage ADD COLUMN {c} {'INTEGER' if c == 'reasoning' else 'TEXT'}")
+            if new:   # read every source again to fill them in (rows already there are updated, not doubled)
+                self.conn.execute("DELETE FROM offsets")
+                self.conn.execute("DELETE FROM meta WHERE key LIKE 'codex_file:%'")
+                # not Hermes: its request ids come from running totals, so reading it again would double it
             if version < SCHEMA_VERSION:
                 _fill_providers(self.conn)   # also rows an older version wrote meanwhile
             self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -211,10 +227,13 @@ class Store:
             e.provider = e.provider or DEFAULT_PROVIDER.get(e.harness)
             rows.append([int(v) if isinstance(v, bool) else v for v in (getattr(e, c) for c in USAGE_COLS)])
         n = self.insert("usage", USAGE_COLS, rows)
-        # rows read before projects were kept get theirs on the next read
-        self.conn.executemany("UPDATE usage SET project = ? WHERE machine = ? AND harness = ? AND request_id = ?"
-                              " AND project IS NULL", [(e.project, e.machine, e.harness, e.request_id)
-                                                       for e in events if e.project])
+        # rows read before a column was kept get it on the next read
+        self.conn.executemany(
+            "UPDATE usage SET project = COALESCE(project, ?), reasoning = COALESCE(reasoning, ?),"
+            " thread = COALESCE(thread, ?), cwd = COALESCE(cwd, ?)"
+            " WHERE machine = ? AND harness = ? AND request_id = ?",
+            [(e.project, e.reasoning, e.thread, e.cwd, e.machine, e.harness, e.request_id) for e in events
+             if e.project or e.reasoning is not None or e.thread or e.cwd])
         self.conn.commit()
         return n
 

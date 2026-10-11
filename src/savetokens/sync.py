@@ -12,10 +12,13 @@ import base64
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
-from .store import SYNCED, Store
+from .store import NEW_USAGE, SYNCED, Store
+
+LEGACY_RETRY = 86400   # after a day, try the newer columns again (the hub may have been upgraded)
 
 BATCH = 5000
 
@@ -48,14 +51,25 @@ def push(store: Store, cfg) -> int:
     sent = 0
     machine = store.machine
     for table, cols in SYNCED.items():
+        legacy = time.time() - (store.meta("hub_legacy_usage") or 0) < LEGACY_RETRY
+        if table == "usage" and legacy:
+            cols = [c for c in cols if c not in NEW_USAGE]
         cursor = store.meta(f"pushed:{table}", 0)
         while True:
             rows = store.conn.execute(f"SELECT rowid, {','.join(cols)} FROM {table} WHERE rowid > ? AND machine = ?"
                                       f" ORDER BY rowid LIMIT {BATCH}", (cursor, machine)).fetchall()
             if not rows:
                 break
-            _call(cfg, "/v1/push", {"machine": machine, "table": table, "cols": cols,
-                                    "rows": [list(r)[1:] for r in rows]})
+            try:
+                _call(cfg, "/v1/push", {"machine": machine, "table": table, "cols": cols,
+                                        "rows": [list(r)[1:] for r in rows]})
+            except urllib.error.HTTPError as e:
+                if e.code != 400 or table != "usage" or legacy:
+                    raise
+                legacy = True
+                store.set_meta("hub_legacy_usage", time.time())   # a hub from before v5: send what it knows
+                cols = [c for c in cols if c not in NEW_USAGE]
+                continue
             cursor = rows[-1][0]
             store.set_meta(f"pushed:{table}", cursor)
             sent += len(rows)
