@@ -264,7 +264,7 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                             and (g.get("period") in PERIODS or isinstance(g.get("by"), (int, float)))
                             and isinstance(g.get("start"), (int, float)) and isinstance(g.get("scope"), dict)
                             and all(isinstance(x, str) and len(x) <= 32
-                                    for x in (g["scope"].get("projects") or [])[:50]))
+                                    for k in ("projects", "tasks") for x in (g["scope"].get(k) or [])[:50]))
             if not (isinstance(goals, dict) and len(goals) <= 100
                     and all(isinstance(k, str) and len(k) <= 32 and ok(g) for k, g in goals.items())):
                 return self._send(400, {"error": "bad budgets"})

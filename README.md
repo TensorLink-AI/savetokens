@@ -113,6 +113,19 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   project on that machine only, unless you mark it: `savetokens project link NAME` writes a `.savetokens` file,
   and committing it makes the folder (or several repos under it) one project everywhere. Only an id goes to
   your hub, never a project's name.
+- **Tasks: what each piece of work costs.** A git branch is a task (any but the repo's default one), or an
+  issue key in its name (`savetokens task pattern '[A-Z]+-[0-9]+'`), or one you declare:
+
+  ```sh
+  savetokens task start "Add OAuth"          # what follows here counts to it
+  savetokens task done                       # finished: its cost joins the estimates
+  savetokens tasks --project .               # every task: $, tokens, sessions, open or done
+  savetokens budget --task "Add OAuth" --tokens 3M
+  ```
+
+  Agents can do the same through MCP (`task_start`, `task_status`, `task_done`). Estimates are measured, never
+  guessed: "finished tasks in this project: median $4.10, 9 in 10 under $12; from 14 tasks", or "not enough
+  data yet" until three tasks are done. Like projects, only an id leaves the machine.
 - **Spend by provider and model.** `savetokens spend` (and the browser view's Spend tab) shows tokens and
   dollars today, this week and this month, for each provider and each model within it. That covers Anthropic,
   OpenAI, and whatever Hermes uses: OpenRouter, Nous, Chutes, Synthetic, or any API host. It also shows the
@@ -321,6 +334,7 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
 | `budget [--project NAME] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE)` / `budget` / `budget --off NAME` | a budget, overall or for a project / every budget with its forecast / remove one |
 | `projects [--days N]` / `project link [NAME]` | every project's tokens and $ (every machine, on a hub) / make this folder one project everywhere |
+| `task start NAME` / `task done` / `task` / `tasks [--project NAME]` | declare a task, finish it, see the current one / every task's cost and the measured estimate |
 | `efficiency [--days N] [--tool T] [--provider P] [--project NAME] [--as MODEL]` | where tokens go (facts) and what the same work would cost done differently (what-ifs) |
 | `recap [--days N]` | the last week (or N days) against your plan: under or over budget and forecast, limit hits |
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |

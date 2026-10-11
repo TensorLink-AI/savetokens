@@ -7,8 +7,12 @@ Claude Code, Codex, Hermes and other MCP clients start `savetokens mcp` and call
   spend_summary  tokens and $ by provider and model: today, this week, this month, and projected
   suggest_setup  what to set up (budgets, prices, ...), each with the command for the user to run
   efficiency     where tokens go and what the same work would cost done differently: facts and what-ifs
+  task_status    the task this folder is on, its cost so far, its budget, and what finished tasks cost
+  task_start     declare the task the work that follows belongs to (records only; changes no settings)
+  task_done      mark the current task finished, so its cost joins the estimates
 
-JSON-RPC 2.0, one message per line, on stdin and stdout. Read-only: nothing is changed.
+JSON-RPC 2.0, one message per line, on stdin and stdout. Read-only, except that task_start and task_done
+record which task the work belongs to; no setting is ever changed.
 """
 from __future__ import annotations
 
@@ -60,6 +64,23 @@ TOOLS = [
          "provider": {"type": "string"}, "project": {"type": "string", "description": "a project's name (as savetokens projects shows it)"},
          "model": {"type": "string", "description": "only this model"},
          "as_model": {"type": "string", "description": "price the same tokens at this model's prices"}}}},
+    {"name": "task_status",
+     "description": "The task the current folder is on (declared, or its git branch), what it has cost so far in"
+                    " tokens and dollars, its budget if it has one, and what finished tasks in this project cost"
+                    " (measured: median and 90th percentile, with how many tasks; or 'not enough data yet'). Use it"
+                    " to pace a task against its budget.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "task_start",
+     "description": "Declare the task the work that follows belongs to, in the current folder's project, e.g. when"
+                    " the user gives you a new piece of work. Its tokens are then counted to it until task_done, and"
+                    " the result includes what similar finished tasks cost. Only records the task; changes nothing"
+                    " else.",
+     "inputSchema": {"type": "object", "required": ["name"], "properties": {
+         "name": {"type": "string", "description": "a short name for the task, e.g. an issue key or 'Add OAuth'"}}}},
+    {"name": "task_done",
+     "description": "Mark the current task finished (or the named one), so its cost counts toward estimates for"
+                    " future tasks. Call when the user's piece of work is complete.",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
     {"name": "suggest_setup",
      "description": "What would make savetokens more useful here (a budget for a tool paying by API, a price for a"
                     " model it can't price, the forecaster, the browser view), each with the exact command and what"
@@ -111,6 +132,31 @@ def call(name, args, client=None, store=None):
             r = efficiency.report(store, days=max(1, int(args.get("days") or 7)), now=now, where=where or None,
                                   model=args.get("as_model"))
             return efficiency.text(r) + "\n\n" + json.dumps(_clean(r), default=str)
+        if name in ("task_status", "task_start", "task_done"):
+            from . import forecast, tasks
+            cwd = os.getcwd()
+            if name == "task_start":
+                got = tasks.start(store, cwd, str(args.get("name") or "").strip()[:120] or "task")
+                return (f"Started {got['name']!r} in {got['project']}. Estimate: {got['estimate']['text']}."
+                        + "\n\n" + json.dumps(got, default=str))
+            if name == "task_done":
+                got = tasks.done(store, cwd, args.get("name"))
+                if not got:
+                    return "No task here to finish."
+                return (f"Done: {got['name']}, ${got['usd']:,.2f}, {got['tokens'] / 1e6:,.1f}M tokens."
+                        + "\n\n" + json.dumps(got, default=str))
+            cur = tasks.current(store, cwd)
+            if not cur:
+                return "No task here: call task_start with a name, or work on a git branch."
+            tot, est = tasks.totals(store, cur["id"]), tasks.estimate(store, cur["project_id"])
+            goals = store.meta("goals") or {}
+            mine = {f"goal:{g}" for g, v in goals.items() if cur["id"] in (v.get("scope") or {}).get("tasks", [])}
+            budget = next((o for o in forecast.outlook(store, now, goals=True) if o["pool"] in mine), None)
+            text = f"{tot['name']} ({tot['source']}): ${tot['usd']:,.2f}, {tot['tokens'] / 1e6:,.1f}M tokens so far."
+            if budget:
+                text += f" Budget: {budget['used']:.0f}% used."
+            text += f" Estimate: {est['text']}."
+            return text + "\n\n" + json.dumps({"task": tot, "estimate": est, "budget": budget}, default=str)
         if name == "suggest_setup":
             got = advise.setup(store, now)
             text = "\n".join(f"- {x['why']}: `{x['command']}`" + (f" (ask for {x['ask']})" if x["ask"] else "")

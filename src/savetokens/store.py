@@ -19,9 +19,10 @@ import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 6   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider;
+SCHEMA_VERSION = 7   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider;
                      # v5: usage.reasoning, usage.thread, usage.cwd (the cwd stays on the machine);
-                     # v6: usage.project_id (synced: an id, not a name) and the projects table (this machine's)
+                     # v6: usage.project_id (synced: an id, not a name) and the projects table (this machine's);
+                     # v7: usage.branch (this machine's), usage.task_id (synced) and the tasks table
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     machine TEXT NOT NULL,
@@ -46,6 +47,8 @@ CREATE TABLE IF NOT EXISTS usage (
                                     -- NULL when the source gives totals per session, not per request
     cwd TEXT,                       -- the folder it ran in; this machine only, never synced
     project_id TEXT,                -- the project, the same on every machine (projects.py); its name isn't synced
+    branch TEXT,                    -- the git branch it ran on, when the tool records it; never synced
+    task_id TEXT,                   -- the task (tasks.py): an id, the same on every machine; its name isn't synced
     UNIQUE (machine, harness, request_id)
 );
 CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
@@ -116,6 +119,17 @@ CREATE TABLE IF NOT EXISTS projects (   -- this machine's folders: their project
     kind TEXT                       -- file | git | path
 );
 
+CREATE TABLE IF NOT EXISTS tasks (      -- this machine's names for tasks (never synced)
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL,           -- declared | tracker | branch
+    started REAL,                   -- declared: when it was (last) started
+    stopped REAL,                   -- declared: when another task was started instead
+    done REAL                       -- when it was marked done
+);
+CREATE INDEX IF NOT EXISTS tasks_project ON tasks(project_id);
+
 CREATE TABLE IF NOT EXISTS offsets (path TEXT PRIMARY KEY, offset INTEGER NOT NULL, size INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -148,11 +162,13 @@ class Usage:
     thread: str | None = None     # the conversation it belongs to (None: the source has per-session totals only)
     cwd: str | None = None        # the folder it ran in (never synced)
     project_id: str | None = None # the project, from the folder (projects.py)
+    branch: str | None = None     # the git branch, when the tool records it (never synced)
+    task_id: str | None = None    # the task (tasks.py)
 
 
 USAGE_COLS = [f.name for f in fields(Usage)]
-SYNCED_USAGE = [c for c in USAGE_COLS if c not in ("project", "cwd")]   # folder names stay on the machine
-NEW_USAGE = ["reasoning", "thread", "project_id"]   # not known to hubs older than v5: pushed without them there
+SYNCED_USAGE = [c for c in USAGE_COLS if c not in ("project", "cwd", "branch")]   # names stay on the machine
+NEW_USAGE = ["reasoning", "thread", "project_id", "task_id"]   # not known to hubs older than v5: pushed without them there
 METER_COLS = ["machine", "harness", "account", "ts", "name", "pct", "resets"]
 HIT_COLS = ["machine", "harness", "account", "session_id", "ts", "kind", "model"]
 SYNCED = {"usage": SYNCED_USAGE, "meter": METER_COLS, "hits": HIT_COLS}
@@ -193,6 +209,12 @@ class Store:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN provider TEXT")
             if "project_id" not in have:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN project_id TEXT")
+            for c in ("branch", "task_id"):
+                if c not in have:
+                    self.conn.execute(f"ALTER TABLE usage ADD COLUMN {c} TEXT")
+            if "branch" not in have:   # read Claude Code and Codex again for their branches
+                self.conn.execute("DELETE FROM offsets")
+                self.conn.execute("DELETE FROM meta WHERE key LIKE 'codex_file:%'")
             new = [c for c in ("reasoning", "thread", "cwd") if c not in have]
             for c in new:
                 self.conn.execute(f"ALTER TABLE usage ADD COLUMN {c} {'INTEGER' if c == 'reasoning' else 'TEXT'}")
@@ -233,7 +255,7 @@ class Store:
     def upsert_usage(self, cols, rows) -> int:
         """Rows from a machine (on the hub): new ones added, and ones seen before given any field they lacked
         (a machine sends its history again once it knows its requests' projects)."""
-        fill = [c for c in ("project_id", "reasoning", "thread") if c in cols]
+        fill = [c for c in ("project_id", "reasoning", "thread", "task_id") if c in cols]
         if not fill:
             return self.insert("usage", cols, rows)
         before = self.conn.total_changes
@@ -254,15 +276,19 @@ class Store:
             e.provider = e.provider or DEFAULT_PROVIDER.get(e.harness)
             if e.cwd and not e.project_id:
                 e.project_id = projects.resolve(self, e.cwd)[0]
+            if e.project_id and not e.task_id:
+                from . import tasks
+                e.task_id = tasks.attribute(self, e)
             rows.append([int(v) if isinstance(v, bool) else v for v in (getattr(e, c) for c in USAGE_COLS)])
         n = self.insert("usage", USAGE_COLS, rows)
         # rows read before a column was kept get it on the next read
         self.conn.executemany(
             "UPDATE usage SET project = COALESCE(project, ?), reasoning = COALESCE(reasoning, ?),"
-            " thread = COALESCE(thread, ?), cwd = COALESCE(cwd, ?), project_id = COALESCE(project_id, ?)"
+            " thread = COALESCE(thread, ?), cwd = COALESCE(cwd, ?), project_id = COALESCE(project_id, ?),"
+            " branch = COALESCE(branch, ?), task_id = COALESCE(task_id, ?)"
             " WHERE machine = ? AND harness = ? AND request_id = ?",
-            [(e.project, e.reasoning, e.thread, e.cwd, e.project_id, e.machine, e.harness, e.request_id)
-             for e in events if e.project or e.reasoning is not None or e.thread or e.cwd])
+            [(e.project, e.reasoning, e.thread, e.cwd, e.project_id, e.branch, e.task_id, e.machine, e.harness,
+              e.request_id) for e in events if e.project or e.reasoning is not None or e.thread or e.cwd])
         self.conn.commit()
         return n
 

@@ -16,6 +16,7 @@ Use the savetokens MCP tools when they're available. Otherwise run the same thin
 | `pacing_brief` | `savetokens advise --json` | each limit: used, likely at reset, chance of running out, room left in points and hours; this session's usage; options ranked by measured effect, each with the exact change to make |
 | `estimate_job` | `savetokens estimate --like big --json` | a job's size in points, hours of work at the user's pace, finish time including any wait for a 5-hour reset, and a better start time if one avoids waiting |
 | `spend_summary` | `savetokens spend --json` | tokens and $ by provider and model: so far today, this week and this month; likely by each one's end; and the next day, week and 30 days. Subscriptions count as a fixed cost |
+| `task_status` | `savetokens task --json` | the current task's cost, its budget, and what finished tasks in this project cost (measured) |
 | `efficiency` | `savetokens efficiency --json` | where tokens go, for any tool and provider: facts (context re-sent and how much the cache served, prompt growth, reasoning share, $ by provider, model and project) and what-ifs, each with its assumption |
 | `suggest_setup` | `savetokens suggest --json` | what to set up (a budget, a model's price, the forecaster), each with the exact command and what to ask the user for |
 
@@ -55,6 +56,7 @@ Never stop the user's task on your own; tell them and let them decide.
 
 - **Never change settings, models or sessions without asking.** Propose; the user decides.
 - **Budgets and projects are the user's.** `savetokens budget` lists their budgets (overall or per project) with forecasts; `savetokens projects` shows spend per project. Propose a budget with its command (e.g. `savetokens budget --project . --usd 150 --per month`) and run it only after they agree.
+- **Tasks, when the user uses them.** If `task_status` shows a declared task, or the user asks to track work by task, call `task_start` with a short name when you begin a new piece of work they give you, and `task_done` when it's complete. Use the measured estimate it returns to pace the work against any task budget. Don't declare tasks unasked in a project that doesn't use them.
 - **Facts and what-ifs are different.** A fact is accounting; a what-if is arithmetic under the assumption it states. Say "would cost $X less at the cache price", never "saves $X". A price comparison with another model says nothing about whether that model can do the work.
 - **Dollar figures on a plan are API-equivalent, not charges.** On an API budget (`kind: api`) they are real spend.
 - **If savetokens isn't installed**, say so and point to `savetokens install`.
