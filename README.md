@@ -152,7 +152,7 @@ savetokens suggest --json                             # the same, as proposals w
 
 Leave the Ephemeris key to the user (`savetokens setup` signs them in in the browser), so it never
 passes through the conversation. The skill installed for Claude Code, Codex and Hermes says all of
-this to the agent; it's in [`src/savetokens/skill/SKILL.md`](src/savetokens/skill/SKILL.md).
+this to the agent; it's in [`src/savetokens/skill/SKILL.md`](https://github.com/TensorLink-AI/savetokens/blob/main/src/savetokens/skill/SKILL.md).
 
 The MCP server never changes anything. Its `suggest_setup` tool hands the agent the exact command
 (a budget, a model's price) to show you, and you decide whether it runs.
@@ -288,3 +288,10 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | `dashboard [--json]` | the dashboard once (JSON for other tools) |
 | `maintain` | forecast if due and raise alerts (runs in the background) |
 | `backfill` | read Claude Code, Codex and Hermes sessions again |
+
+## Releasing
+
+Bump `version` in `pyproject.toml` and `src/savetokens/__init__.py`, merge, then tag:
+`git tag v0.3.0 && git push origin v0.3.0`. The `publish` workflow tests, builds and uploads to PyPI
+through Trusted Publishing (set up once at pypi.org: project `savetokens`, workflow `publish.yml`,
+environment `pypi`).
