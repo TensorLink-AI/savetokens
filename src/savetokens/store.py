@@ -19,10 +19,11 @@ import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 7   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider;
+SCHEMA_VERSION = 8   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider;
                      # v5: usage.reasoning, usage.thread, usage.cwd (the cwd stays on the machine);
                      # v6: usage.project_id (synced: an id, not a name) and the projects table (this machine's);
-                     # v7: usage.branch (this machine's), usage.task_id (synced) and the tasks table
+                     # v7: usage.branch (this machine's), usage.task_id (synced) and the tasks table;
+                     # v8: usage.person (on a team's hub: whose usage it is)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     machine TEXT NOT NULL,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS usage (
     project_id TEXT,                -- the project, the same on every machine (projects.py); its name isn't synced
     branch TEXT,                    -- the git branch it ran on, when the tool records it; never synced
     task_id TEXT,                   -- the task (tasks.py): an id, the same on every machine; its name isn't synced
+    person TEXT,                    -- on a team's hub: the member it came from
     UNIQUE (machine, harness, request_id)
 );
 CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
@@ -164,10 +166,11 @@ class Usage:
     project_id: str | None = None # the project, from the folder (projects.py)
     branch: str | None = None     # the git branch, when the tool records it (never synced)
     task_id: str | None = None    # the task (tasks.py)
+    person: str | None = None     # on a team's hub: the member it came from
 
 
 USAGE_COLS = [f.name for f in fields(Usage)]
-SYNCED_USAGE = [c for c in USAGE_COLS if c not in ("project", "cwd", "branch")]   # names stay on the machine
+SYNCED_USAGE = [c for c in USAGE_COLS if c not in ("project", "cwd", "branch", "person")]   # names stay local
 NEW_USAGE = ["reasoning", "thread", "project_id", "task_id"]   # not known to hubs older than v5: pushed without them there
 METER_COLS = ["machine", "harness", "account", "ts", "name", "pct", "resets"]
 HIT_COLS = ["machine", "harness", "account", "session_id", "ts", "kind", "model"]
@@ -209,7 +212,7 @@ class Store:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN provider TEXT")
             if "project_id" not in have:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN project_id TEXT")
-            for c in ("branch", "task_id"):
+            for c in ("branch", "task_id", "person"):
                 if c not in have:
                     self.conn.execute(f"ALTER TABLE usage ADD COLUMN {c} TEXT")
             if "branch" not in have:   # read Claude Code and Codex again for their branches
@@ -259,10 +262,12 @@ class Store:
         if not fill:
             return self.insert("usage", cols, rows)
         before = self.conn.total_changes
+        # ids follow the machine (they change when its project key does); the rest only fill gaps
         self.conn.executemany(
             f"INSERT INTO usage ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
             " ON CONFLICT (machine, harness, request_id) DO UPDATE SET "
-            + ", ".join(f"{c} = COALESCE(usage.{c}, excluded.{c})" for c in fill), rows)
+            + ", ".join(f"{c} = COALESCE(excluded.{c}, usage.{c})" if c in ("project_id", "task_id")
+                        else f"{c} = COALESCE(usage.{c}, excluded.{c})" for c in fill), rows)
         self.conn.commit()
         return self.conn.total_changes - before
 

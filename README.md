@@ -302,6 +302,20 @@ docker compose logs savetokens                       # the join line
 (**Add a machine** → Make a token). Teammates get their own view:
 `savetokens server --add-user NAME`. `savetokens server --stop` stops a hub set up with `--setup`.
 
+**Teams.** Put people on the same hub into a team, and the team sees one set of projects (a repository is the
+same project for everyone), its totals, and budgets every member's usage counts toward:
+
+```sh
+savetokens server --team acme --member sam --role admin     # on the hub (a new person gets a join line)
+savetokens team                                             # on anyone's machine: totals, projects, budgets
+savetokens budget --team --project webapp --usd 2000 --per month    # owner or admins
+savetokens project share                                    # the team sees this project's name, not an id
+savetokens team --people on                                 # owner: members see the per-person view too
+```
+
+The owner and admins see usage per person; members see the team's totals and their own, unless the owner turns
+the per-person view on for everyone. A team budget's alerts reach every member's next prompt.
+
 **Any other agent or app, through OpenTelemetry.** A hub takes OTLP over HTTP with JSON at its own address,
 so anything that exports the GenAI conventions (or Claude Code's own events) is counted with no reader for it.
 `savetokens otel` prints the lines to paste where it runs (with a token of its own):
@@ -368,6 +382,7 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | `budget [--project NAME] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE)` / `budget` / `budget --off NAME` | a budget, overall or for a project / every budget with its forecast / remove one |
 | `projects [--days N]` / `project link [NAME]` | every project's tokens and $ (every machine, on a hub) / make this folder one project everywhere |
 | `task start NAME` / `task done` / `task` / `tasks [--project NAME]` | declare a task, finish it, see the current one / every task's cost and the measured estimate |
+| `team [--people on\|off]` / `project share` / `budget --team ...` | your team's totals, projects and budgets / name a project for the team / a team budget |
 | `efficiency [--days N] [--tool T] [--provider P] [--project NAME] [--as MODEL]` | where tokens go (facts) and what the same work would cost done differently (what-ifs) |
 | `recap [--days N]` | the last week (or N days) against your plan: under or over budget and forecast, limit hits |
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |
