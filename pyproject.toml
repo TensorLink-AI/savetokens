@@ -36,7 +36,7 @@ savetokens = "savetokens.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/savetokens"]
-artifacts = ["src/savetokens/skill/SKILL.md", "src/savetokens/web/*"]
+artifacts = ["src/savetokens/skill/SKILL.md", "src/savetokens/web/**"]
 
 [tool.hatch.build.targets.sdist]
 only-include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml"]
