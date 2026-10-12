@@ -88,11 +88,11 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     snap = {
         "now": now, "account": acct, "source": source, "forecast_made_at": store.meta("forecast_made_at"),
         "synced_at": store.meta("synced_at"), "limits": looks,
-        "pools": [{"id": p.id, "tool": p.tool, "kind": p.kind, "budget": p.budget} for p in every],
+        "pools": [{"id": p.id, "tool": p.name, "kind": p.kind, "budget": p.budget} for p in every],
         "demand": {**demand_view(hist, _hourly_forecast(store, pool.key, forecast.preferred_source(store, pool.key),
                                                           now, hours) if pool else [], now, hours),
                    "pool": pool.id if pool else None, "unit": "$" if pool and pool.kind == "api" else "%",
-                   "label": (f"{pool.tool} API $" if pool.kind == "api" else f"{pool.tool} % of weekly limit")
+                   "label": (f"{pool.tool} API $" if pool.kind == "api" else f"{pool.name} % of weekly limit")
                    if pool else None},
         "charts": charts(store, every, now, hours),
         "usd_per_pct": 1 / rate if rate else None,
@@ -169,7 +169,7 @@ def charts(store, every, now, hours=24) -> list[dict]:
         fc = _hourly_forecast(store, p.key, forecast.preferred_source(store, p.key), now, hours)
         if hist or fc:
             out.append({"id": p.id, "group": "limits", "unit": "$" if p.kind == "api" else "%",
-                        "label": f"{p.tool} API $" if p.kind == "api" else f"{p.tool} % of weekly limit",
+                        "label": f"{p.tool} API $" if p.kind == "api" else f"{p.name} % of weekly limit",
                         **demand_view(hist, fc, now, hours)})
     for prov, hist in spend.series(store, now, min_hours=1):   # a new provider charts at once; its forecast waits for a day
         k = spend.key(prov)

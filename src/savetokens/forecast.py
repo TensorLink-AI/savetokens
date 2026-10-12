@@ -161,8 +161,8 @@ def refresh(store, now=None, use_ephemeris=True, log=lambda *_: None):
         if pool.kind in ("api", "goal"):
             horizon = MAX_HORIZON          # a week, repeated to the end of a longer budget period
         else:
-            week = meter.latest(store, "seven_day", now, pool.key if pool.harness == meter.CLAUDE else None,
-                                pool.harness)
+            week = meter.latest(store, "seven_day", now, pool.account if pool.account is not None else
+                                pool.key if pool.harness == meter.CLAUDE else None, pool.harness)
             until = week["resets"] if week else now + 7 * 86400
             horizon = int(min(MAX_HORIZON, max(24, math.ceil((until - start) / HOUR))))
         eng = eng or Engine(ledger_path(store), use_ephemeris=use_ephemeris)
@@ -270,7 +270,7 @@ def _pool_outlook(store, p, now, source, cut, cut_hours):
              "eta": now if used >= 100 else None}
         return [_project(o, paths, now, max(0.0, 100 - used), 100.0 / b["usd"] if b["usd"] > 0 else 0.0,
                          cut, cut_hours, extend=True)]
-    acct = p.key if p.harness == meter.CLAUDE else None
+    acct = p.account if p.account is not None else p.key if p.harness == meter.CLAUDE else None
     out, rate = [], None
     for name in ("five_hour", "seven_day"):
         r = meter.latest(store, name, now, acct, p.harness)
@@ -280,12 +280,14 @@ def _pool_outlook(store, p, now, source, cut, cut_hours):
         used = r["pct"]
         if now - r["ts"] > 600:   # a stale reading: add what was captured since, at the meter's rate
             rate = rate if rate is not None else (meter.rate(store, harness=p.harness, account=acct) or 0.0)
+            one = " AND account IS ?" if p.account is not None else ""
             since = store.conn.execute(f"SELECT COALESCE(SUM({meter.WEIGHT}), 0) FROM usage WHERE harness = ?"
-                                       f" AND {meter.SUBSCRIPTION} AND ts > ? AND ts <= ?",
-                                       (p.harness, r["ts"], now)).fetchone()[0]
+                                       f" AND {meter.SUBSCRIPTION} AND ts > ? AND ts <= ?{one}",
+                                       (p.harness, r["ts"], now) + ((p.account,) if p.account is not None
+                                                                    else ())).fetchone()[0]
             used += since * rate * scale
         codex = p.harness != meter.CLAUDE
-        o = {**base, "name": name, "label": f"{p.tool} plan's {NAMES[name]}",
+        o = {**base, "name": name, "label": f"{p.name} plan's {NAMES[name]}", "tool": p.name,
              "short": (CODEX_SHORT if codex else SHORT)[name], "used": used, "read_at": r["ts"],
              "resets": r["resets"], "p_hit": 1.0 if used >= 100 else None, "eta": now if used >= 100 else None}
         out.append(_project(o, paths, now, max(0.0, 100 - used), scale, cut, cut_hours))

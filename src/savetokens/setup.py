@@ -148,19 +148,54 @@ def steps(store, now=None, cfg=None, found=None, on_server=False) -> list[dict]:
                          f"savetokens plan {prov} --usd {usd:g} --per month" if usd is not None else
                          f"savetokens plan {prov} --usd USD --per month",
                          None if usd is not None else f"what {name} costs a month", usd))
-    # pay as you go: a budget, and a price for each model savetokens can't price
+    # pay as you go: a budget for each provider billed per token (real money), and a price for each model
+    # savetokens can't price
+    goals = pools.goals_(store)
+    var, fixed = spend._variable(plans)
+
+    def budget_for(provider=None, tool=None):
+        """The budget that covers this provider's (or tool's) API spend: its own, else an overall one."""
+        for g in goals.values():
+            sc = g.get("scope") or {}
+            if pools.counts(g) != "api" or g.get("unit", "usd") != "usd" or sc.get("projects") or sc.get("tasks"):
+                continue
+            mine = (provider and pools.stem(provider) in {pools.stem(x) for x in sc.get("providers") or []}) or \
+                   (tool and tool in (sc.get("tools") or []))
+            if mine or not (sc.get("providers") or sc.get("tools")):
+                return g
+        return None
+
+    seen_tools = set()
+    for prov, usd, tools in store.conn.execute(
+            f"SELECT {spend.PROVIDER} AS p, SUM(COALESCE(cost_usd, 0)), GROUP_CONCAT(DISTINCT harness) FROM usage"
+            f" WHERE ({var}) AND ts >= ? GROUP BY p ORDER BY 2 DESC", fixed + [week]).fetchall():
+        tools = (tools or "").split(",")
+        seen_tools.update(tools)
+        by = "tool" if prov in pools.TOOLS else "provider"   # the provider unknown: the tool stands in for it
+        name = pools.TOOLS[prov] if by == "tool" else spend.label(prov)
+        g = budget_for(prov) or next((g for t in tools for g in [budget_for(tool=t)] if g), None)
+        old = next((budgets[t] for t in tools if budgets.get(t)), None)   # a tool's API budget, from before
+        title = (f"{name} budget: ${g['amount']:,.0f} " + (f"a {g['period']}" if g.get("period") else "in all")
+                 if g and g.get("label") != "Overall" else f"{name}: in your overall budget" if g
+                 else f"{name} budget: ${old['usd']:,.0f} a {old['period']} ({pools.TOOLS.get(tools[0], tools[0])})"
+                 if old else f"{name}: ${usd:,.2f} pay as you go in 7 days, no budget")
+        out.append(_step(f"budget:{by}:{prov}", bool(g or old), title,
+                         f"{name} bills per token ({', '.join(pools.TOOLS.get(t, t) for t in tools)}); a budget gives"
+                         " it a forecast and alerts like a plan's",
+                         f"savetokens budget --{by} {prov} --usd USD --per month", f"the budget for {name}, $ a month"))
+    for h in pools.TOOLS:   # set up to pay as you go, nothing spent yet: worth a budget, not needed
+        if (found.get(h) or {}).get("billing") == "api" and h not in seen_tools:
+            g, old = budget_for(tool=h), budgets.get(h)
+            out.append(_step(f"budget:tool:{h}", bool(g or old), f"{pools.TOOLS[h]} pays as you go: "
+                             + ("budget set" if g or old else "no budget"),
+                             f"{pools.TOOLS[h]} bills per token; nothing spent this week. A budget gives it a forecast"
+                             " and alerts like a plan's (or one per provider, once it's used)",
+                             f"savetokens budget --tool {h} --usd USD --per month", "the budget and period",
+                             optional=True))
     for h in pools.TOOLS:
-        paid = used(h, "api")
-        if (found.get(h) or {}).get("billing") == "api" or paid:
-            b = budgets.get(h)
-            out.append(_step(f"budget:{h}", bool(b), f"{pools.TOOLS[h]} API budget: "
-                             + (f"${b['usd']:,.0f} a {b['period']}" if b else "not set"),
-                             f"{pools.TOOLS[h]} pays by API; a budget gives it a forecast and alerts like a plan's",
-                             f"savetokens api {h} --budget USD --per month", "the budget and period",
-                             optional=not paid))   # nothing spent yet: worth setting, not needed
         for m in pools.unpriced(store, h, week):
             out.append(_step(f"price:{m}", False, f"{m}: no price",
-                             f"{m} has no known price, so its usage can't count against the {pools.TOOLS[h]} budget",
+                             f"{m} has no known price, so its usage can't count against a budget",
                              f"savetokens price {m} INPUT OUTPUT",
                              "the model's $ per million input and output tokens (from the provider's price page)"))
     # forecasts
@@ -207,7 +242,7 @@ def run(store, cfg, interactive=True, accept=False, key=None, out=print, ask=inp
         open_url=None) -> dict:
     """Walk what's left. interactive: ask, the detected answer as the default. accept: take the detected
     answers and ask nothing. key: an Ephemeris key to check and keep. Returns {"changed", "steps"}."""
-    from . import ephemeris, sync
+    from . import ephemeris, spend, sync
     from .store import save_config
     secret = secret or __import__("getpass").getpass
     open_url = open_url or __import__("webbrowser").open
@@ -246,10 +281,12 @@ def run(store, cfg, interactive=True, accept=False, key=None, out=print, ask=inp
                 changed.append(f"plan {name}")
                 out(f"  {label}: ${usd:,.0f} a month, counted as a fixed cost.")
         elif kind == "budget" and interactive:
-            v = _money(ask(f"{pools.TOOLS[name]} pays by API. A budget, $ a month (Enter to skip): "))
+            what, _, it = name.partition(":")
+            label = spend.label(it) if what == "provider" else pools.TOOLS.get(it, it)
+            v = _money(ask(f"{label} bills per token. A budget, $ a month (Enter to skip): "))
             if v:
-                pools.set_budget(store, name, v, "month")
-                changed.append(f"budget {name}")
+                pools.add_budget(store, v, "month", **({"providers": [it]} if what == "provider" else {"tools": [it]}))
+                changed.append(f"budget {it}")
         elif kind == "forecaster" and interactive and not key:
             if "credits" in s["title"]:
                 out(f"- {s['detail']}")

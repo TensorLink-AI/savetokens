@@ -105,12 +105,12 @@ def test_suggest_proposes_commands_and_changes_nothing(capsys, store):
     store.close()
     code, out = run(capsys, "suggest", "--json")
     cmds = [x["command"] for x in out["suggestions"]]
-    assert "savetokens api hermes --budget USD --per month" in cmds
+    assert "savetokens budget --tool hermes --usd USD --per month" in cmds
     assert "savetokens price acme/unknown-model INPUT OUTPUT" in cmds
     with Store() as s:
         assert pools.budgets(s) == {}
         text = mcp.call("suggest_setup", {}, store=s)
-    assert "savetokens api hermes" in text and "ask for the budget" in text
+    assert "savetokens budget --tool hermes" in text and "ask for the budget for Hermes" in text
     assert "suggest_setup" in {t["name"] for t in mcp.TOOLS}
 
 

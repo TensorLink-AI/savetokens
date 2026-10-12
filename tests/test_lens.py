@@ -57,3 +57,13 @@ def test_a_provider_used_for_an_hour_is_charted_at_once_but_not_forecast_yet(sto
     got = {c["id"]: c for c in dashboard.charts(store, [], T0)}
     assert spend.key("chutes.ai") in got
     assert not [p for p, _ in spend.series(store, T0)]                 # a day of history before it's forecast
+
+
+def test_a_provider_budget_counts_the_provider_by_any_of_its_names(store):
+    _use(store, "c", "hermes", 3, billing="api", provider="chutes.ai", usd=2.0)
+    _use(store, "o", "hermes", 2, billing="api", provider="openrouter", usd=5.0)
+    for name in ("chutes", "chutes.ai", "Chutes.AI"):
+        goal = {"scope": {"providers": [name.lower()]}, "count": "api", "unit": "usd"}
+        where, args = pools._scope(goal, store)
+        got = store.conn.execute(f"SELECT SUM(cost_usd) FROM usage WHERE {where}", args).fetchone()[0]
+        assert got == pytest.approx(6.0), name                           # 3 requests at $2, not OpenRouter's

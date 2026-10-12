@@ -40,7 +40,7 @@ COMMON = """common jobs:
   savetokens status --json                      every limit: used, likely at reset, when you'd run out
   savetokens check --like big || echo "wait"    gate a big job on the exit code (0 fits, 3 at risk, 4 won't fit)
   savetokens advise                             what to change, biggest effect first
-  savetokens api hermes --budget 100 --per month   a $ budget for a tool on an API key
+  savetokens budget --provider openrouter --usd 100 --per month   a $ budget for a provider you pay as you go
   savetokens server --setup                     make this machine the hub for all your machines
   curl -fsSL http://HUB:8787/join | sh -s CODE  add another machine (server --setup prints this line)
 

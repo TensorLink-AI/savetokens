@@ -343,7 +343,7 @@ function drawPlans(s) {
 function limitCard(o, now) {
   const api = o.kind === "api", goal = o.kind === "goal", money = api || (goal && o.unit === "usd");
   const crit = o.stage === "act" || o.stage === "last_call" || o.used >= 100, warn = !crit && !!o.eta;
-  const tool = goal ? String(o.label || "").replace(/ budget$/, "") : (TOOLS[o.harness] || o.harness || "");
+  const tool = goal ? String(o.label || "").replace(/ budget$/, "") : (o.tool || TOOLS[o.harness] || o.harness || "");
   const label = api ? `Budget, ${usd(o.budget_usd)} ${o.per || ""}` : goal ? `${money ? usd(o.amount) : tok(o.amount)} ${o.per || ""}`
     : `${String(o.label || "").replace(/^.* plan's /, "").replace(/^./, (c) => c.toUpperCase())}`;
   const card = tile("limit " + (o.kind || "") + (crit ? " crit" : warn ? " warn" : ""), null, true);
@@ -379,9 +379,9 @@ function drawLimits(s) {
   const box = clear($("limits"));
   const list = lens === "api" ? apiBudgets(s) : (s.limits || []).filter((o) => o.kind !== "goal" && inLens(o.kind === "api" ? "api" : "plan"));
   if (!list.length) {
-    box.append(empty(lens === "api" ? "No API budgets yet. Set one: savetokens budget --provider NAME --usd 20 --per month, or savetokens api hermes --budget 100"
+    box.append(empty(lens === "api" ? "No API budgets yet. Set one: savetokens budget --provider NAME --usd 20 --per month (one per provider you pay as you go: SETUP lists them)"
       : lens === "plans" ? "No plan limits yet: they appear after a message in Claude Code or Codex."
-      : "No limits known yet. Send a message in Claude Code or Codex with savetokens installed, or set an API budget: savetokens api hermes --budget 100"));
+      : "No limits known yet. Send a message in Claude Code or Codex with savetokens installed, or set a budget for a provider you pay as you go: savetokens budget --provider NAME --usd 20 --per month"));
     return;
   }
   // plans first, then API budgets: each card's badge says which
