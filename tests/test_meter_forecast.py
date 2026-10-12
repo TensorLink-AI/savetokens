@@ -130,3 +130,20 @@ def test_each_account_has_its_own_rate_so_a_5x_and_a_20x_plan_dont_blend(store):
     assert abs(meter.rate(store, account="max20") - 0.1) < 0.01
     assert 0.1 < meter.rate(store) < 0.4                                   # together, they blend
     assert meter.rate(store, account="new") == meter.rate(store)          # no data of its own yet: the pooled rate
+
+
+def test_a_limit_reset_early_with_the_same_reset_time_is_followed(store):
+    """The meter reaches 50%, is reset to ~10% (its reset time unchanged), and climbs to 30%: 20 points used since,
+    which must show as usage, not be hidden under the old 50% until it's passed."""
+    r = T0 + 4 * 86400
+    t = T0 - 20 * H
+    for pct in [40, 45, 50]:                                    # before the early reset
+        store.add_meter("claude-code", "a1", {"seven_day": (pct, r)}, ts=t)
+        t += 600
+    store.add_meter("claude-code", "a1", {"seven_day": (50, r)}, ts=T0 - 16 * H)   # an idle session's last word
+    for i, pct in enumerate(range(10, 31, 2)):                  # after it: every reading lower than 50
+        store.add_meter("claude-code", "a1", {"seven_day": (float(pct), r)}, ts=T0 - 12 * H + i * 1800)
+    hist, _ = meter.demand(store, T0)
+    used = sum(v for h, v in hist if h >= T0 - 12 * H - 3600)
+    assert abs(used - 20.0) < 1e-6
+    assert meter.latest(store, "seven_day", T0, "a1")["pct"] == 30.0     # not the 50% from before the reset

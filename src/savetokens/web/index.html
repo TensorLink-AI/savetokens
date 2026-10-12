@@ -41,6 +41,12 @@
   </section>
 
   <div id="view" hidden>
+    <div id="headline" class="headline" role="status">
+      <span class="box-label" id="headline-label">┤ STATUS ├</span>
+      <span class="bang" id="headline-bang">!</span>
+      <p id="headline-text"></p>
+    </div>
+
     <details id="setup" class="box fold" hidden>
       <summary><span class="box-label">┤ <span id="setup-title">FINISH SETTING UP</span> ├</span><span class="dim" id="setup-count"></span></summary>
       <ol id="setup-steps"></ol>
@@ -56,12 +62,6 @@
       <p class="note" id="add-env-note" hidden>Shown once. Keep it in your CI's secret store; anyone with it can send usage to this hub.</p>
       <p class="err" id="add-err" role="alert"></p>
     </details>
-
-    <div id="headline" class="headline" role="status">
-      <span class="box-label" id="headline-label">┤ STATUS ├</span>
-      <span class="bang" id="headline-bang">!</span>
-      <p id="headline-text"></p>
-    </div>
 
     <div id="spend" role="tabpanel" aria-labelledby="tab-spend">
       <div class="hero">
@@ -99,6 +99,7 @@
       <section class="box chart-box">
         <span class="box-label">┤ USAGE PER HOUR ├</span>
         <span class="box-aside" id="readout"></span>
+        <div class="seg" id="chart-pick" role="group" aria-label="What to chart"></div>
         <div class="chart">
           <div class="ticks" id="ticks"></div>
           <div class="plot" id="plot"></div>
