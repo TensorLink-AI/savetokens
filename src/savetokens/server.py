@@ -228,7 +228,7 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     or not {"machine", "ts"} <= set(cols) or any(len(r) != len(cols) for r in rows)):
                 return self._send(400, {"error": "unexpected table or columns"})
             with users.store(user) as s:
-                added = s.insert(table, cols, rows)
+                added = s.upsert_usage(cols, rows) if table == "usage" else s.insert(table, cols, rows)
             with lock:
                 dirty.add(user)
             self._send(200, {"added": added})
@@ -236,6 +236,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
         def _settings(self, user, body):
             if "detected" in body:
                 return self._detected(user, body)
+            if "goals" in body:
+                return self._goals(user, body)
             budgets, plans, at = body["budgets"], body.get("plans") or {}, float(body["at"])
             if not all(isinstance(d, dict) and all(
                     isinstance(b, dict) and isinstance(b.get("usd"), (int, float)) and b.get("period") in PERIODS
@@ -249,6 +251,27 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     s.set_meta("budgets_at", at)
                 if isinstance(body.get("tz"), int):
                     s.set_meta("tz", body["tz"])   # the user's clock, for days, weeks and months
+            with lock:
+                dirty.add(user)
+            self._send(200, {"ok": True})
+
+        def _goals(self, user, body):
+            """The budgets you set (`savetokens budget`); the newest setting wins."""
+            from .pools import UNITS
+            goals, at = body["goals"], float(body["goals_at"])
+            ok = lambda g: (isinstance(g, dict) and isinstance(g.get("label"), str) and len(g["label"]) <= 80
+                            and g.get("unit") in UNITS and isinstance(g.get("amount"), (int, float)) and g["amount"] > 0
+                            and (g.get("period") in PERIODS or isinstance(g.get("by"), (int, float)))
+                            and isinstance(g.get("start"), (int, float)) and isinstance(g.get("scope"), dict)
+                            and all(isinstance(x, str) and len(x) <= 32
+                                    for x in (g["scope"].get("projects") or [])[:50]))
+            if not (isinstance(goals, dict) and len(goals) <= 100
+                    and all(isinstance(k, str) and len(k) <= 32 and ok(g) for k, g in goals.items())):
+                return self._send(400, {"error": "bad budgets"})
+            with users.store(user) as s:
+                if at > (s.meta("goals_at") or 0):
+                    s.set_meta("goals", goals)
+                    s.set_meta("goals_at", at)
             with lock:
                 dirty.add(user)
             self._send(200, {"ok": True})
@@ -297,7 +320,11 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     out["track_record"] = s.meta("track_record")
                     out["budgets"], out["budgets_at"] = s.meta("budgets"), s.meta("budgets_at")
                     out["plans"] = s.meta("plans")
+                    out.update(_hub_projects(s))
                     return self._send(200, out)
+                if url.path == "/v1/project-key":
+                    from . import projects
+                    return self._send(200, {"project_key": projects.key(s)})
                 if url.path == "/v1/dashboard":
                     from . import dashboard
                     return self._send(200, dashboard.snapshot(s, on_server=True))
@@ -305,6 +332,24 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     return self._send(200, {"outlook": forecast.outlook(s), "made_at": s.meta("forecast_made_at")})
             self._send(404, {"error": "not found"})
     return Handler
+
+
+def _hub_projects(s, now=None):
+    """What only the hub knows: every machine's totals per project and per budget, and the project key that
+    makes a project's id the same on every machine."""
+    from . import pools, projects
+    now = now or time.time()
+    spent = {}
+    for p in pools.pools(s, now, goals=True):
+        if p.kind == "goal":
+            since, _ = pools.period(p.budget, now)
+            spent[p.id] = {"spent": pools.spent(s, p, since, now), "since": since, "at": now}
+    totals = [{"id": r[0], "usd": r[1], "tokens": r[2], "requests": r[3]} for r in s.conn.execute(
+        "SELECT project_id, COALESCE(SUM(cost_usd), 0), SUM(input + cache_read + cache_write_5m + cache_write_1h"
+        " + output), COUNT(*) FROM usage WHERE project_id IS NOT NULL AND ts >= ? GROUP BY project_id",
+        (now - 30 * 86400,))]
+    return {"project_key": projects.key(s), "goals": s.meta("goals"), "goals_at": s.meta("goals_at"),
+            "goal_spent": spent, "projects": totals, "projects_at": now}
 
 
 def engine_loop(users: Users, dirty: set, lock: threading.Lock, stop: threading.Event, log=print):

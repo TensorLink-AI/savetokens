@@ -46,10 +46,31 @@ def _call(cfg, path, body=None, timeout=30):
         return json.load(r)
 
 
+def _project_key(store, cfg):
+    """Before the first push to a hub: its project key, so this machine's project ids match the others'."""
+    from . import projects
+    url = cfg.get("server_url")
+    if store.meta("project_key_from") == url:
+        return
+    try:
+        key = _call(cfg, "/v1/project-key").get("project_key")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:   # a hub older than projects answers 404: this machine keeps its own key
+            raise
+        key = None
+    if key:
+        projects.set_key(store, key)
+        if not store.meta("repushed_projects"):   # once: send the history again, now with its projects
+            store.set_meta("pushed:usage", 0)
+            store.set_meta("repushed_projects", True)
+    store.set_meta("project_key_from", url)
+
+
 def push(store: Store, cfg) -> int:
     """This machine's new rows, in batches. Returns rows sent."""
     sent = 0
     machine = store.machine
+    _project_key(store, cfg)
     for table, cols in SYNCED.items():
         legacy = time.time() - (store.meta("hub_legacy_usage") or 0) < LEGACY_RETRY
         if table == "usage" and legacy:
@@ -78,6 +99,14 @@ def push(store: Store, cfg) -> int:
         _call(cfg, "/v1/settings", {"budgets": store.meta("budgets") or {}, "plans": store.meta("plans") or {},
                                     "tz": time.localtime().tm_gmtoff, "at": at})
         store.set_meta("pushed:budgets", at)
+    at = store.meta("goals_at")
+    if at and at > (store.meta("pushed:goals") or 0):
+        try:
+            _call(cfg, "/v1/settings", {"goals": store.meta("goals") or {}, "goals_at": at})
+            store.set_meta("pushed:goals", at)
+        except urllib.error.HTTPError as e:   # a hub older than budgets: they stay on this machine
+            if e.code != 400:
+                raise
     from . import setup
     found = setup.detected()   # plan names and list prices, so the server's setup list can name them
     if found != store.meta("pushed:detected"):
@@ -117,4 +146,15 @@ def pull(store: Store, cfg) -> dict:
         store.set_meta("plans", got.get("plans") or {})
         store.set_meta("budgets_at", got["budgets_at"])
         store.set_meta("pushed:budgets", got["budgets_at"])
+    from . import projects
+    if got.get("project_key"):   # the hub's: a project has the same id on every machine
+        projects.set_key(store, got["project_key"])
+    if got.get("goals_at") and got["goals_at"] > (store.meta("goals_at") or 0):
+        store.set_meta("goals", got.get("goals") or {})
+        store.set_meta("goals_at", got["goals_at"])
+        store.set_meta("pushed:goals", got["goals_at"])
+    if "goal_spent" in got:
+        store.set_meta("hub_goal_spent", got["goal_spent"])
+    if "projects" in got:
+        store.set_meta("hub_projects", {"at": got.get("projects_at"), "totals": got["projects"]})
     return {"meter": len((got.get("meter") or {}).get("rows", [])), "paths": len(got.get("paths", []))}

@@ -19,8 +19,9 @@ import uuid
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 5   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider;
-                     # v5: usage.reasoning, usage.thread, usage.cwd (the cwd stays on the machine)
+SCHEMA_VERSION = 6   # v2: usage.project (kept on the machine, never synced); v3: usage.billing; v4: usage.provider;
+                     # v5: usage.reasoning, usage.thread, usage.cwd (the cwd stays on the machine);
+                     # v6: usage.project_id (synced: an id, not a name) and the projects table (this machine's)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     machine TEXT NOT NULL,
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS usage (
     thread TEXT,                    -- one conversation's requests, in order (a session, or one subagent in it);
                                     -- NULL when the source gives totals per session, not per request
     cwd TEXT,                       -- the folder it ran in; this machine only, never synced
+    project_id TEXT,                -- the project, the same on every machine (projects.py); its name isn't synced
     UNIQUE (machine, harness, request_id)
 );
 CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
@@ -107,6 +109,13 @@ CREATE TABLE IF NOT EXISTS alerts (
     UNIQUE (account, name, window_end, stage)
 );
 
+CREATE TABLE IF NOT EXISTS projects (   -- this machine's folders: their project id and name (never synced)
+    cwd TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
+    name TEXT,
+    kind TEXT                       -- file | git | path
+);
+
 CREATE TABLE IF NOT EXISTS offsets (path TEXT PRIMARY KEY, offset INTEGER NOT NULL, size INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
@@ -138,11 +147,12 @@ class Usage:
     reasoning: int | None = None  # of the output, tokens spent reasoning (None: not reported)
     thread: str | None = None     # the conversation it belongs to (None: the source has per-session totals only)
     cwd: str | None = None        # the folder it ran in (never synced)
+    project_id: str | None = None # the project, from the folder (projects.py)
 
 
 USAGE_COLS = [f.name for f in fields(Usage)]
 SYNCED_USAGE = [c for c in USAGE_COLS if c not in ("project", "cwd")]   # folder names stay on the machine
-NEW_USAGE = ["reasoning", "thread"]   # not known to hubs older than v5: pushed without them there
+NEW_USAGE = ["reasoning", "thread", "project_id"]   # not known to hubs older than v5: pushed without them there
 METER_COLS = ["machine", "harness", "account", "ts", "name", "pct", "resets"]
 HIT_COLS = ["machine", "harness", "account", "session_id", "ts", "kind", "model"]
 SYNCED = {"usage": SYNCED_USAGE, "meter": METER_COLS, "hits": HIT_COLS}
@@ -181,6 +191,8 @@ class Store:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN billing TEXT")
             if "provider" not in have:
                 self.conn.execute("ALTER TABLE usage ADD COLUMN provider TEXT")
+            if "project_id" not in have:
+                self.conn.execute("ALTER TABLE usage ADD COLUMN project_id TEXT")
             new = [c for c in ("reasoning", "thread", "cwd") if c not in have]
             for c in new:
                 self.conn.execute(f"ALTER TABLE usage ADD COLUMN {c} {'INTEGER' if c == 'reasoning' else 'TEXT'}")
@@ -218,22 +230,39 @@ class Store:
         self.conn.commit()
         return cur.rowcount
 
+    def upsert_usage(self, cols, rows) -> int:
+        """Rows from a machine (on the hub): new ones added, and ones seen before given any field they lacked
+        (a machine sends its history again once it knows its requests' projects)."""
+        fill = [c for c in ("project_id", "reasoning", "thread") if c in cols]
+        if not fill:
+            return self.insert("usage", cols, rows)
+        before = self.conn.total_changes
+        self.conn.executemany(
+            f"INSERT INTO usage ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
+            " ON CONFLICT (machine, harness, request_id) DO UPDATE SET "
+            + ", ".join(f"{c} = COALESCE(usage.{c}, excluded.{c})" for c in fill), rows)
+        self.conn.commit()
+        return self.conn.total_changes - before
+
     def add_usage(self, events) -> int:
         events = list(events)
         machine = self.machine
         rows = []
+        from . import projects
         for e in events:
             e.machine = e.machine or machine
             e.provider = e.provider or DEFAULT_PROVIDER.get(e.harness)
+            if e.cwd and not e.project_id:
+                e.project_id = projects.resolve(self, e.cwd)[0]
             rows.append([int(v) if isinstance(v, bool) else v for v in (getattr(e, c) for c in USAGE_COLS)])
         n = self.insert("usage", USAGE_COLS, rows)
         # rows read before a column was kept get it on the next read
         self.conn.executemany(
             "UPDATE usage SET project = COALESCE(project, ?), reasoning = COALESCE(reasoning, ?),"
-            " thread = COALESCE(thread, ?), cwd = COALESCE(cwd, ?)"
+            " thread = COALESCE(thread, ?), cwd = COALESCE(cwd, ?), project_id = COALESCE(project_id, ?)"
             " WHERE machine = ? AND harness = ? AND request_id = ?",
-            [(e.project, e.reasoning, e.thread, e.cwd, e.machine, e.harness, e.request_id) for e in events
-             if e.project or e.reasoning is not None or e.thread or e.cwd])
+            [(e.project, e.reasoning, e.thread, e.cwd, e.project_id, e.machine, e.harness, e.request_id)
+             for e in events if e.project or e.reasoning is not None or e.thread or e.cwd])
         self.conn.commit()
         return n
 

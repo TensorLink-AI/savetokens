@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 from . import __version__
 
@@ -27,7 +29,7 @@ GROUPS = [
     ("start", ["install", "setup", "suggest", "uninstall"]),
     ("see where you stand", ["status", "recap", "efficiency", "advise", "spend", "watch", "web", "dashboard"]),
     ("before a big job", ["estimate", "check"]),
-    ("budgets and prices", ["api", "plan", "price", "ephemeris"]),
+    ("budgets and projects", ["budget", "projects", "project", "api", "plan", "price", "ephemeris"]),
     ("several machines", ["server", "pair", "join", "connect"]),
     ("run by install, in the background", ["maintain", "backfill", "mcp"]),
 ]
@@ -73,6 +75,14 @@ EXAMPLES = {
     "price": ["savetokens price gpt-6-astra 2 8              # $2 in, $8 out per million tokens",
               "savetokens price my-model 3 15 0.3            # with a cache-read price"],
     "advise": ["savetokens advise", "savetokens advise --json"],
+    "budget": ["savetokens budget                              # every budget, with its forecast",
+               "savetokens budget --usd 500 --per month         # overall: every tool, provider and machine",
+               "savetokens budget --project webapp --usd 150 --per month",
+               "savetokens budget --project . --tokens 30M --by 2026-12-15   # this folder's project, by a date",
+               "savetokens budget --off webapp"],
+    "projects": ["savetokens projects", "savetokens projects --days 7 --json"],
+    "project": ["savetokens project link                        # this folder is one project, on any machine",
+                "savetokens project link webapp"],
     "efficiency": ["savetokens efficiency                        # the last 7 days: facts, then what-ifs",
                    "savetokens efficiency --project webapp --days 30",
                    "savetokens efficiency --tool codex --as gpt-6-luna   # the same tokens at another model's prices"],
@@ -632,12 +642,133 @@ def cmd_check(args):
     return code
 
 
+def _amount(s):
+    """'30M' -> 30_000_000; '1.5k' -> 1500."""
+    m = {"k": 1e3, "m": 1e6, "b": 1e9}.get(str(s)[-1:].lower())
+    try:
+        return float(s[:-1]) * m if m else float(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an amount: {s} (e.g. 500, 30M, 1.5B)")
+
+
+def cmd_projects(args):
+    from . import projects
+    from .store import Store, load_config
+    from . import sync
+    with Store() as s:
+        projects.fill(s)
+        names = projects.names(s)
+        since = time.time() - args.days * 86400
+        local = {r[0]: {"id": r[0], "usd": r[1], "tokens": r[2], "requests": r[3]} for r in s.conn.execute(
+            "SELECT project_id, COALESCE(SUM(cost_usd), 0), SUM(input + cache_read + cache_write_5m"
+            " + cache_write_1h + output), COUNT(*) FROM usage WHERE project_id IS NOT NULL AND ts >= ?"
+            " GROUP BY project_id", (since,))}
+        hub = s.meta("hub_projects") if sync.connected(load_config()) and args.days == 30 else None
+    rows = {r["id"]: r for r in (hub or {}).get("totals", [])} or local
+    out = sorted(({**r, "name": names.get(r["id"]), "this_machine": r["id"] in local} for r in rows.values()),
+                 key=lambda r: -r["usd"])
+    where = "every machine" if hub else "this machine"
+    lines = [f"Projects, last {args.days} days ({where}):"] + [
+        f"  {(r['name'] or 'another machine ' + r['id'][:8]):<28} ${r['usd']:>9,.2f}  {r['tokens'] / 1e6:>9,.1f}M tokens"
+        for r in out] if out else [f"No usage with a project in the last {args.days} days."]
+    _out(args, {"days": args.days, "every_machine": bool(hub), "projects": out}, "\n".join(lines))
+    return OK
+
+
+def cmd_project(args):
+    from . import projects
+    from .store import Store
+    import os
+    folder = Path(os.getcwd())
+    projects.link(folder, args.name)
+    with Store() as s:   # folders under this one belong to the linked project from now on (old requests too)
+        s.conn.execute("DELETE FROM projects WHERE cwd = ? OR cwd LIKE ?", (str(folder), str(folder) + os.sep + "%"))
+        s.conn.execute("UPDATE usage SET project_id = NULL WHERE cwd = ? OR cwd LIKE ?",
+                       (str(folder), str(folder) + os.sep + "%"))
+        n = projects.fill(s)
+        pid, name = projects.resolve(s, str(folder))
+    _out(args, {"id": pid, "name": name, "file": str(folder / projects.MARKER), "requests": n},
+         f"{folder} is the project {name!r} ({n:,} requests so far). Commit {projects.MARKER} to make it the same"
+         " project on every machine.")
+    return OK
+
+
+def cmd_budget(args):
+    from . import forecast, maintain, pools, projects
+    from .store import Store
+    import re
+    from datetime import datetime
+    with Store() as s:
+        if args.off:
+            gid = args.off if args.off in pools.goals_(s) else re.sub(r"[^a-z0-9]+", "-", args.off.lower()).strip("-")
+            if not pools.remove_goal(s, gid):
+                raise Fail(f"no budget {args.off!r}", "savetokens budget")
+            _out(args, {"removed": gid}, f"Removed the {gid} budget.")
+            return OK
+        if args.usd is None and args.tokens is None:
+            looks = [o for o in forecast.outlook(s, goals=True) if o["kind"] == "goal"]
+            if not looks:
+                _out(args, {"budgets": []}, "No budgets yet. e.g. savetokens budget --usd 500 --per month,"
+                                            " or --project NAME --usd 150 --per month")
+                return OK
+            fmt = lambda o, v: f"${v:,.2f}" if o["unit"] == "usd" else f"{v / 1e6:,.1f}M tokens"
+            lines = []
+            for o in looks:
+                line = f"{o['label']}: {fmt(o, o['spent'])} of {fmt(o, o['amount'])} {o['per']} ({o['used']:.0f}%)"
+                if o["used"] >= 100:
+                    line += f"; over by {fmt(o, o['spent'] - o['amount'])}"
+                elif o["p50"] is not None:
+                    line += f"; likely {o['p50']:.0f}% by the end, {o['p_hit'] or 0:.0%} chance of going over"
+                else:
+                    line += "; forecast on the next upkeep"
+                lines.append(line)
+            if any(o["unit"] == "usd" for o in looks):
+                lines.append("($ are real on API keys, API-equivalent for usage on a plan.)")
+            _out(args, {"budgets": looks}, "\n".join(lines))
+            return OK
+        if args.project:
+            ids = projects.by_name(s, args.project)
+            if not ids or ids == [None]:
+                raise Fail(f"no project called {args.project!r} here", "savetokens projects")
+            label = args.project if args.project != "." else projects.resolve(s, os.getcwd())[1]
+            scope = {"projects": ids}
+        else:
+            label, scope = "Overall", {}
+        unit, amount = ("usd", args.usd) if args.usd is not None else ("tokens", args.tokens)
+        goal = {"label": label, "scope": scope, "unit": unit, "amount": float(amount), "start": time.time(),
+                "tz": time.localtime().tm_gmtoff}
+        if args.by:
+            try:
+                end = datetime.strptime(args.by, "%Y-%m-%d").replace(hour=23, minute=59, second=59).timestamp()
+            except ValueError:
+                raise Fail(f"--by takes a date like 2026-12-15, not {args.by!r}")
+            if end <= time.time():
+                raise Fail("--by is in the past")
+            goal["by"] = end
+        else:
+            goal["period"] = args.per
+        gid = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "budget"
+        pools.set_goal(s, gid, goal)
+        s.set_meta("kicked_at", 0)
+        maintain.kick(s)   # its forecast, in the background
+    when = f"by {args.by}" if args.by else f"a {args.per}"
+    shown = f"${amount:,.0f}" if unit == "usd" else f"{amount / 1e6:,.1f}M tokens"
+    _out(args, {"id": gid, **goal}, f"{label} budget: {shown} {when}, every tool, provider and machine. Its forecast"
+                                    " comes with the next upkeep: savetokens budget shows it.")
+    return OK
+
+
 def cmd_efficiency(args):
     from . import efficiency
     from .store import Store
-    where = {k: v for k, v in (("harness", args.tool), ("provider", args.provider), ("project", args.project),
-                               ("model", args.model)) if v}
+    from . import projects
+    where = {k: v for k, v in (("harness", args.tool), ("provider", args.provider), ("model", args.model)) if v}
     with Store() as s:
+        if args.project:
+            ids = [i for i in projects.by_name(s, args.project) if i]
+            if not ids:
+                raise Fail(f"no project called {args.project!r} here", "savetokens projects")
+            where["project_id"] = ids
         r = efficiency.report(s, days=args.days, where=where or None, model=args.as_model)
     _out(args, r, efficiency.text(r))
     return OK
@@ -914,12 +1045,27 @@ def main(argv=None):
     s.add_argument("input", type=float, help="$ per million input tokens")
     s.add_argument("output", type=float, help="$ per million output tokens")
     s.add_argument("cache_read", type=float, nargs="?", help="$ per million cached input tokens (default: a tenth of input)")
+    s = cmd("budget", cmd_budget, "set a budget, overall or for a project, in $ or tokens: per period or a total by"
+            " a date; or list them with their forecasts")
+    s.add_argument("--project", metavar="NAME", help="a project's name (savetokens projects), or . for this folder's")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--usd", type=float, help="dollars (real on API keys, API-equivalent on plans)")
+    g.add_argument("--tokens", type=_amount, help="tokens, e.g. 30M")
+    g2 = s.add_mutually_exclusive_group()
+    g2.add_argument("--per", choices=["day", "week", "month"], default="month", help="the period (default month)")
+    g2.add_argument("--by", metavar="YYYY-MM-DD", help="a total to spend by this date, instead of per period")
+    s.add_argument("--off", metavar="NAME", help="remove a budget")
+    s = cmd("projects", cmd_projects, "every project's tokens and $: across machines when connected to a hub")
+    s.add_argument("--days", type=int, default=30, help="how many days back (default 30)")
+    s = cmd("project", cmd_project, "make this folder one project on every machine (writes a .savetokens file)")
+    s.add_argument("action", choices=["link"], help="link: this folder and everything under it is one project")
+    s.add_argument("name", nargs="?", help="what to call it (default: the repo's or folder's name)")
     s = cmd("efficiency", cmd_efficiency, "where tokens go and what the same work would cost done differently:"
             " facts and what-ifs, any tool or provider")
     s.add_argument("--days", type=int, default=7, help="how many days back (default 7)")
     s.add_argument("--tool", choices=["claude-code", "codex", "hermes"], help="only this tool")
     s.add_argument("--provider", help="only this provider (anthropic, openai, openrouter, ...)")
-    s.add_argument("--project", help="only this project (its folder name)")
+    s.add_argument("--project", help="only this project (a name from savetokens projects, or . for this folder's)")
     s.add_argument("--model", help="only this model")
     s.add_argument("--as", dest="as_model", metavar="MODEL", help="price the same tokens at this model's prices")
     s = cmd("recap", cmd_recap, "how the last week went against your plan: under or over budget and forecast, limit hits")

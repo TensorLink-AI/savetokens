@@ -41,6 +41,8 @@ def breakout(store, now, source="ephemeris") -> bool:
 def refresh_due(store, made_at, now, check_breakout=False) -> bool:
     if not made_at:
         return True
+    if max(store.meta("goals_at") or 0, store.meta("budgets_at") or 0) > made_at:   # a budget set or changed
+        return True
     last = store.last_activity()
     age = now - made_at
     if last is None or last <= made_at:
@@ -72,6 +74,8 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
     if pricing.refresh(now=now):   # the price catalogue, once a day: new models are priced without an update
         log(f"price catalogue refreshed; {pricing.reprice(store)} requests priced")
     capture.backfill(store)
+    from . import projects
+    projects.fill(store)   # requests read before their folder's project was known
     if sync.connected(cfg):
         try:
             sync.push(store, cfg)
