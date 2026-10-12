@@ -125,7 +125,9 @@ def _rows_after(store, table, cursor, machine):
 
 
 def make_handler(users: Users, dirty: set, lock: threading.Lock):
+    from .teams import Teams
     failures = []   # times of failed joins, to slow down guessing
+    teams = Teams(users.data)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "savetokens"
@@ -213,6 +215,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                 return self._send(200, {"token": users.add(user), "url": self._base()})
             if path in ("/v1/logs", "/v1/traces"):   # OpenTelemetry (OTLP over HTTP, JSON)
                 return self._otel(user)
+            if path == "/v1/team":
+                return self._team(user)
             if path not in ("/v1/push", "/v1/settings"):
                 return self._send(404, {"error": "not found"})
             n = int(self.headers.get("Content-Length") or 0)
@@ -234,6 +238,12 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                 if table == "usage":
                     from . import otel
                     otel.replace_with_reader(s, cols, rows)
+            team, _ = teams.of(user)
+            if team and table == "usage":
+                with teams.store(team) as ts:
+                    ts.upsert_usage(cols + ["person"], [list(r) + [user] for r in rows])
+                with lock:
+                    dirty.add(f"team:{team}")
             with lock:
                 dirty.add(user)
             self._send(200, {"added": added})
@@ -259,6 +269,38 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             with lock:
                 dirty.add(user)
             self._send(200, {"ok": True})
+
+        def _team(self, user):
+            """A team's settings: budgets (admins), a shared project name (anyone), the per-person view (owner)."""
+            team, role = teams.of(user)
+            if not team:
+                return self._send(404, {"error": "not in a team on this hub"})
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), MAX_BODY)) or b"{}")
+            except ValueError:
+                return self._send(400, {"error": "bad body"})
+            with teams.store(team) as ts:
+                if "goals" in body:
+                    if role not in ("owner", "admin"):
+                        return self._send(403, {"error": "only the team's owner or admins set its budgets"})
+                    if not _valid_goals(body["goals"]):
+                        return self._send(400, {"error": "bad budgets"})
+                    ts.set_meta("goals", body["goals"])
+                    ts.set_meta("goals_at", time.time())
+                if isinstance(body.get("share"), dict):
+                    names = ts.meta("shared_names") or {}
+                    for pid, name in list(body["share"].items())[:50]:
+                        if isinstance(pid, str) and len(pid) <= 32 and isinstance(name, str) and 0 < len(name) <= 80:
+                            names[pid] = name
+                    ts.set_meta("shared_names", names)
+                if "people_visible" in body:
+                    if role != "owner":
+                        return self._send(403, {"error": "only the team's owner decides that"})
+                    teams.set(team, people_visible=bool(body["people_visible"]))
+                goals = ts.meta("goals") or {}
+            with lock:
+                dirty.add(f"team:{team}")
+            self._send(200, {"ok": True, "goals": goals})
 
         def _otel(self, user):
             from . import otel
@@ -287,16 +329,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
 
         def _goals(self, user, body):
             """The budgets you set (`savetokens budget`); the newest setting wins."""
-            from .pools import UNITS
             goals, at = body["goals"], float(body["goals_at"])
-            ok = lambda g: (isinstance(g, dict) and isinstance(g.get("label"), str) and len(g["label"]) <= 80
-                            and g.get("unit") in UNITS and isinstance(g.get("amount"), (int, float)) and g["amount"] > 0
-                            and (g.get("period") in PERIODS or isinstance(g.get("by"), (int, float)))
-                            and isinstance(g.get("start"), (int, float)) and isinstance(g.get("scope"), dict)
-                            and all(isinstance(x, str) and len(x) <= 32
-                                    for k in ("projects", "tasks") for x in (g["scope"].get(k) or [])[:50]))
-            if not (isinstance(goals, dict) and len(goals) <= 100
-                    and all(isinstance(k, str) and len(k) <= 32 and ok(g) for k, g in goals.items())):
+            if not _valid_goals(goals):
                 return self._send(400, {"error": "bad budgets"})
             with users.store(user) as s:
                 if at > (s.meta("goals_at") or 0):
@@ -351,10 +385,27 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     out["budgets"], out["budgets_at"] = s.meta("budgets"), s.meta("budgets_at")
                     out["plans"] = s.meta("plans")
                     out.update(_hub_projects(s))
+                    team, _ = teams.of(user)
+                    if team:   # the team's key, and its alerts (its budgets) for every member
+                        out["project_key"] = teams.get(team)["key"]
+                        with teams.store(team) as ts:
+                            after = int(q.get("team_alerts", 0))
+                            out["team_alerts"] = [{"id": r[0], "ts": r[1], "message": r[2]} for r in ts.conn.execute(
+                                "SELECT rowid, ts, message FROM alerts WHERE rowid > ? ORDER BY rowid", (after,))]
                     return self._send(200, out)
                 if url.path == "/v1/project-key":
                     from . import projects
-                    return self._send(200, {"project_key": projects.key(s)})
+                    team, _ = teams.of(user)
+                    return self._send(200, {"project_key": teams.get(team)["key"] if team else projects.key(s)})
+                if url.path == "/v1/team":
+                    team, role = teams.of(user)
+                    if not team:
+                        return self._send(404, {"error": "not in a team on this hub"})
+                    from .teams import summary
+                    with teams.store(team) as ts:
+                        out = summary(ts, teams.get(team), role, teams.sees_people(team, role), time.time(),
+                                      int(q.get("days", 30)))
+                    return self._send(200, {"team": team, "you": user, **out})
                 if url.path == "/v1/dashboard":
                     from . import dashboard
                     return self._send(200, dashboard.snapshot(s, on_server=True))
@@ -362,6 +413,18 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     return self._send(200, {"outlook": forecast.outlook(s), "made_at": s.meta("forecast_made_at")})
             self._send(404, {"error": "not found"})
     return Handler
+
+
+def _valid_goals(goals) -> bool:
+    from .pools import UNITS
+    ok = lambda g: (isinstance(g, dict) and isinstance(g.get("label"), str) and len(g["label"]) <= 80
+                    and g.get("unit") in UNITS and isinstance(g.get("amount"), (int, float)) and g["amount"] > 0
+                    and (g.get("period") in PERIODS or isinstance(g.get("by"), (int, float)))
+                    and isinstance(g.get("start"), (int, float)) and isinstance(g.get("scope"), dict)
+                    and all(isinstance(x, str) and len(x) <= 32
+                            for k in ("projects", "tasks") for x in (g["scope"].get(k) or [])[:50]))
+    return isinstance(goals, dict) and len(goals) <= 100 and all(
+        isinstance(k, str) and len(k) <= 32 and ok(g) for k, g in goals.items())
 
 
 def _hub_projects(s, now=None):
@@ -399,6 +462,16 @@ def engine_loop(users: Users, dirty: set, lock: threading.Lock, stop: threading.
                         maintain.update(s, now, log=lambda m, n=name: log(f"{n}: {m}"))
             except Exception as e:   # one user's failure must not stop the others
                 log(f"{name}: engine failed: {e}")
+        from .teams import Teams
+        tm = Teams(users.data)
+        for team in tm.names():
+            try:
+                with tm.store(team) as s:
+                    now = time.time()
+                    if f"team:{team}" in fresh or maintain.refresh_due(s, s.meta("forecast_made_at"), now):
+                        maintain.update(s, now, log=lambda m, n=team: log(f"team {n}: {m}"))
+            except Exception as e:
+                log(f"team {team}: engine failed: {e}")
         stop.wait(ENGINE_SECONDS)
 
 

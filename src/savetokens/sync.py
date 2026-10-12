@@ -50,7 +50,7 @@ def _project_key(store, cfg):
     """Before the first push to a hub: its project key, so this machine's project ids match the others'."""
     from . import projects
     url = cfg.get("server_url")
-    if store.meta("project_key_from") == url:
+    if store.meta("project_key_from") == url and time.time() - (store.meta("project_key_checked") or 0) < 3600:
         return
     try:
         key = _call(cfg, "/v1/project-key").get("project_key")
@@ -58,12 +58,11 @@ def _project_key(store, cfg):
         if e.code != 404:   # a hub older than projects answers 404: this machine keeps its own key
             raise
         key = None
-    if key:
-        projects.set_key(store, key)
-        if not store.meta("repushed_projects"):   # once: send the history again, now with its projects
-            store.set_meta("pushed:usage", 0)
-            store.set_meta("repushed_projects", True)
+    if key and (projects.set_key(store, key) or not store.meta("repushed_projects")):
+        store.set_meta("pushed:usage", 0)   # send the history again, with its projects' ids under this key
+        store.set_meta("repushed_projects", True)
     store.set_meta("project_key_from", url)
+    store.set_meta("project_key_checked", time.time())
 
 
 def push(store: Store, cfg) -> int:
@@ -121,7 +120,7 @@ def push(store: Store, cfg) -> int:
 def pull(store: Store, cfg) -> dict:
     """Other machines' readings and hits, and the server's newest forecast paths."""
     q = {"machine": store.machine, "meter": store.meta("pulled:meter", 0), "hits": store.meta("pulled:hits", 0),
-         "paths_after": store.meta("pulled:paths", 0)}
+         "paths_after": store.meta("pulled:paths", 0), "team_alerts": store.meta("pulled:team_alerts", 0)}
     got = _call(cfg, "/v1/pull?" + urllib.parse.urlencode(q))
     for table in ("meter", "hits"):
         part = got.get(table) or {}
@@ -153,6 +152,10 @@ def pull(store: Store, cfg) -> dict:
         store.set_meta("goals", got.get("goals") or {})
         store.set_meta("goals_at", got["goals_at"])
         store.set_meta("pushed:goals", got["goals_at"])
+    for a in got.get("team_alerts") or []:   # the team's budgets: shown on the next prompt, like your own
+        store.conn.execute("INSERT OR IGNORE INTO alerts (account, ts, name, window_end, stage, message)"
+                           " VALUES ('team', ?, 'team', ?, 'team', ?)", (a["ts"], a["id"], "Team: " + a["message"]))
+        store.set_meta("pulled:team_alerts", max(store.meta("pulled:team_alerts", 0), a["id"]))
     if "goal_spent" in got:
         store.set_meta("hub_goal_spent", got["goal_spent"])
     if "projects" in got:

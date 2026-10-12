@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+import urllib.error
 from pathlib import Path
 
 from . import __version__
@@ -31,7 +32,7 @@ GROUPS = [
     ("before a big job", ["estimate", "check"]),
     ("budgets, projects and tasks", ["budget", "projects", "project", "tasks", "task", "api", "plan", "price",
                                      "ephemeris"]),
-    ("several machines", ["server", "pair", "join", "connect", "otel"]),
+    ("several machines and teams", ["server", "pair", "join", "connect", "team", "otel"]),
     ("run by install, in the background", ["maintain", "backfill", "mcp"]),
 ]
 COMMON = """common jobs:
@@ -76,6 +77,9 @@ EXAMPLES = {
     "price": ["savetokens price gpt-6-astra 2 8              # $2 in, $8 out per million tokens",
               "savetokens price my-model 3 15 0.3            # with a cache-read price"],
     "advise": ["savetokens advise", "savetokens advise --json"],
+    "team": ["savetokens team                               # totals, projects, budgets (and people, for admins)",
+             "savetokens team --people on                   # owner: members see the per-person view too",
+             "savetokens budget --team --project webapp --usd 2000 --per month"],
     "otel": ["savetokens otel                               # paste the lines where the agent runs",
              "savetokens otel --json"],
     "budget": ["savetokens budget                              # every budget, with its forecast",
@@ -92,7 +96,8 @@ EXAMPLES = {
     "tasks": ["savetokens tasks --project .", "savetokens tasks --days 30 --json"],
     "projects": ["savetokens projects", "savetokens projects --days 7 --json"],
     "project": ["savetokens project link                        # this folder is one project, on any machine",
-                "savetokens project link webapp"],
+                "savetokens project link webapp",
+                "savetokens project share                       # your team sees its name, not just an id"],
     "efficiency": ["savetokens efficiency                        # the last 7 days: facts, then what-ifs",
                    "savetokens efficiency --project webapp --days 30",
                    "savetokens efficiency --tool codex --as gpt-6-luna   # the same tokens at another model's prices"],
@@ -115,7 +120,8 @@ EXAMPLES = {
                "savetokens server --stop",
                "savetokens server --host 0.0.0.0 --port 8787  # run it yourself, in the foreground",
                "savetokens server --add-user sam              # a teammate's own view and token",
-               "echo \"$ANTHROPIC_ADMIN_KEY\" | savetokens server --provider-key anthropic   # API usage no reader saw"],
+               "echo \"$ANTHROPIC_ADMIN_KEY\" | savetokens server --provider-key anthropic   # API usage no reader saw",
+               "savetokens server --team acme --member sam --role admin   # a team on this hub"],
 }
 
 
@@ -689,8 +695,14 @@ def cmd_projects(args):
 def cmd_project(args):
     from . import projects
     from .store import Store
-    import os
     folder = Path(os.getcwd())
+    if args.action == "share":
+        with Store() as s:
+            pid, name = projects.resolve(s, str(folder))
+        name = args.name or name
+        _team_call("/v1/team", {"share": {pid: name}})
+        _out(args, {"id": pid, "name": name}, f"Your team now sees this project as {name!r}.")
+        return OK
     projects.link(folder, args.name)
     with Store() as s:   # folders under this one belong to the linked project from now on (old requests too)
         s.conn.execute("DELETE FROM projects WHERE cwd = ? OR cwd LIKE ?", (str(folder), str(folder) + os.sep + "%"))
@@ -790,12 +802,62 @@ def cmd_tasks(args):
     return OK
 
 
+def _team_call(path, body=None):
+    from . import sync
+    from .store import load_config
+    cfg = load_config()
+    if not sync.connected(cfg):
+        raise Fail("not connected to a hub", "savetokens server --setup")
+    try:
+        return sync._call(cfg, path, body)
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error")
+        except Exception:
+            msg = str(e)
+        raise Fail(msg or str(e))
+
+
+def cmd_team(args):
+    from . import projects
+    from .store import Store
+    if args.people:
+        _team_call("/v1/team", {"people_visible": args.people == "on"})
+    got = _team_call(f"/v1/team?days={args.days}")
+    with Store() as s:
+        names = projects.names(s)
+    plural = lambda n, one, many: f"{n} {one if n == 1 else many}"
+    lines = [f"{got['team']} ({plural(got['members'], 'member', 'members')}; you're {got['role']}): ${got['usd']:,.2f},"
+             f" {got['tokens'] / 1e6:,.1f}M tokens in {got['days']} days."]
+    for pr in got["projects"][:10]:
+        name = pr["name"] or names.get(pr["id"]) or f"project {pr['id'][:8]}"
+        lines.append(f"  {name:<28} ${pr['usd']:>10,.2f}  {pr['tokens'] / 1e6:>8,.1f}M tokens"
+                     f"  {plural(pr['people'], 'person', 'people')}")
+    for o in got["budgets"]:
+        lines.append(f"  {o['label']}: {o['used']:.0f}% used" + (f", likely {o['p50']:.0f}% by the end" if o.get("p50")
+                                                                 is not None else ""))
+    for pe in got.get("people") or []:
+        lines.append(f"  {pe['person']:<20} ${pe['usd']:>10,.2f}  {pe['tokens'] / 1e6:>8,.1f}M tokens")
+    _out(args, got, "\n".join(lines))
+    return OK
+
+
 def cmd_budget(args):
     from . import forecast, maintain, pools, projects
     from .store import Store
     import re
     from datetime import datetime
     with Store() as s:
+        if args.off and args.team:
+            goals = _team_call("/v1/team").get("goals")
+            if goals is None:
+                raise Fail("only the team's owner or admins set its budgets")
+            gid = re.sub(r"[^a-z0-9]+", "-", args.off.lower()).strip("-")
+            if goals.pop(gid, None) is None:
+                raise Fail(f"no team budget {args.off!r}", "savetokens team")
+            _team_call("/v1/team", {"goals": goals})
+            _out(args, {"removed": gid, "team": True}, f"Removed the team's {gid} budget.")
+            return OK
         if args.off:
             gid = args.off if args.off in pools.goals_(s) else re.sub(r"[^a-z0-9]+", "-", args.off.lower()).strip("-")
             if not pools.remove_goal(s, gid):
@@ -852,6 +914,15 @@ def cmd_budget(args):
         else:
             goal["period"] = args.per
         gid = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "budget"
+        if args.team:   # the team's, on the hub: every member counts
+            goals = _team_call("/v1/team").get("goals")
+            if goals is None:
+                raise Fail("only the team's owner or admins set its budgets")
+            goals[gid] = {**goal, "label": f"Team {label}" if label != "Overall" else "Team"}
+            _team_call("/v1/team", {"goals": goals})
+            _out(args, {"id": gid, "team": True, **goal}, f"Team budget set: {label},"
+                                                         " every member's usage. `savetokens team` shows it.")
+            return OK
         pools.set_goal(s, gid, goal)
         s.set_meta("kicked_at", 0)
         maintain.kick(s)   # its forecast, in the background
@@ -1082,6 +1153,27 @@ def cmd_server(args):
     if args.pair:
         print(f"savetokens join URL {server.Users(data).pair(args.pair)}  (valid 10 minutes, once)")
         return 0
+    if args.team or args.member:
+        from .teams import Teams, copy_history
+        if not (args.team and args.member):
+            raise Fail("both: savetokens server --team TEAM --member NAME [--role owner|admin|member]")
+        users, teams = server.Users(data), Teams(data)
+        new = args.member not in users.names()
+        if new:
+            users.add(args.member)
+        try:
+            t = teams.add(args.team, args.member, args.role or "member")
+        except ValueError as e:
+            raise Fail(str(e))
+        with users.store(args.member) as us, teams.store(args.team) as ts:
+            copy_history(us, ts, args.member)
+        print(f"{args.member} is {t['members'][args.member]} of {args.team} ({len(t['members'])} member"
+              f"{'s' if len(t['members']) != 1 else ''}).")
+        if new:
+            code = users.pair(args.member, server.INVITE_SECONDS, server.INVITE_MACHINES)
+            base = server.public_url()
+            print(f"Their machines join with: {server.join_command(base, code) if base else 'savetokens join URL ' + code}")
+        return 0
     if args.provider_key:
         from . import providers
         if args.provider_key not in providers.NAMES:
@@ -1195,6 +1287,7 @@ def main(argv=None):
     g2.add_argument("--per", choices=["day", "week", "month"], default="month", help="the period (default month)")
     g2.add_argument("--by", metavar="YYYY-MM-DD", help="a total to spend by this date, instead of per period")
     s.add_argument("--off", metavar="NAME", help="remove a budget")
+    s.add_argument("--team", action="store_true", help="the team's budget, on the hub (owner or admins)")
     s = cmd("projects", cmd_projects, "every project's tokens and $: across machines when connected to a hub")
     s.add_argument("--days", type=int, default=30, help="how many days back (default 30)")
     s = cmd("task", cmd_task, "a unit of work in this folder's project: start, done, or what it's on now")
@@ -1205,8 +1298,12 @@ def main(argv=None):
     s.add_argument("--project", metavar="NAME", help="one project (or . for this folder's)")
     s.add_argument("--days", type=int, default=90, help="tasks active in this many days (default 90)")
     s = cmd("project", cmd_project, "make this folder one project on every machine (writes a .savetokens file)")
-    s.add_argument("action", choices=["link"], help="link: this folder and everything under it is one project")
+    s.add_argument("action", choices=["link", "share"], help="link: this folder (and all under it) is one project;"
+                                                              " share: your team sees its name")
     s.add_argument("name", nargs="?", help="what to call it (default: the repo's or folder's name)")
+    s = cmd("team", cmd_team, "your team on the hub: totals, projects, budgets, and people (if you may see them)")
+    s.add_argument("--days", type=int, default=30, help="how many days back (default 30)")
+    s.add_argument("--people", choices=["on", "off"], help="owner: whether members see the per-person view")
     cmd("otel", cmd_otel, "the lines that send any agent's OpenTelemetry to your hub (a token of its own)")
     s = cmd("efficiency", cmd_efficiency, "where tokens go and what the same work would cost done differently:"
             " facts and what-ifs, any tool or provider")
@@ -1250,6 +1347,10 @@ def main(argv=None):
     s.add_argument("--provider-key", metavar="PROVIDER", help="anthropic or openai: an admin key on stdin, so the hub"
                                                               " counts API usage no reader saw (nothing piped: remove)")
     s.add_argument("--user", metavar="NAME", help="with --provider-key: whose (default: me, the first user)")
+    s.add_argument("--team", metavar="TEAM", help="with --member: add someone to a team (made if new)")
+    s.add_argument("--member", metavar="NAME", help="with --team: the person (a new user gets a join code)")
+    s.add_argument("--role", choices=["owner", "admin", "member"], help="with --team: their role (default member;"
+                                                                         " a team's first member owns it)")
     p.epilog = _overview_help(helps) + "\n\n" + COMMON + "\n\n" + EXIT_CODES
     args = p.parse_args(argv)
     try:
