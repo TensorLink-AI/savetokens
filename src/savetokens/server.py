@@ -412,6 +412,11 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     out["budgets"], out["budgets_at"] = s.meta("budgets"), s.meta("budgets_at")
                     out["plans"] = s.meta("plans")
                     out.update(_hub_projects(s))
+                    out["hub_url"] = public_url(users.data)   # where machines should reach this hub, if set
+                    if machine:   # when each machine last synced: the dashboard says which have gone quiet
+                        seen = s.meta("machines_synced") or {}
+                        seen[machine[:64]] = time.time()
+                        s.set_meta("machines_synced", seen)
                     team, _ = teams.of(user)
                     if team:   # the team's key, and its alerts (its budgets) for every member
                         out["project_key"] = teams.get(team)["key"]

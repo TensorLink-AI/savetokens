@@ -105,6 +105,40 @@ def parse_line(d: dict, subagent_file=False, acct=None):
     return e, None
 
 
+def endpoint(env=None) -> str | None:
+    """Who serves Claude Code's requests, from the environment it gives its hooks: None for Anthropic's own
+    API (a plan or a key), else Bedrock, Vertex, Foundry or the host of ANTHROPIC_BASE_URL (a compatible
+    endpoint: api.z.ai -> z.ai, a proxy, a local server)."""
+    env = os.environ if env is None else env
+    on = lambda k: (env.get(k) or "").strip().lower() in ("1", "true", "yes")
+    if on("CLAUDE_CODE_USE_BEDROCK"):
+        return "bedrock"
+    if on("CLAUDE_CODE_USE_VERTEX"):
+        return "vertex"
+    if on("CLAUDE_CODE_USE_FOUNDRY"):
+        return "azure"
+    url = (env.get("ANTHROPIC_BASE_URL") or "").strip()
+    if not url:
+        return None
+    from .hermes import provider_name
+    who = provider_name("custom", url)
+    return None if who in ("anthropic.com", "unknown") else who
+
+
+def note_endpoint(store, session_id, env=None) -> str | None:
+    """From a hook: the session's endpoint, when it isn't Anthropic's. Its requests are put under that provider
+    and billed as API, never counted against the Claude plan."""
+    who = endpoint(env)
+    if not who or not session_id:
+        return who
+    known = store.meta("claude_endpoints") or {}
+    if known.get(session_id) != who:
+        known[session_id] = who
+        store.set_meta("claude_endpoints", dict(list(known.items())[-500:]))   # recent sessions are enough
+        store.relabel(HARNESS, session_id, who)   # requests read before the hook said
+    return who
+
+
 def billing(store=None) -> str | None:
     """"api" when this machine's Claude Code runs on an API key: set with `savetokens api claude-code`,
     else as detected (detect_billing)."""
@@ -159,6 +193,7 @@ def ingest_file(store: Store, path: Path, acct=None, max_bytes: int | None = Non
     end = data.rfind(b"\n") + 1
     usage, hits = {}, []
     sub = "subagents" in path.parts
+    ends = store.meta("claude_endpoints") or {}
     for line in data[:end].splitlines():
         if b'"usage"' not in line and b"rate_limit" not in line:
             continue
@@ -169,6 +204,8 @@ def ingest_file(store: Store, path: Path, acct=None, max_bytes: int | None = Non
         e, h = parse_line(d, sub, acct)
         if e:
             e.billing = bill
+            if e.session_id in ends:   # on another provider's endpoint: theirs, and paid as API
+                e.provider, e.billing = ends[e.session_id], "api"
             if sub:   # each subagent's transcript is its own conversation
                 e.thread = f"{e.session_id}/{path.stem}"
         if e and (e.request_id not in usage or e.output > usage[e.request_id].output):
@@ -198,6 +235,7 @@ def backfill(store: Store, root: Path | None = None) -> int:
     bill = billing(store)
     n = sum(ingest_file(store, p, bill=bill) for p in transcripts(root))
     n += codex.backfill(store, billing=(load_config().get("billing") or {}).get(codex.HARNESS))
+    codex.fill_providers(store)
     return n + hermes.backfill(store)
 
 

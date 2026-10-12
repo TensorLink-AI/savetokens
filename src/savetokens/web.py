@@ -18,12 +18,10 @@ ROOT = Path(__file__).with_name("web")
 FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
          "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/app.css": ("app.css", "text/css; charset=utf-8"),
          # the page's two typefaces, served from here (SIL Open Font License: fonts/*-OFL.txt)
-         "/fonts/archivo-black.woff2": ("fonts/archivo-black.woff2", "font/woff2"),
-         "/fonts/archivo-black-ext.woff2": ("fonts/archivo-black-ext.woff2", "font/woff2"),
-         "/fonts/ibm-plex-mono-latin-400.woff2": ("fonts/ibm-plex-mono-latin-400.woff2", "font/woff2"),
-         "/fonts/ibm-plex-mono-latin-600.woff2": ("fonts/ibm-plex-mono-latin-600.woff2", "font/woff2"),
-         "/fonts/ibm-plex-mono-latin-ext-400.woff2": ("fonts/ibm-plex-mono-latin-ext-400.woff2", "font/woff2"),
-         "/fonts/ibm-plex-mono-latin-ext-600.woff2": ("fonts/ibm-plex-mono-latin-ext-600.woff2", "font/woff2")}
+         "/fonts/red-hat-mono-latin.woff2": ("fonts/red-hat-mono-latin.woff2", "font/woff2"),
+         "/fonts/red-hat-mono-latin-ext.woff2": ("fonts/red-hat-mono-latin-ext.woff2", "font/woff2"),
+         "/fonts/vt323-latin.woff2": ("fonts/vt323-latin.woff2", "font/woff2"),
+         "/fonts/vt323-latin-ext.woff2": ("fonts/vt323-latin-ext.woff2", "font/woff2")}
 HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; font-src 'self';"
                                " img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",

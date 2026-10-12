@@ -87,6 +87,7 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
             log(f"sync failed: {e}")
             store.set_meta("sync_error", {"at": now, "error": str(e)[:200]})
         new = alerts.check(store, now)    # on the server's forecast paths, with the freshest local reading
+        new += hub_quiet(store, cfg, now)
     else:
         new = update(store, now, log=log)
     from . import recap
@@ -141,3 +142,24 @@ def kick(store: Store, now=None):
     log = open(home() / "upkeep.log", "a")
     subprocess.Popen([sys.executable, "-m", "savetokens", "maintain", "--quiet"], stdout=log, stderr=log,
                      stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+
+
+HUB_QUIET = 86400   # a hub not reached for a day: said once, on the next prompt and in the agent's notices
+
+
+def hub_quiet(store, cfg, now):
+    from . import sync
+    since = store.meta("synced_at") or store.meta("hub_since")
+    if not store.meta("sync_error"):
+        store.conn.execute("DELETE FROM meta WHERE key = 'hub_since'")
+        return []
+    if not since:   # never reached: count from the first failure
+        store.set_meta("hub_since", now)
+        return []
+    if now - since < HUB_QUIET:
+        return []
+    message = "⚠ " + sync.trouble(store, cfg, now)
+    cur = store.conn.execute("INSERT OR IGNORE INTO alerts (account, ts, name, window_end, stage, message)"
+                             " VALUES ('', ?, 'hub', ?, 'hub', ?)", (now, since, message))
+    store.conn.commit()
+    return [{"name": "hub", "message": message}] if cur.rowcount else []

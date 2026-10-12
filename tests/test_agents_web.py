@@ -35,6 +35,17 @@ def test_failures_say_what_went_wrong_and_the_fix(capsys):
     assert err.startswith("savetokens: ") and "fix: savetokens server --setup" in err
 
 
+def test_pair_on_the_hub_itself_gives_the_hubs_public_address(capsys, monkeypatch):
+    from savetokens import sync
+    monkeypatch.setenv("SAVETOKENS_SERVER", "http://127.0.0.1:8787")
+    monkeypatch.setenv("SAVETOKENS_TOKEN", "t")
+    monkeypatch.setattr(sync, "_call", lambda cfg, path, body=None: {
+        "code": "ABCD-EFGH", "expires_in": 900, "machines": 1, "url": "https://hub.example.com"})
+    code, out = run(capsys, "pair", "--json")
+    assert code == 0 and out["command"] == "curl -fsSL https://hub.example.com/join | sh -s ABCD-EFGH"
+    assert out["join"] == "savetokens join https://hub.example.com ABCD-EFGH"
+
+
 def test_setup_commands_answer_in_json(capsys):
     code, out = run(capsys, "api", "hermes", "--budget", "40", "--per", "week", "--json")
     assert code == 0 and out["ok"] and out["budget"]["usd"] == 40 and out["budget"]["period"] == "week"
@@ -129,10 +140,10 @@ def test_the_local_view_needs_its_key_and_a_local_host(local):
     for f, kind in (("/app.js", "javascript"), ("/app.css", "css")):
         code, headers, _ = _get(local + f)
         assert code == 200 and kind in headers["Content-Type"]
-    code, headers, body = _get(local + "/fonts/ibm-plex-mono-latin-400.woff2")     # the typefaces come from here, not Google
+    code, headers, body = _get(local + "/fonts/red-hat-mono-latin.woff2")     # the typefaces come from here, not Google
     assert code == 200 and headers["Content-Type"] == "font/woff2" and body[:4] == b"wOF2"
     assert "font-src 'self'" in headers["Content-Security-Policy"]
-    assert _get(local + "/fonts/archivoblack-OFL.txt")[0] == 404           # only the files listed are served
+    assert _get(local + "/fonts/vt323-OFL.txt")[0] == 404           # only the files listed are served
     assert _get(local + "/v1/dashboard")[0] == 401
     assert _get(local + "/v1/dashboard", {"Authorization": "Bearer nope"})[0] == 401
     code, _, body = _get(local + "/v1/dashboard", {"Authorization": "Bearer k3y"})

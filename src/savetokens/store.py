@@ -258,18 +258,37 @@ class Store:
     def upsert_usage(self, cols, rows) -> int:
         """Rows from a machine (on the hub): new ones added, and ones seen before given any field they lacked
         (a machine sends its history again once it knows its requests' projects)."""
-        fill = [c for c in ("project_id", "reasoning", "thread", "task_id") if c in cols]
+        fill = [c for c in ("project_id", "reasoning", "thread", "task_id", "provider", "billing") if c in cols]
         if not fill:
             return self.insert("usage", cols, rows)
         before = self.conn.total_changes
-        # ids follow the machine (they change when its project key does); the rest only fill gaps
+        # ids, provider and billing follow the machine (it learns them later: its project key, which endpoint
+        # a session ran on); the rest only fill gaps
         self.conn.executemany(
             f"INSERT INTO usage ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
             " ON CONFLICT (machine, harness, request_id) DO UPDATE SET "
-            + ", ".join(f"{c} = COALESCE(excluded.{c}, usage.{c})" if c in ("project_id", "task_id")
+            + ", ".join(f"{c} = COALESCE(excluded.{c}, usage.{c})" if c in ("project_id", "task_id", "provider", "billing")
                         else f"{c} = COALESCE(usage.{c}, excluded.{c})" for c in fill), rows)
         self.conn.commit()
         return self.conn.total_changes - before
+
+    def relabel(self, harness, session_id, provider) -> int:
+        """A session found to have run on another provider than its tool's own: its requests put under it and
+        billed as API (not the plan), and sent to the hub again."""
+        default = DEFAULT_PROVIDER.get(harness)
+        rows = self.conn.execute("SELECT rowid FROM usage WHERE harness = ? AND session_id = ? AND machine = ?"
+                                 " AND (provider IS NULL OR provider = ?)",
+                                 (harness, session_id, self.machine, default)).fetchall()
+        if not rows:
+            return 0
+        self.conn.execute("UPDATE usage SET provider = ?, billing = 'api' WHERE harness = ? AND session_id = ?"
+                          " AND machine = ? AND (provider IS NULL OR provider = ?)",
+                          (provider, harness, session_id, self.machine, default))
+        first = min(r[0] for r in rows) - 1
+        if (self.meta("pushed:usage") or 0) > first:
+            self.set_meta("pushed:usage", first)
+        self.conn.commit()
+        return len(rows)
 
     def add_usage(self, events) -> int:
         events = list(events)

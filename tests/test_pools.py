@@ -13,10 +13,10 @@ from conftest import H, T0, iso, week_of_readings
 class Rollout:
     """Codex style rollout JSONL."""
 
-    def __init__(self, path, sid="c1", cwd="/work/api", parent=None):
+    def __init__(self, path, sid="c1", cwd="/work/api", parent=None, **extra):
         self.path, self.total = path, 0
         path.parent.mkdir(parents=True, exist_ok=True)
-        meta = {"id": sid, "cwd": cwd, **({"parent_thread_id": parent} if parent else {})}
+        meta = {"id": sid, "cwd": cwd, **({"parent_thread_id": parent} if parent else {}), **extra}
         self._write({"timestamp": iso(T0 - 10 * H), "type": "session_meta", "payload": meta})
         self._write({"timestamp": iso(T0 - 10 * H), "type": "turn_context", "payload": {"model": "gpt-6-astra"}})
 

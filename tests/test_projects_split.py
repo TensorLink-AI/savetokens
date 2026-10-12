@@ -119,3 +119,21 @@ def test_the_hub_rejects_budgets_with_bad_scopes():
     assert _valid_goals({"w": g})
     assert not _valid_goals({"w": {**g, "count": "some"}})
     assert not _valid_goals({"w": {**g, "scope": {"tools": "codex"}}})
+
+
+def test_each_project_card_has_its_last_seven_days_and_sessions(store, tmp_path):
+    web = str(_repo(tmp_path / "webapp", "git@github.com:org/webapp.git"))
+    _use(store, web, "claude-code", 3, at=T0 - H)                    # today
+    _use(store, web, "claude-code", 3, at=T0 - 3 * 86400 - H)        # three days back
+    p = dashboard.project_view(store, T0)["list"][0]
+    assert p["last_days"] == [0, 0, 0, 4000, 0, 0, 4000] and p["sessions"] == 1
+
+
+def test_the_page_is_the_retro_terminal_one_and_keeps_plan_and_api_apart():
+    from pathlib import Path
+    web = Path(__file__).resolve().parents[1] / "src/savetokens/web"
+    css, js, html = ((web / f).read_text() for f in ("app.css", "app.js", "index.html"))
+    assert "VT323" in css and "Red Hat Mono" in css and "style=" not in html   # no inline styles: the CSP allows none
+    for part in ("ADD MACHINE", "ALREADY HAS SAVETOKENS", "CONTAINER OR CI", "SPEND MIX", "BUDGETS"):
+        assert part in html
+    assert "badge(\"subscription\")" in js and "badge(\"api\")" in js and "last_days" in js

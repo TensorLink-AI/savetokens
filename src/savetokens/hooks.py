@@ -81,6 +81,7 @@ def note(store, now=None):
 def handle(event: str, payload: dict, store: Store):
     """Hook output as a dict (printed as JSON), or None."""
     acct = _account(store)
+    capture.note_endpoint(store, payload.get("session_id"))   # hooks run in Claude Code's environment
     capture.ingest_session(store, payload.get("transcript_path"), acct)
     if event == "SessionStart":
         text = note(store)
