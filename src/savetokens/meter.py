@@ -148,16 +148,38 @@ def _spread(t0, t1, amount, usd, into):
         into[h] += amount * x / total
 
 
-def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE) -> float | None:
+def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE, account=None) -> float | None:
     """% of the weekly limit per captured dollar (per WEIGHT unit), where both are known.
 
     Measured over runs of readings (same account and window, no gap over `gap`), so whole-%
-    steps and the lag between a request and its reading average out.
+    steps and the lag between a request and its reading average out. With `account`, from that
+    account's readings and usage only (a Max 5x and a Max 20x account have different rates), falling
+    back to every account's together until it has enough of its own.
     """
+    if account is not None:
+        own = _rate(store, until, gap, harness, account)
+        return own if own is not None else _rate(store, until, gap, harness, None)
+    return _rate(store, until, gap, harness, None)
+
+
+def _rate(store, until, gap, harness, account):
+    """(% points, dollars) summed over each account's runs of readings, each against its own usage; as a rate."""
+    pct = dollars = 0.0
+    # every named account on its own (readings without one only when there's no named account at all:
+    # readings(account=None) is every reading, so mixing it in would count them twice)
+    accts = [account] if account is not None else ([a for a in accounts(store, harness) if a] or [None])
+    for acct in accts:
+        p, d = _account_rate(store, until, gap, harness, acct)
+        pct += p
+        dollars += d
+    return pct / dollars if dollars > 0 else None
+
+
+def _account_rate(store, until, gap, harness, account):
     import bisect
     runs, cur, key = [], None, None
-    for ts, acct, pct, resets in readings(store, "seven_day", until=until, harness=harness):
-        k = (acct, round(resets / HOUR))
+    for ts, _, pct, resets in readings(store, "seven_day", until=until, account=account, harness=harness):
+        k = round(resets / HOUR)
         if cur and k == key and ts - cur[1] <= gap:
             cur[1], cur[3] = ts, pct
         else:
@@ -168,10 +190,14 @@ def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE) -> float | None:
         runs.append(cur)
     runs = [r for r in runs if r[3] > r[2]]
     if not runs:
-        return None
+        return 0.0, 0.0
     rows = store.conn.execute(f"SELECT ts, {WEIGHT} AS w FROM usage WHERE harness = ? AND {SUBSCRIPTION}"
-                              f" AND ts > ? AND ts <= ? AND {WEIGHT} > 0 ORDER BY ts",
-                              (harness, min(r[0] for r in runs), max(r[1] for r in runs))).fetchall()
+                              f" AND ts > ? AND ts <= ? AND {WEIGHT} > 0 AND account IS ? ORDER BY ts",
+                              (harness, min(r[0] for r in runs), max(r[1] for r in runs), account)).fetchall()
+    if not rows and account is not None:   # usage read before accounts were kept: count it all
+        rows = store.conn.execute(f"SELECT ts, {WEIGHT} AS w FROM usage WHERE harness = ? AND {SUBSCRIPTION}"
+                                  f" AND ts > ? AND ts <= ? AND {WEIGHT} > 0 ORDER BY ts",
+                                  (harness, min(r[0] for r in runs), max(r[1] for r in runs))).fetchall()
     ts, cum = [r[0] for r in rows], [0.0]
     for r in rows:
         cum.append(cum[-1] + r[1])
@@ -181,7 +207,7 @@ def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE) -> float | None:
         if d > 0:
             pct += p1 - p0
             dollars += d
-    return pct / dollars if dollars > 0 else None
+    return pct, dollars
 
 
 def five_hour_ratio(store, until=None, harness=CLAUDE) -> float:

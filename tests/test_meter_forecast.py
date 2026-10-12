@@ -115,3 +115,18 @@ def test_stale_readings_from_idle_sessions_are_not_counted_as_usage(store):
     hist, _ = meter.demand(store, T0)
     assert abs(sum(v for _, v in hist) - 2.0) < 1e-9
     assert meter.latest(store, "seven_day", T0, "a1")["pct"] == 3.0       # not the idle session's 1%
+
+
+def test_each_account_has_its_own_rate_so_a_5x_and_a_20x_plan_dont_blend(store):
+    from savetokens import meter
+    from savetokens.store import Usage
+    for acct, pct_per_usd in (("max5", 0.4), ("max20", 0.1)):   # a 5x plan fills four times as fast per dollar
+        for i in range(12):
+            t = T0 - 12 * H + i * H
+            store.add_meter("claude-code", acct, {"seven_day": (pct_per_usd * 10 * (i + 1), T0 + 3 * 86400)}, ts=t)
+            store.add_usage([Usage("claude-code", acct, f"{acct}{i}", t - 60, "claude-opus-5-5", cost_usd=10.0,
+                                   account=acct)])
+    assert abs(meter.rate(store, account="max5") - 0.4) < 0.01
+    assert abs(meter.rate(store, account="max20") - 0.1) < 0.01
+    assert 0.1 < meter.rate(store) < 0.4                                   # together, they blend
+    assert meter.rate(store, account="new") == meter.rate(store)          # no data of its own yet: the pooled rate

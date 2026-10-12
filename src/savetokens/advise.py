@@ -47,10 +47,13 @@ class Scale:
         self.store, self.now, self.rates = store, now, {}
         self.budgets = pools.budgets(store)
 
-    def rate(self, harness):
-        if harness not in self.rates:
-            self.rates[harness] = meter.rate(self.store, harness=harness)
-        return self.rates[harness]
+    def rate(self, harness, account=None):
+        """% of the weekly limit per dollar for an account (default: the one in use now): plans differ."""
+        if account is None:
+            account = meter.active_account(self.store, self.now, harness)
+        if (harness, account) not in self.rates:
+            self.rates[(harness, account)] = meter.rate(self.store, harness=harness, account=account)
+        return self.rates[(harness, account)]
 
     def points(self, harness, billing, weight, usd):
         if billing == "api":

@@ -51,7 +51,7 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     every = pools.pools(store, now)
     pool = focus(looks, every)
     hist = pools.history(store, pool, now, hours=hours)[0] if pool else []
-    rate = meter.rate(store)
+    rate = meter.rate(store, account=acct)
     source = looks[0]["source"] if looks else forecast.preferred_source(store, acct)
     week = now - 7 * 86400
     models = store.conn.execute(
@@ -136,6 +136,7 @@ def top_sessions(store, now, rate=None, since_hours=24, limit=8):
     W = meter.WEIGHT
     rows = store.conn.execute(
         f"SELECT session_id, harness, MAX(billing) AS billing, MAX(project) AS project, MAX(machine) AS machine,"
+        f" MAX(account) AS account,"
         f" SUM({W}) AS w, SUM(COALESCE(cost_usd, 0)) AS usd, COUNT(*) AS n,"
         f" SUM(CASE WHEN subagent THEN {W} ELSE 0 END) AS sub, MIN(ts) AS first, MAX(ts) AS last,"
         f" SUM(CASE WHEN ts >= ? THEN {W} ELSE 0 END) AS hour_w,"
@@ -144,15 +145,18 @@ def top_sessions(store, now, rate=None, since_hours=24, limit=8):
         (now - 3600, now - 3600, since)).fetchall()
     budgets = pools.budgets(store)
     rates = {}
+    active = meter.active_account(store, now)   # the account `rate` (when given) was measured for
 
     def pct(r, w, usd):
         """% of the session's own limit for `w` (its weight) or `usd` (on an API key)."""
         if r["billing"] == "api":
             b = budgets.get(r["harness"])
             return 100.0 * usd / b["usd"] if b and b["usd"] > 0 else None
-        if r["harness"] not in rates:
-            rates[r["harness"]] = rate if rate and r["harness"] == meter.CLAUDE else meter.rate(store, harness=r["harness"])
-        k = rates[r["harness"]]
+        key = (r["harness"], r["account"])   # each account's own rate: a 5x and a 20x plan differ
+        if key not in rates:
+            given = rate and r["harness"] == meter.CLAUDE and r["account"] in (None, active)
+            rates[key] = rate if given else meter.rate(store, harness=r["harness"], account=r["account"])
+        k = rates[key]
         return w * k if k else None
 
     def pool_of(r):
