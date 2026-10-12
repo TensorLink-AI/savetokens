@@ -259,6 +259,8 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
     """server with token or code: connect to a savetokens server, which then makes the forecasts (no key
     needed here). tell_agent: also give the agent a pacing note when a limit is at risk (None: ask)."""
     data, cfg_updates, changes = plan()
+    out("savetokens helps you set a token budget and stick to it: it forecasts when you'd run out and tells you"
+        " what to cut. It doesn't change how your tools run; you decide.\n")
     out(f"savetokens will change {settings_path()}:")
     for c in changes:
         out(f"  - {c}")
@@ -342,6 +344,12 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
         maintain.run(s)
         err = s.meta("sync_error") if server else None
     out(f"Installed. Read {n:,} requests" + (f" and {m:,} earlier limit readings" if m else "") + ".")
+    from . import recap
+    with Store() as s:
+        summary = recap.text(recap.recap(s, days=30))
+        recap.due(s)                      # the weekly recap starts counting from now
+    if summary:
+        out("\n" + summary + "\n")
     if server:
         out(f"Couldn't reach {server} yet ({err['error']}); it retries in the background." if err
             else f"Synced with {server}.")

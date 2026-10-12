@@ -1,4 +1,4 @@
-"""savetokens: know when you'll run out of Claude Code, Codex or your Hermes budget, before you do."""
+"""savetokens: set a token budget and stick to it, for Claude Code, Codex and Hermes. It forecasts and advises; it never changes how your tools run."""
 from __future__ import annotations
 
 import argparse
@@ -25,7 +25,7 @@ JSON_NOTE = '\n\n--json prints one JSON object on stdout with "ok": true or fals
 # `savetokens --help`: the commands by what you'd want, then the jobs people do most (one call answers most tasks)
 GROUPS = [
     ("start", ["install", "setup", "suggest", "uninstall"]),
-    ("see where you stand", ["status", "advise", "spend", "watch", "web", "dashboard"]),
+    ("see where you stand", ["status", "recap", "advise", "spend", "watch", "web", "dashboard"]),
     ("before a big job", ["estimate", "check"]),
     ("budgets and prices", ["api", "plan", "price", "ephemeris"]),
     ("several machines", ["server", "pair", "join", "connect"]),
@@ -73,6 +73,8 @@ EXAMPLES = {
     "price": ["savetokens price gpt-6-astra 2 8              # $2 in, $8 out per million tokens",
               "savetokens price my-model 3 15 0.3            # with a cache-read price"],
     "advise": ["savetokens advise", "savetokens advise --json"],
+    "recap": ["savetokens recap                              # the last 7 days against your plan",
+              "savetokens recap --days 30 --json"],
     "estimate": ["savetokens estimate --like big",
                  "savetokens estimate --hours 3 --parallel 4",
                  "savetokens estimate --usd 20 --pool hermes:api"],
@@ -190,7 +192,7 @@ def overview() -> int:
     from .store import load_config
     found = setup.detected()
     done = install._our_statusline(install._read_json(install.settings_path()).get("statusLine"))
-    print(f"savetokens {__version__}: pacing alerts and spend forecasts for Claude Code, Codex and Hermes.")
+    print(f"savetokens {__version__}: set a token budget and stick to it, for Claude Code, Codex and Hermes.")
     if found:
         from .pools import TOOLS
         how = {k: v["plan"] or ("pay as you go" if k == "hermes" else v["billing"]) or "found" for k, v in found.items()}
@@ -203,7 +205,7 @@ def overview() -> int:
             left = [x for x in setup.todo(setup.steps(st, cfg=load_config(), found=found)) if not x["optional"]]
         if left:
             print(f"\n{len(left)} thing{'s' if len(left) > 1 else ''} left to set up:  savetokens setup")
-    print("\n  savetokens status    each limit, and when you'd run out\n  savetokens spend     tokens and $ by"
+    print("\n  savetokens status    each limit, and when you'd run out\n  savetokens recap     the last 7 days against your plan\n  savetokens spend     tokens and $ by"
           " provider, and what's coming\n  savetokens web       all of it in your browser\n  savetokens --help    every"
           " command")
     return 0
@@ -636,6 +638,15 @@ def cmd_check(args):
     return code
 
 
+def cmd_recap(args):
+    from . import recap
+    from .store import Store
+    with Store() as s:
+        r = recap.recap(s, days=args.days)
+    _out(args, r, recap.text(r) or f"No usage in the last {args.days} days.")
+    return OK
+
+
 def cmd_mcp(args):
     from . import mcp
     mcp.serve()
@@ -898,6 +909,8 @@ def main(argv=None):
     s.add_argument("input", type=float, help="$ per million input tokens")
     s.add_argument("output", type=float, help="$ per million output tokens")
     s.add_argument("cache_read", type=float, nargs="?", help="$ per million cached input tokens (default: a tenth of input)")
+    s = cmd("recap", cmd_recap, "how the last week went against your plan: under or over budget and forecast, limit hits")
+    s.add_argument("--days", type=int, default=7, help="how many days back (default 7)")
     s = cmd("advise", cmd_advise, "where the limits stand and what to change, biggest effect first")
     s.add_argument("--session", help="a session id (default: the latest one in this folder)")
     s = cmd("estimate", cmd_estimate, "a job's size and how long it would take, waits for resets included")

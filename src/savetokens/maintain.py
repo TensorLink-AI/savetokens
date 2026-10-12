@@ -81,6 +81,13 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
         new = alerts.check(store, now)    # on the server's forecast paths, with the freshest local reading
     else:
         new = update(store, now, log=log)
+    from . import recap
+    weekly = recap.due(store, now)
+    if weekly:
+        store.conn.execute("INSERT OR IGNORE INTO alerts (account, ts, name, window_end, stage, message)"
+                           " VALUES ('', ?, 'recap', ?, 'recap', ?)", (now, now, weekly))
+        store.conn.commit()
+        new = new + [{"name": "recap", "message": weekly}]
     if new and cfg.get("desktop_notifications", True):
         alerts.desktop([a["message"] for a in new])
     if cfg.get("agent_context"):
