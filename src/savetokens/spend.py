@@ -132,8 +132,10 @@ def summary(store, now=None) -> dict:
         rows = store.conn.execute(
             f"SELECT {PROVIDER} AS p, model, SUM({TOKENS}) AS tok, COUNT(*) AS n,"
             f" SUM(CASE WHEN {var_sql} THEN COALESCE(cost_usd, 0) ELSE 0 END) AS usd,"
-            f" SUM(COALESCE(cost_usd, 0)) AS value FROM usage WHERE ts >= ? AND ts <= ? GROUP BY p, model",
-            (*var_args, start, now)).fetchall()
+            f" SUM(COALESCE(cost_usd, 0)) AS value,"
+            f" SUM(CASE WHEN {var_sql} THEN {TOKENS} ELSE 0 END) AS api_tok"
+            f" FROM usage WHERE ts >= ? AND ts <= ? GROUP BY p, model",
+            (*var_args, *var_args, start, now)).fetchall()
         provs = {r["p"] for r in rows} | set(plans) | set(shares)
         sum_tok, sum_usd, sum_n = None, None, None   # path-wise sums across providers
         sums_next_tok, sums_next_usd = None, None
@@ -143,6 +145,7 @@ def summary(store, now=None) -> dict:
             plan = plans.get(p)
             so_far = {"tokens": sum(r["tok"] or 0 for r in mine), "usd": sum(r["usd"] or 0 for r in mine),
                       "api_value": sum(r["value"] or 0 for r in mine), "requests": sum(r["n"] for r in mine),
+                      "api_tokens": sum(r["api_tok"] or 0 for r in mine),   # paid as you go: the API view
                       "fixed_usd": fixed_cost(plan, start, now) if plan else 0.0}
             rest, src = _paths(store, p, now, end)
             ahead, _ = _paths(store, p, now, nxt_end)
@@ -174,7 +177,8 @@ def summary(store, now=None) -> dict:
             for r in mine:
                 m = entry["models"].setdefault(r["model"] or "unknown", {"model": r["model"] or "unknown",
                                                                          "periods": {}})
-                m["periods"][k] = {"tokens": r["tok"] or 0, "usd": r["usd"] or 0.0, "api_value": r["value"] or 0.0}
+                m["periods"][k] = {"tokens": r["tok"] or 0, "usd": r["usd"] or 0.0, "api_value": r["value"] or 0.0,
+                                   "api_tokens": r["api_tok"] or 0}
             for model, tok, usd in shares.get(p, []):
                 m = entry["models"].setdefault(model or "unknown", {"model": model or "unknown", "periods": {}})
                 m["share_tokens"] = tok / tok_all if tok_all else 0.0
@@ -189,7 +193,8 @@ def summary(store, now=None) -> dict:
         so = [e["periods"][k] for e in out["providers"].values() if k in e["periods"]]
         totals[k] = {"start": start, "end": end, "tokens": sum(x["tokens"] for x in so),
                      "usd": sum(x["usd"] for x in so), "fixed_usd": sum(x["fixed_usd"] for x in so),
-                     "api_value": sum(x["api_value"] for x in so), "requests": sum_n or 0}
+                     "api_value": sum(x["api_value"] for x in so), "requests": sum_n or 0,
+                     "api_tokens": sum(x["api_tokens"] for x in so)}
         totals[k]["cost"] = totals[k]["usd"] + totals[k]["fixed_usd"]
         totals[k]["projected"] = {"tokens": _q3(sum_tok), "cost": _q3(sum_usd),
                                   "fixed_usd": sum(x["projected"]["fixed_usd"] for x in so)}

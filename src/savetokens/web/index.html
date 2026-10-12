@@ -20,6 +20,11 @@
       <button role="tab" id="tab-limits" aria-controls="limits-tab" aria-selected="false">LIMITS</button>
       <button role="tab" id="tab-projects" aria-controls="projects-tab" aria-selected="false">PROJECTS</button>
     </nav>
+    <div class="seg lens" id="lens" role="group" aria-label="What to count">
+      <button type="button" data-lens="all" title="Everything: plan fees spread over time, plus pay-as-you-go">ALL</button>
+      <button type="button" data-lens="api" class="lens-api" title="Pay as you go only: real money, billed per token">API</button>
+      <button type="button" data-lens="plans" class="lens-plans" title="Subscriptions, in their own units: % of their limits">PLANS</button>
+    </div>
     <span class="grow"></span>
     <div class="tools">
       <div class="menu-host" data-menu id="setup" hidden>
@@ -94,19 +99,18 @@
     <div id="spend" role="tabpanel" aria-labelledby="tab-spend">
       <div class="periodbar"><span></span><div class="seg" id="periods" role="group" aria-label="Period"></div></div>
       <div class="cards kpis" id="kpis"></div>
-      <div class="split">
+      <div class="cards" id="plancards" hidden></div>
+      <div class="split" id="spend-split">
         <section class="tile wide">
           <span class="legend">┤ BY PROVIDER · <span id="period-name">THIS MONTH</span> ├</span>
           <span class="legend right info pop-host" tabindex="0" aria-label="How it's counted"><span class="i">i</span><span class="pop right"><span class="pop-in w340" id="spend-note"></span></span></span>
-          <div class="scroll"><div class="grid providers" id="providers">
-            <div class="row head"><span>PROVIDER</span><span class="r">TOKENS</span><span class="r">SPEND</span><span class="r">LIKELY BY END</span><span class="r">API VALUE</span></div>
-          </div></div>
+          <div class="scroll"><div class="grid providers" id="providers"></div></div>
         </section>
         <section class="tile side mix-tile">
           <span class="legend">┤ SPEND MIX ├</span>
           <div class="mixbar" id="mixbar"></div>
           <div class="mixlist" id="mixlist"></div>
-          <div class="kv foot-kv"><span class="dim">Plans save you <span class="info pop-host" tabindex="0" aria-label="About this"><span class="i">i</span><span class="pop left"><span class="pop-in w320">What the same usage would cost pay-as-you-go, less what the plans cost for it.</span></span></span></span><span id="saved"></span></div>
+          <div class="kv foot-kv"><span class="dim"><span id="saved-label">Plans save you</span> <span class="info pop-host" tabindex="0" aria-label="About this"><span class="i">i</span><span class="pop left"><span class="pop-in w320" id="saved-info">What the same usage would cost pay-as-you-go, less what the plans cost for it.</span></span></span></span><span id="saved"></span></div>
         </section>
       </div>
     </div>
@@ -144,7 +148,7 @@
       <div class="split three">
         <section class="tile wide"><span class="legend">┤ RECENT ALERTS ├</span><div id="alerts"></div></section>
         <section class="tile side"><span class="legend">┤ MACHINES ├</span><div id="machines"></div></section>
-        <section class="tile side"><span class="legend">┤ LIMITS HIT · 30D ├</span><div id="hits"></div></section>
+        <section class="tile side" id="hits-tile"><span class="legend">┤ LIMITS HIT · 30D ├</span><div id="hits"></div></section>
       </div>
     </div>
 
@@ -166,7 +170,7 @@
     <form id="cmd-form" hidden>
       <span class="prompt">===&gt;</span>
       <input id="cmd" spellcheck="false" autocomplete="off" aria-label="Command"
-             placeholder="spend · limits · projects · day · week · month · refresh · pause · sel SESSION (esc to close)">
+             placeholder="spend · limits · projects · all · api · plans · day · week · month · refresh · pause · sel SESSION (esc to close)">
     </form>
     <div id="keys" class="keys">
       <button type="button" data-key="/"><b>/</b> command</button>

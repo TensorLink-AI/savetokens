@@ -17,6 +17,7 @@ const token = () => store.get("st_key") || store.get("st_token") || memToken;
 async function readFragment() {
   const h = new URLSearchParams(location.hash.slice(1));
   if (["spend", "limits", "projects"].includes(h.get("tab"))) tab = h.get("tab");   // a link straight to a tab
+  if (LENSES.includes(h.get("lens"))) setLens(h.get("lens"));
   if (h.has("key") || h.has("code")) history.replaceState(null, "", location.pathname + location.search);
   if (h.has("key")) { memToken = h.get("key"); store.set("st_key", memToken); }
   if (h.has("code")) await join(h.get("code"));
@@ -64,6 +65,7 @@ function niceTop(v) {
 }
 const fmtNum = (v) => (v >= 10 ? String(Math.round(v)) : String(Number(v.toPrecision(3))));
 const clamp = (v) => Math.max(0, Math.min(100, v));
+const share = (part, whole) => (!whole ? "–" : part > 0 && (100 * part) / whole < 1 ? "<1%" : `${Math.round((100 * part) / whole)}%`);
 
 // ── tiny DOM helper (text only: names come from users' data) ──
 function el(tag, cls, ...kids) {
@@ -149,12 +151,47 @@ function drawHeadline(s) {
   for (const x of rest) list.append(el("span", "ontrack-item", el("span", "t", badge(x.kind), x.tool), el("span", "dim", x.text)));
 }
 
+// ── the lens: everything, pay as you go only, or plans in their own units; every tab follows it ──
+const LENSES = ["all", "api", "plans"];
+let lens = LENSES.includes(store.get("st_lens")) ? store.get("st_lens") : "all";
+const DEFAULT_PROVIDER = { "claude-code": "anthropic", codex: "openai" };   // a tool on its own maker's service
+const PLAN_TOOL = { anthropic: "claude-code", openai: "codex", "openai-codex": "codex" };   // whose limits a plan sets
+const inLens = (billing) => lens === "all" || (lens === "api") === (billing === "api");
+function provLabel(s, p) {
+  const e = ((s.spend || {}).providers || []).find((e) => e.provider === p);
+  return e ? e.label : PROVIDERS[p] || p;
+}
+// "Claude Code", "Claude Code · saygm.com", "Codex · API", "Hermes · engy.ai": the tool, and who serves it when that isn't its own
+function toolName(s, harness, provider, billing) {
+  const t = TOOLS[harness] || harness || "";
+  if (provider && provider !== DEFAULT_PROVIDER[harness]) return `${t} · ${provLabel(s, provider)}`;
+  return billing === "api" ? `${t} · API` : t;
+}
+function setLens(l) {
+  lens = l; store.set("st_lens", l);
+  for (const b of document.querySelectorAll("#lens button")) b.setAttribute("aria-pressed", String(b.dataset.lens === l));
+  if (last) draw(last);
+}
+for (const b of document.querySelectorAll("#lens button")) b.addEventListener("click", () => setLens(b.dataset.lens));
+
 // ── spend ──
 const MIXC = ["c0", "c1", "c2", "c3", "c4", "c5"];
+const minus = (q, f) => (q ? q.map((v) => Math.max(0, v - (f || 0))) : null);   // a forecast without the plans' fees
+const tri = (v) => (v != null ? [v, v, v] : null);
+// one row's numbers in this lens: all of it, or just what's paid as you go
+function inView(y) {
+  const pj = y.projected || {}, nx = y.next || {};
+  if (lens === "api") return { tokens: y.api_tokens, cost: y.usd || 0, value: y.usd || 0,
+    likely: pj.cost ? minus(pj.cost, pj.fixed_usd) : tri(y.projected_usd), next: nx.cost ? minus(nx.cost, nx.fixed_usd) : tri(y.next_usd) };
+  return { tokens: y.tokens, cost: y.cost != null ? y.cost : y.usd, value: y.api_value,
+    likely: pj.cost || tri(y.projected_usd), next: nx.cost || tri(y.next_usd) };
+}
+// budgets on real money: each tool's API budget and those you set that count API spend
+const apiBudgets = (s) => [...(s.limits || []).filter((o) => o.kind === "api"),
+  ...(((s.projects || {}).budgets) || []).filter((o) => o.count === "api")];
 
 function drawSpend(s) {
-  const sp = s.spend, prov = $("providers"), kpis = clear($("kpis"));
-  clearRows(prov);
+  const sp = s.spend, kpis = clear($("kpis")), prov = clear($("providers"));
   const seg = clear($("periods"));
   for (const [k, [name]] of Object.entries(PERIOD)) {
     const b = el("button", null, name.toUpperCase());
@@ -162,73 +199,144 @@ function drawSpend(s) {
     b.addEventListener("click", () => setPeriod(k));
     seg.append(b);
   }
+  const plans = lens === "plans";
+  kpis.hidden = $("spend-split").hidden = plans;
+  $("plancards").hidden = !plans;
   if (!sp || sp.error || !sp.periods) {
-    kpis.append(empty(sp && sp.error ? `Couldn't work out spend: ${sp.error}` : "No usage yet."));
+    (plans ? clear($("plancards")) : kpis).append(empty(sp && sp.error ? `Couldn't work out spend: ${sp.error}` : "No usage yet."));
     return;
   }
+  if (plans) return drawPlans(s);
+  const api = lens === "api";
   const [name, nextName, by] = PERIOD[period], x = sp.periods[period];
+  const kpi = (label, value, sub, rows) => {
+    const t = tile("kpi", label, true);
+    t.append(el("div", "big", value), el("div", "sub", sub));
+    for (const [k, v] of rows) t._pop.append(kv(k, v));
+    kpis.append(t);
+  };
   if (x) {
-    const payg = x.usd || 0, fixed = x.fixed_usd || 0, pj = x.projected || {}, nx = x.next || {};
-    const kpi = (label, value, sub, rows) => {
-      const t = tile("kpi", label, true);
-      t.append(el("div", "big", value), el("div", "sub", sub));
-      for (const [k, v] of rows) t._pop.append(kv(k, v));
-      kpis.append(t);
-    };
-    kpi(`${name.toUpperCase()} SO FAR`, usd2(x.cost), `${tok(x.tokens)} tokens`,
-      [["pay as you go", usd2(payg)], ["subscriptions", usd2(fixed)], ["tokens", tok(x.tokens)], ["requests", (x.requests || 0).toLocaleString("en-US")]]);
-    kpi("LIKELY BY END", pj.cost ? usd(pj.cost[1]) : "–", pj.cost ? `range ${rng(pj.cost, usd)}` : "forecast on its way",
-      [[`likely ${by}`, pj.cost ? usd(pj.cost[1]) : "–"], ["range", pj.cost ? rng(pj.cost, usd) : "–"], ["tokens", pj.tokens ? `${tok(pj.tokens[1])} (${rng(pj.tokens, tok)})` : "–"]]);
-    kpi(nextName.toUpperCase(), nx.cost ? usd(nx.cost[1]) : "–", nx.cost ? `range ${rng(nx.cost, usd)}` : "forecast on its way",
-      [["likely", nx.cost ? usd(nx.cost[1]) : "–"], ["of which subscriptions", usd(nx.fixed_usd)], ["tokens", nx.tokens ? `${tok(nx.tokens[1])} (${rng(nx.tokens, tok)})` : "–"]]);
-    const saved = Math.max(0, (x.api_value || 0) - x.cost);
-    kpi("API VALUE", usd(x.api_value), saved > 0.005 ? `plans save you ${usd(saved)}` : "what it'd cost pay-as-you-go",
-      [["API value of all usage", usd2(x.api_value)], ["what you pay", usd2(x.cost)], ["saved by plans", usd2(saved)]]);
-    $("saved").textContent = usd(saved);
+    const v = inView(x), pj = x.projected || {}, nx = x.next || {};
+    if (api) {
+      kpi(`API · ${name.toUpperCase()}`, usd2(v.cost), `${tok(v.tokens)} tokens`,
+        [["paid as you go", usd2(v.cost)], ["tokens", tok(v.tokens)], ["of all spend", share(v.cost, x.cost)]]);
+    } else {
+      kpi(`${name.toUpperCase()} SO FAR`, usd2(x.cost), `${tok(x.tokens)} tokens`,
+        [["pay as you go", usd2(x.usd || 0)], ["subscriptions", usd2(x.fixed_usd || 0)], ["tokens", tok(x.tokens)], ["requests", (x.requests || 0).toLocaleString("en-US")]]);
+    }
+    kpi("LIKELY BY END", v.likely ? usd(v.likely[1]) : "–", v.likely ? `range ${rng(v.likely, usd)}` : "forecast on its way",
+      [[`likely ${by}`, v.likely ? usd(v.likely[1]) : "–"], ["range", v.likely ? rng(v.likely, usd) : "–"],
+       ...(api ? [] : [["tokens", pj.tokens ? `${tok(pj.tokens[1])} (${rng(pj.tokens, tok)})` : "–"]])]);
+    kpi(nextName.toUpperCase(), v.next ? usd(v.next[1]) : "–", v.next ? `range ${rng(v.next, usd)}` : "forecast on its way",
+      [["likely", v.next ? usd(v.next[1]) : "–"], ...(api ? [] : [["of which subscriptions", usd(nx.fixed_usd)],
+       ["tokens", nx.tokens ? `${tok(nx.tokens[1])} (${rng(nx.tokens, tok)})` : "–"]])]);
+    if (api) {
+      const bs = apiBudgets(s).sort((a, b) => (b.used || 0) - (a.used || 0)), topB = bs[0];
+      kpi("API BUDGETS", topB ? pct(topB.used) : "none", topB ? `most used: ${topB.label || TOOLS[topB.harness] || ""}` : "savetokens budget --provider NAME --usd 20",
+        bs.length ? bs.map((o) => [o.label || `${TOOLS[o.harness] || o.harness} API`, `${pct(o.used)} of ${usd(o.budget_usd || o.amount)}`]) : [["none set", "–"]]);
+      $("saved-label").textContent = "Of all spend";
+      $("saved").textContent = share(v.cost, x.cost);
+      $("saved-info").textContent = "Pay-as-you-go as a share of all spend this period: the rest is plan fees, spread evenly over time.";
+    } else {
+      const saved = Math.max(0, (x.api_value || 0) - x.cost);
+      kpi("API VALUE", usd(x.api_value), saved > 0.005 ? `plans save you ${usd(saved)}` : "what it'd cost pay-as-you-go",
+        [["API value of all usage", usd2(x.api_value)], ["what you pay", usd2(x.cost)], ["saved by plans", usd2(saved)]]);
+      $("saved-label").textContent = "Plans save you";
+      $("saved").textContent = usd(saved);
+      $("saved-info").textContent = "What the same usage would cost pay-as-you-go, less what the plans cost for it.";
+    }
   }
-  $("period-name").textContent = name.toUpperCase();
-  const cells = (y) => [el("span", "r", tok(y.tokens)), el("span", "r spend", usd2(y.cost != null ? y.cost : y.usd)),
-    el("span", "r", y.projected && y.projected.cost ? usd(y.projected.cost[1]) : y.projected_usd != null ? usd(y.projected_usd) : "–"),
-    el("span", "r dim", y.api_value ? usd2(y.api_value) : "–")];
-  const list = (sp.providers || []).filter((e) => e.periods[period]);
+  $("period-name").textContent = (api ? "API · " : "") + name.toUpperCase();
+  // which tools used each provider this week, for the API view's last column
+  const usedBy = {};
+  for (const m of s.models || []) if (m.billing === "api") (usedBy[m.provider] = usedBy[m.provider] || new Set()).add(TOOLS[m.harness] || m.harness);
+  prov.append(el("div", "row head", el("span", null, "PROVIDER"), el("span", "r", "TOKENS"), el("span", "r", api ? "PAID" : "SPEND"),
+    el("span", "r", "LIKELY BY END"), el("span", "r", api ? "TOOLS" : "API VALUE")));
+  const cells = (y, p) => {
+    const v = inView(y);
+    return [el("span", "r", tok(v.tokens)), el("span", "r spend", usd2(v.cost)), el("span", "r", v.likely ? usd(v.likely[1]) : "–"),
+      api ? el("span", "r dim", p ? [...(usedBy[p] || [])].join(", ") || "–" : "") : el("span", "r dim", v.value ? usd2(v.value) : "–")];
+  };
+  const list = (sp.providers || []).filter((e) => e.periods[period] && (!api || e.periods[period].api_tokens > 0 || e.periods[period].usd > 0.005));
   for (const e of list) {
     const y = e.periods[period], id = e.label;
     const r = el("div", "row click" + (open[id] ? " sel" : ""),
       el("span", null, el("span", "mark-col", open[id] ? "▼" : "▶"), el("span", "name", e.label),
-         e.plan ? planBadge(e.plan) : null,
-         y.usd > 0.005 || !e.plan ? badge("api") : null),
-      ...cells(y));
+         api ? null : e.plan ? planBadge(e.plan) : null, api ? null : y.usd > 0.005 || !e.plan ? badge("api") : null),
+      ...cells(y, e.provider));
     r.tabIndex = 0;
     const toggle = () => { open[id] = !open[id]; drawSpend(last); };
     r.addEventListener("click", toggle);
     r.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
     prov.append(r);
     if (open[id]) {
-      const d = el("div", "detail");
-      for (const m of (e.models || []).filter((m) => m.periods[period])) {
+      const d = el("div", "detail"), v = inView(y);
+      for (const m of (e.models || []).filter((m) => m.periods[period] && (!api || m.periods[period].api_tokens > 0))) {
         const mr = el("div", "row", el("span", null, m.model || "unknown"), ...cells(m.periods[period]));
         if (m.share_tokens != null) mr.title = `${Math.round(m.share_tokens * 100)}% of ${e.label}'s tokens`;
         d.append(mr);
       }
-      d.append(el("div", "sub", `likely range ${y.projected ? rng(y.projected.cost, usd) : "–"} · ${nextName.toLowerCase()} `
-        + (y.next && y.next.cost ? `${usd(y.next.cost[1])} (${rng(y.next.cost, usd)})` : "–")));
+      d.append(el("div", "sub", `likely range ${v.likely ? rng(v.likely, usd) : "–"} · ${nextName.toLowerCase()} `
+        + (v.next ? `${usd(v.next[1])} (${rng(v.next, usd)})` : "–")));
       prov.append(d);
     }
   }
-  if (x) prov.append(el("div", "row total", el("span", null, "All providers"), ...cells(x)));
-  // what each provider is of the period's spend
-  const bar = clear($("mixbar")), ml = clear($("mixlist")), tot = x && x.cost > 0 ? x.cost : 0;
+  if (!list.length) prov.append(empty(api ? "Nothing paid as you go this period: everything was on plans." : "No usage this period."));
+  else if (x) prov.append(el("div", "row total", el("span", null, api ? "All API" : "All providers"), ...cells(x)));
+  // what each provider is of the period's spend (or of its API spend)
+  const bar = clear($("mixbar")), ml = clear($("mixlist")), tot = x ? inView(x).cost : 0;
   list.forEach((e, i) => {
-    const y = e.periods[period], v = y.cost != null ? y.cost : y.usd || 0, share = tot ? (100 * v) / tot : 0;
+    const vv = inView(e.periods[period]).cost || 0, share = tot > 0 ? (100 * vv) / tot : 0;
     const segm = el("span", MIXC[i % MIXC.length]); segm.style.flex = String(Math.max(share, 1)); segm.title = `${e.label} ${Math.round(share)}%`;
     bar.append(segm);
-    ml.append(el("div", "mixrow", el("span", "sw " + MIXC[i % MIXC.length]), el("span", "n", e.label, e.plan ? null : el("span", "dim", " · API")),
-      el("span", null, usd2(v)), el("span", "r dim", `${Math.round(share)}%`)));
+    ml.append(el("div", "mixrow", el("span", "sw " + MIXC[i % MIXC.length]), el("span", "n", e.label, e.plan || api ? null : el("span", "dim", " · API")),
+      el("span", null, usd2(vv)), el("span", "r dim", `${Math.round(share)}%`)));
   });
-  if (!list.length) ml.append(empty("No spend yet this period."));
-  $("spend-note").textContent = "Spend is pay-as-you-go plus subscriptions, spread evenly over time, so two plans at the same price spend the same."
-    + " API value is what the same usage would cost at pay-as-you-go prices: on a plan, that's what the plan saves you."
-    + (Object.keys(sp.plans || {}).length ? "" : " On a subscription? Add its price: savetokens plan anthropic --usd 200 --per month");
+  if (!list.length) ml.append(empty(api ? "No API spend yet this period." : "No spend yet this period."));
+  $("spend-note").textContent = api
+    ? "Paid: what was billed per token, real money. Likely by end: the forecast for pay-as-you-go only, without plan fees. Tools: which tools used that provider this week."
+    : "Spend is pay-as-you-go plus subscriptions, spread evenly over time, so two plans at the same price spend the same."
+      + " API value is what the same usage would cost at pay-as-you-go prices: on a plan, that's what the plan saves you."
+      + (Object.keys(sp.plans || {}).length ? "" : " On a subscription? Add its price: savetokens plan anthropic --usd 200 --per month");
+}
+
+// plans, in their own units: how much of each limit is used, and what the plan bought at API prices
+function drawPlans(s) {
+  const box = clear($("plancards")), sp = s.spend, [name] = PERIOD[period];
+  const subs = (sp.providers || []).filter((e) => e.plan);
+  if (!subs.length) { box.append(empty("No subscriptions known. Add one: savetokens plan anthropic --usd 200 --per month")); return; }
+  for (const e of subs) {
+    const y = e.periods[period] || {}, h = PLAN_TOOL[e.provider];
+    const lims = (s.limits || []).filter((o) => o.kind === "subscription" && o.harness === h);
+    const week = lims.find((o) => o.name === "seven_day"), five = lims.find((o) => o.name === "five_hour");
+    const crit = week && (week.stage === "act" || week.stage === "last_call" || week.used >= 100), warn = week && !crit && !!week.eta;
+    const t = tile("limit plan" + (crit ? " crit" : warn ? " warn" : ""), null, true);
+    t.prepend(el("span", "legend", `┤ ${e.label}${h ? ` · ${TOOLS[h]}` : ""} ├`));
+    t.append(el("span", "label", planBadge(e.plan), `${usd(e.plan.usd)} a ${e.plan.period}`));
+    if (week) {
+      t.append(el("span", "big", el("span", "num", pct(week.used)), el("span", "dim", "of the weekly limit")));
+      const m = el("div", "meter");
+      if (week.p10 != null && week.p90 != null) {
+        const b = el("div", "band"); b.style.left = `${clamp(week.p10)}%`; b.style.width = `${clamp(week.p90) - clamp(week.p10)}%`; m.append(b);
+      }
+      const f = el("div", "fill"); f.style.width = `${clamp(week.used)}%`; m.append(f);
+      if (week.p50 != null) { const tk = el("div", "p50"); tk.style.left = `calc(${clamp(week.p50)}% - 1px)`; m.append(tk); }
+      t.append(m, el("span", "main", week.eta ? `Runs out ${when(week.eta, s.now)}, ${span(week.resets - week.eta)} early`
+        : week.p50 != null ? `Likely ${pct(week.p50)} · ${Math.round((week.p_hit || 0) * 100)}% risk` : "Forecast on its way"));
+    } else {
+      t.append(el("span", "big", el("span", "num", "–"), el("span", "dim", "no limit readings yet")));
+    }
+    const value = Math.max(0, (y.api_value || 0) - (y.usd || 0)), fee = y.fixed_usd || 0;
+    t.append(el("span", "ratio", fee > 0.005 ? `${usd(value)} at API prices · ${(value / fee).toFixed(1)}× its fee ${name.toLowerCase()}`
+      : `${usd(value)} at API prices ${name.toLowerCase()}`));
+    if (five) t._pop.append(kv("5-hour limit now", pct(five.used)));
+    if (week) t._pop.append(kv("weekly, likely at reset", pct(week.p50)), kv("chance of running out", `${Math.round((week.p_hit || 0) * 100)}%`),
+      kv("resets", `${when(week.resets, s.now)} (in ${span(week.resets - s.now)})`));
+    t._pop.append(kv(`its fee, ${name.toLowerCase()}`, usd2(fee)), kv("its usage at API prices", usd2(value)),
+      kv("limits hit, 30 days", String((s.hits || []).filter((x) => x.harness === h).length)),
+      el("span", "faint sep", "The Limits tab has the 5-hour window, the hourly chart and each session."));
+    box.append(t);
+  }
 }
 
 // ── limits ──
@@ -268,9 +376,12 @@ function limitCard(o, now) {
 }
 
 function drawLimits(s) {
-  const box = clear($("limits")), list = (s.limits || []).filter((o) => o.kind !== "goal");
+  const box = clear($("limits"));
+  const list = lens === "api" ? apiBudgets(s) : (s.limits || []).filter((o) => o.kind !== "goal" && inLens(o.kind === "api" ? "api" : "plan"));
   if (!list.length) {
-    box.append(empty("No limits known yet. Send a message in Claude Code or Codex with savetokens installed, or set an API budget: savetokens api hermes --budget 100"));
+    box.append(empty(lens === "api" ? "No API budgets yet. Set one: savetokens budget --provider NAME --usd 20 --per month, or savetokens api hermes --budget 100"
+      : lens === "plans" ? "No plan limits yet: they appear after a message in Claude Code or Codex."
+      : "No limits known yet. Send a message in Claude Code or Codex with savetokens installed, or set an API budget: savetokens api hermes --budget 100"));
     return;
   }
   // plans first, then API budgets: each card's badge says which
@@ -283,8 +394,11 @@ const SHORT = (c) => c.group === "providers" ? c.label.replace(" tokens (million
 
 function drawChart(s) {
   // every series the hub sends (each tool's limit, each provider's tokens); an older one sends just `demand`
-  const list = (s.charts && s.charts.length) ? s.charts
-    : s.demand ? [{ id: s.demand.pool || "demand", group: "limits", ...s.demand }] : [];
+  const planned = new Set(Object.keys((s.spend || {}).plans || {}));
+  const fits = (c) => lens === "all" || (c.group === "limits" ? (c.unit === "$") === (lens === "api")
+    : planned.has(String(c.id).replace(/^tokens:/, "")) === (lens === "plans"));
+  const list = ((s.charts && s.charts.length) ? s.charts
+    : s.demand ? [{ id: s.demand.pool || "demand", group: "limits", ...s.demand }] : []).filter(fits);
   const d = list.find((c) => c.id === chartId) || list.find((c) => s.demand && c.id === s.demand.pool) || list[0] || {};
   const pick = clear($("chart-pick"));
   if (list.length > 1) for (const c of list) {
@@ -301,7 +415,9 @@ function drawChart(s) {
   const fmt = (v, dp = 1) => unit === "$" ? `$${v.toFixed(dp + 1)}` : unit === "M" ? `${v.toFixed(v < 10 ? dp : 0)}M` : `${v.toFixed(dp)}%`;
   const sum = (a) => a.reduce((x, y) => x + (y || 0), 0);
   $("demand-sum").textContent = past.length || next.length ? `used ${fmt(sum(past))} in the last ${past.length} h, ~${fmt(sum(next))} to come` : "";
-  if (!past.some((v) => v > 0) && !next.some((v) => v > 0)) { plot.append(empty("No usage yet.")); clear($("readout")); return; }
+  if (!past.some((v) => v > 0) && !next.some((v) => v > 0)) {
+    plot.append(empty(list.length ? "No usage yet." : `Nothing to chart in the ${lens.toUpperCase()} view yet.`)); clear($("readout")); clear(axis); return;
+  }
   const tickTxt = (v) => unit === "$" ? `$${fmtNum(v)}` : unit === "M" ? `${fmtNum(v)}M` : `${fmtNum(v)}%`;
   const top = niceTop(Math.max(0.0001, ...past, ...next, ...hi));
   for (const v of [top, top / 2, 0]) ticks.append(el("span", null, tickTxt(v)));
@@ -347,21 +463,26 @@ function pauseText(x, now) {
 }
 
 function drawSessions(s) {
-  const box = clearRows($("sessions")), rows = (s.sessions || []).filter((x) => x.session != null);
-  const rest = (s.sessions || []).find((x) => x.session == null);
+  const box = clearRows($("sessions")), rows = (s.sessions || []).filter((x) => x.session != null && inLens(x.billing));
+  const rests = (s.sessions || []).filter((x) => x.session == null && inLens(x.billing));
+  const rest = rests.length ? { project: rests.map((x) => x.project).join(", "), pct_week: rests.some((x) => x.pct_week != null)
+    ? rests.reduce((a, x) => a + (x.pct_week || 0), 0) : null, usd: rests.reduce((a, x) => a + (x.usd || 0), 0) } : null;
   const running = rows.filter((x) => x.running).length;
   $("sessions-aside").textContent = rows.length ? `${running} running` : "";
   const more = $("sessions-more");
-  if (!rows.length) { box.append(empty("No sessions in the last 24 hours.")); more.hidden = true; return; }
-  const top = Math.max(1, ...rows.map((x) => x.pct_week || 0));
+  if (!rows.length) { box.append(empty(lens === "all" ? "No sessions in the last 24 hours." : `No ${lens === "api" ? "API" : "plan"} sessions in the last 24 hours.`)); more.hidden = true; return; }
+  // a session on a plan is measured in % of its limit; one paid as you go without a budget, in dollars
+  const amount = (x) => (x.pct_week != null ? pct(x.pct_week, 1) : usd2(x.usd || 0));
+  const topPct = Math.max(1, ...rows.map((x) => x.pct_week || 0)), topUsd = Math.max(0.01, ...rows.map((x) => (x.pct_week == null ? x.usd || 0 : 0)));
+  const barOf = (x) => (x.pct_week != null ? (100 * x.pct_week) / topPct : (100 * (x.usd || 0)) / topUsd);
   const shown = allSessions || rows.some((x, i) => i >= SESSIONS_SHOWN && x.session === sel) ? rows : rows.slice(0, SESSIONS_SHOWN);
   for (const x of shown) {
     const id = x.session, name = x.project || x.session;
-    const tool = (TOOLS[x.harness] || x.harness || "") + (x.pool && x.pool.endsWith(":api") ? " · API" : "");
-    const fill = el("i"); fill.style.width = `${(100 * (x.pct_week || 0)) / top}%`;
+    const tool = toolName(s, x.harness, x.provider, x.billing);
+    const fill = el("i"); fill.style.width = `${barOf(x)}%`;
     const r = el("div", "row click" + (sel === id ? " sel" : ""), el("span", "dot" + (x.running ? " on" : "")),
       el("span", "name", name, x.project ? el("span", "sid", id) : null), el("span", "tool", tool),
-      el("span", "todaybar", el("span", "track", fill), el("span", "v", pct(x.pct_week, 1))),
+      el("span", "todaybar", el("span", "track", fill), el("span", "v", amount(x))),
       el("span", "r", x.running && x.pace ? pct(x.pace, 1) : "–"));
     r.tabIndex = 0;
     const pick = () => { sel = sel === id ? null : id; drawSessions(last); };
@@ -376,7 +497,7 @@ function drawSessions(s) {
     }
   }
   if (rest && allSessions) box.append(el("div", "row rest", el("span"), el("span", null, rest.project), el("span"),
-    el("span", "todaybar", el("span", "track"), el("span", "v", pct(rest.pct_week, 1))), el("span")));
+    el("span", "todaybar", el("span", "track"), el("span", "v", rest.pct_week != null ? pct(rest.pct_week, 1) : usd2(rest.usd))), el("span")));
   const hidden = rows.length - SESSIONS_SHOWN;
   more.hidden = hidden <= 0 && !rest;
   more.textContent = allSessions ? "− show fewer" : `+ ${hidden > 0 ? `${hidden} more session${hidden === 1 ? "" : "s"}` : "the rest"}`;
@@ -386,13 +507,17 @@ function drawSessions(s) {
 const HIT = (h) => ({ session: "5-hour limit", weekly: "Weekly limit" }[h.kind] || (h.model ? `${h.model} limit` : "A limit"));
 function drawLists(s) {
   const models = clear($("models")), by = {};
-  for (const m of s.models || []) (by[m.harness] = by[m.harness] || []).push(m);
-  if (!Object.keys(by).length) models.append(empty("No usage this week."));
-  for (const [h, list] of Object.entries(by)) {
-    models.append(el("div", "group", TOOLS[h] || h));
+  for (const m of (s.models || []).filter((m) => inLens(m.billing))) {
+    const g = toolName(s, m.harness, m.provider, m.billing);
+    (by[g] = by[g] || []).push(m);
+  }
+  if (!Object.keys(by).length) models.append(empty(lens === "all" ? "No usage this week." : `No ${lens === "api" ? "API" : "plan"} usage this week.`));
+  for (const [g, list] of Object.entries(by)) {
+    models.append(el("div", "group", g));
+    const all = list.reduce((a, m) => a + m.share, 0) || 1;   // each model's part of this group's tokens
     for (const m of list.slice(0, 5)) {
-      const fill = el("i"); fill.style.width = `${Math.round(m.share * 100)}%`;
-      const row = el("div", "model", el("span", "n", m.model || "unknown"), el("span", "track", fill), el("b", null, `${Math.round(m.share * 100)}%`));
+      const part = Math.round((100 * m.share) / all), fill = el("i"); fill.style.width = `${part}%`;
+      const row = el("div", "model", el("span", "n", m.model || "unknown"), el("span", "track", fill), el("b", null, `${part}%`));
       if (m.subagents >= 0.05) row.title = `${Math.round(m.subagents * 100)}% via subagents`;
       models.append(row);
     }
@@ -404,7 +529,8 @@ function drawLists(s) {
     mach.append(el("div", "stack", el("span", "n", String(m.machine || "?").slice(0, 12), off ? el("span", "badge quiet", "QUIET") : null),
       el("span", "s", m.last_sync ? `synced ${ago(m.last_sync, s.now)}` : m.last_seen ? `last seen ${ago(m.last_seen, s.now)}` : "no usage this week",
         off ? info("Not reaching this hub for over a day. Switched off, or pointed at an old address: add it again with ADD MACHINE.") : null),
-      el("span", "s", `${(m.requests || 0).toLocaleString("en-US")} requests this week`)));
+      el("span", "s", `${(m.requests || 0).toLocaleString("en-US")} requests this week`
+        + (m.tokens ? ` · ${share(m.api_tokens || 0, m.tokens)} API` : ""))));
   }
   const accts = s.accounts || [];
   if (accts.length > 1) mach.append(el("div", "s dim", `Claude accounts: ${accts.map((a) => (a.account || "?") + (a.active ? " (in use)" : "")).join(", ")}`));
@@ -419,6 +545,7 @@ function drawLists(s) {
     row.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
     al.append(row);
   });
+  $("hits-tile").hidden = lens === "api";   // pay as you go has no limits to hit
   const hits = clear($("hits"));
   if (!(s.hits || []).length) hits.append(empty("You haven't run out in the last 30 days."));
   for (const h of s.hits || []) hits.append(el("div", "hit", el("span", null, HIT(h)), el("span", "dim", when(h.ts, s.now))));
@@ -453,7 +580,10 @@ function drawProjects(s) {
   if (!pv || pv.error) { grid.append(empty(pv ? `Couldn't add up projects: ${pv.error}` : "No projects yet.")); return; }
   $("projects-days").textContent = `PROJECTS · LAST ${pv.days} DAYS`;
   const all = pv.list.reduce((a, p) => a + (p.tokens || 0), 0) || 1;
-  for (const p of [...pv.list].sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0))) {
+  const planOf = (p) => (p.by || []).filter((b) => b.billing === "plan").reduce((a, b) => ({ tokens: a.tokens + b.tokens, value: a.value + b.value_usd }), { tokens: 0, value: 0 });
+  const key = { all: (p) => p.value_usd || 0, api: (p) => p.api_usd || 0, plans: (p) => planOf(p).tokens }[lens];
+  const shown = pv.list.filter((p) => lens === "all" || key(p) > (lens === "api" ? 0.005 : 0)).sort((a, b) => key(b) - key(a));
+  for (const p of shown) {
     const name = p.name || `project ${p.id.slice(0, 8)}`;
     const c = tile("proj", null, true);
     c.prepend(el("span", "legend" + (p.name ? "" : " anon"), `┤ ${name} ├`));
@@ -461,8 +591,11 @@ function drawProjects(s) {
     const spark = el("div", "spark");
     days.forEach((v, i) => { const b = el("span", i === days.length - 1 ? "last" : null); b.style.height = `${Math.max(6, (100 * v) / hi)}%`; spark.append(b); });
     spark.title = `tokens a day, the last ${days.length} days`;
-    c.append(el("div", "top-row", el("span", null, el("div", "big", usd2(p.value_usd)),
-      el("div", "dim small", p.api_usd > 0.005 ? `at API prices · ${usd(p.api_usd)} paid` : "at API prices")), days.length ? spark : null));
+    const pl = planOf(p);
+    const [big, sub] = lens === "api" ? [usd2(p.api_usd), "paid as you go"]
+      : lens === "plans" ? [tok(pl.tokens), "tokens on plans"]
+      : [usd2(p.value_usd), p.api_usd > 0.005 ? `at API prices · ${usd(p.api_usd)} paid` : "at API prices"];
+    c.append(el("div", "top-row", el("span", null, el("div", "big", big), el("div", "dim small", sub)), days.length ? spark : null));
     c.append(mix(p));
     const n = p.sessions;
     c.append(el("span", "kv", el("span", null, `${tok(p.tokens)} tokens` + (pv.more ? "" : ` · ${Math.round((100 * p.tokens) / all)}%`)),
@@ -471,7 +604,8 @@ function drawProjects(s) {
     pop.append(el("span", "head", "WHERE ITS TOKENS WENT"));
     for (const b of p.by) pop.append(el("span", "kv", el("span", null, badge(BILL[b.billing]), `${TOOLS[b.tool] || b.tool} · ${PROVIDERS[b.provider] || b.provider}`),
       el("span", null, `${Math.round((100 * b.tokens) / (p.tokens || 1))}%`)));
-    pop.append(kv("paid as API", p.api_usd > 0.005 ? usd2(p.api_usd) : "–"), kv("requests", (p.requests || 0).toLocaleString("en-US")));
+    pop.append(kv("at API prices, all of it", usd2(p.value_usd)), kv("paid as API", p.api_usd > 0.005 ? usd2(p.api_usd) : "–"),
+      kv("on plans, at API prices", usd2(pl.value)), kv("requests", (p.requests || 0).toLocaleString("en-US")));
     for (const o of pv.budgets.filter((o) => ((o.scope || {}).projects || []).includes(p.id)))
       pop.append(el("span", "kv", el("span", null, badge("goal"), o.label), el("span", null, `${pct(o.used)} used`)));
     if (p.tasks.length) {
@@ -481,12 +615,14 @@ function drawProjects(s) {
     }
     grid.append(c);
   }
-  if (!pv.list.length) grid.append(empty("No usage with a project yet: it's counted from the folder each session runs in."));
+  if (!shown.length) grid.append(empty(lens === "api" ? "No project has paid-as-you-go usage in this window."
+    : lens === "plans" ? "No project has plan usage in this window." : "No usage with a project yet: it's counted from the folder each session runs in."));
   const note = clear($("projects-note"));
   if (pv.unnamed) note.append("ids, not names ", info("Names stay on your machines, so this hub shows ids. To see names here, run on each machine: savetokens projects --share-names on"));
   if (pv.more) note.append(el("span", "dim", ` · ${pv.more} more `), info("Smaller projects: savetokens projects lists them all."));
-  for (const o of pv.budgets) cards.append(limitCard(o, s.now));
-  if (!pv.budgets.length) cards.append(empty("No budgets yet. e.g. savetokens budget --project webapp --usd 150 --per month (API spend), add --count all to count plan usage too"));
+  const bs = pv.budgets.filter((o) => lens === "all" || (o.count === "api") === (lens === "api"));
+  for (const o of bs) cards.append(limitCard(o, s.now));
+  if (!bs.length) cards.append(empty("No budgets yet. e.g. savetokens budget --project webapp --usd 150 --per month (API spend), add --count all to count plan usage too"));
 }
 
 // ── menus: setup and add a machine ──
@@ -602,6 +738,7 @@ function run(raw) {
   if (c === "spend" || c === "limits" || c === "projects") { showTab(c); return say(`Showing ${c}`); }
   if (["day", "today", "week", "month"].includes(c)) { setPeriod(c === "today" ? "day" : c); showTab("spend"); return say(`Period: ${PERIOD[period][0].toLowerCase()}`); }
   if (c === "refresh") { load(); return say("Refreshing"); }
+  if (LENSES.includes(c)) { setLens(c); return say(`Counting ${c === "all" ? "everything" : c === "api" ? "pay as you go only" : "plans only"}`); }
   if (c === "pause" || c === "resume") { setLive(c === "resume"); return say(c === "pause" ? "Live updates paused" : "Live updates on"); }
   if (c.startsWith("sel ")) {
     const q = c.slice(4).trim(), x = (last && last.sessions || []).find((x) => x.session && (x.session.startsWith(q) || (x.project || "").toLowerCase() === q));
@@ -671,4 +808,5 @@ $("signout").addEventListener("click", () => { store.del("st_token"); store.del(
 document.addEventListener("visibilitychange", () => { if (!document.hidden && live) load(); });
 
 setLive(live);
+setLens(lens);
 readFragment().then(() => showTab(tab)).catch((e) => { $("signin-err").textContent = e.message; }).finally(load);

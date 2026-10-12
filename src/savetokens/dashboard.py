@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from . import alerts, forecast, meter, pools
+from . import alerts, forecast, meter, pools, spend
 
 BARS = " ▁▂▃▄▅▆▇█"
 STAGE_TEXT = {"heads_up": "heads-up", "act": "act now", "last_call": "last call"}
@@ -55,14 +55,17 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     source = looks[0]["source"] if looks else forecast.preferred_source(store, acct)
     week = now - 7 * 86400
     models = store.conn.execute(
-        f"SELECT harness, model, SUM({meter.WEIGHT}) AS w, SUM(CASE WHEN subagent THEN {meter.WEIGHT} ELSE 0 END)"
-        f" AS sub FROM usage WHERE ts >= ? GROUP BY harness, model HAVING w > 0 ORDER BY w DESC", (week,)).fetchall()
+        f"SELECT harness, {spend.PROVIDER} AS provider, MAX(billing) AS billing, model, SUM({meter.WEIGHT}) AS w,"
+        f" SUM(CASE WHEN subagent THEN {meter.WEIGHT} ELSE 0 END) AS sub FROM usage WHERE ts >= ?"
+        f" GROUP BY harness, provider, model HAVING w > 0 ORDER BY w DESC", (week,)).fetchall()
     total = {}
     for r in models:
         total[r["harness"]] = total.get(r["harness"], 0.0) + r["w"]
     machines = store.conn.execute(
-        "SELECT machine, MAX(ts) AS last, SUM(cost_usd) AS usd, COUNT(*) AS n FROM usage WHERE ts >= ?"
-        " GROUP BY machine ORDER BY last DESC", (week,)).fetchall()
+        f"SELECT machine, MAX(ts) AS last, SUM(cost_usd) AS usd, COUNT(*) AS n, SUM({spend.TOKENS}) AS tokens,"
+        f" SUM(CASE WHEN billing = 'api' THEN {spend.TOKENS} ELSE 0 END) AS api_tokens,"
+        f" SUM(CASE WHEN billing = 'api' THEN COALESCE(cost_usd, 0) ELSE 0 END) AS api_usd"
+        f" FROM usage WHERE ts >= ? GROUP BY machine ORDER BY last DESC", (week,)).fetchall()
     accounts = []
     known = [a for a in meter.accounts(store) if a]
     for a in known or meter.accounts(store):   # readings from before accounts were recorded have none
@@ -75,7 +78,7 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     recent = [dict(r) for r in store.conn.execute(
         "SELECT ts, name, stage, message FROM alerts WHERE ts >= ? ORDER BY ts DESC LIMIT 5", (week,))]
     hits = []
-    for h in store.conn.execute("SELECT ts, kind, model FROM hits WHERE ts >= ? ORDER BY ts DESC LIMIT 100",
+    for h in store.conn.execute("SELECT ts, kind, model, harness FROM hits WHERE ts >= ? ORDER BY ts DESC LIMIT 100",
                                 (now - 30 * 86400,)):
         if not hits or (h["kind"], h["model"]) != (hits[-1]["kind"], hits[-1]["model"]) \
                 or hits[-1]["ts"] - h["ts"] > 3600:
@@ -93,13 +96,13 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
                    if pool else None},
         "charts": charts(store, every, now, hours),
         "usd_per_pct": 1 / rate if rate else None,
-        "models": [{"model": r["model"], "harness": r["harness"], "share": r["w"] / total[r["harness"]],
+        "models": [{"model": r["model"], "harness": r["harness"], "provider": r["provider"],
+                    "billing": "api" if r["billing"] == "api" else "plan", "share": r["w"] / total[r["harness"]],
                     "subagents": (r["sub"] or 0) / r["w"]} for r in models],
         "machines": machine_list(machines, store.meta("machines_synced") or {}),
         "sessions": sessions, "accounts": accounts, "alerts": recent, "hits": hits[:6], "track_record": tr,
         "unpriced": {h: m for h in pools.TOOLS for m in [pools.unpriced(store, h, week)] if m},
     }
-    from . import spend
     try:
         snap["spend"] = spend.summary(store, now)
     except Exception as e:   # the limits view must not depend on it
@@ -160,7 +163,6 @@ def _trend(store, rows, now, days):
 def charts(store, every, now, hours=24) -> list[dict]:
     """Every series the browser view can chart: each tool's limit (% of the weekly limit, or $ of an API budget)
     and each provider's tokens, the last `hours` used and the next `hours` forecast."""
-    from . import spend
     out = []
     for p in every:
         hist = pools.history(store, p, now, hours=hours)[0]
@@ -198,7 +200,8 @@ def top_sessions(store, now, rate=None, since_hours=24, limit=8):
     since = now - since_hours * 3600
     W = meter.WEIGHT
     rows = store.conn.execute(
-        f"SELECT session_id, harness, MAX(billing) AS billing, MAX(project) AS project, MAX(machine) AS machine,"
+        f"SELECT session_id, harness, MAX(billing) AS billing, MAX({spend.PROVIDER}) AS provider,"
+        f" MAX(project) AS project, MAX(machine) AS machine,"
         f" MAX(account) AS account,"
         f" SUM({W}) AS w, SUM(COALESCE(cost_usd, 0)) AS usd, COUNT(*) AS n,"
         f" SUM(CASE WHEN subagent THEN {W} ELSE 0 END) AS sub, MIN(ts) AS first, MAX(ts) AS last,"
@@ -236,21 +239,25 @@ def top_sessions(store, now, rate=None, since_hours=24, limit=8):
                                    " ORDER BY ts DESC LIMIT 1", (r["session_id"],)).fetchone()
         name = (names.get(model[2]) if model and model[2] else None) or (model[1] if model and model[1] else r["project"])
         out.append({"session": r["session_id"][:8], "project": name,
-                    "machine": r["machine"], "harness": r["harness"], "pool": pool_of(r),
+                    "machine": r["machine"], "harness": r["harness"], "pool": pool_of(r), "provider": r["provider"],
+                    "billing": "api" if r["billing"] == "api" else "plan", "usd": r["usd"],
                     "share": r["w"] / totals[pool_of(r)], "pct_week": pct(r, r["w"], r["usd"]),
                     "pace": pct(r, r["hour_w"] or 0.0, r["hour_usd"] or 0.0),   # % of its limit in the last hour
                     "hour_usd": r["hour_usd"] or 0.0, "hour_w": r["hour_w"] or 0.0, "requests": r["n"],
                     "subagents": (r["sub"] or 0) / r["w"], "model": model[0] if model else None,
                     "first": r["first"], "last": r["last"], "running": now - r["last"] <= LIVE_SECONDS})
     out.sort(key=lambda x: -(x["pct_week"] if x["pct_week"] is not None else x["share"]))
-    rest = out[limit:]
-    out = out[:limit]
-    what_if(store, now, out, hour_totals)
-    if rest:
-        known = [x["pct_week"] for x in rest if x["pct_week"] is not None]
-        out.append({"session": None, "project": f"{len(rest)} more", "share": None,
-                    "pct_week": sum(known) if known else None, "running": False})
-    return out
+    # the top ones on plans and the top ones on API keys, so either view has its own
+    kept, rest = [], {}
+    for x in out:
+        mine = [y for y in kept if y["billing"] == x["billing"]]
+        (kept.append(x) if len(mine) < limit else rest.setdefault(x["billing"], []).append(x))
+    what_if(store, now, kept, hour_totals)
+    for billing, more in rest.items():
+        known = [x["pct_week"] for x in more if x["pct_week"] is not None]
+        kept.append({"session": None, "project": f"{len(more)} more", "share": None, "billing": billing,
+                     "pct_week": sum(known) if known else None, "usd": sum(x["usd"] or 0 for x in more), "running": False})
+    return kept
 
 
 WHAT_IF_HOURS = 5   # a session is assumed to carry on at its pace for at most this long
@@ -375,8 +382,9 @@ KIND = {"subscription": "plan", "api": "API", "goal": "budget"}
 def machine_list(rows, synced):
     """Machines with usage this week, and any that synced without it: when each last sent usage and,
     on a hub, last synced (every 10 minutes while it runs)."""
-    out = {r["machine"]: {"machine": r["machine"], "last_seen": r["last"], "usd": r["usd"], "requests": r["n"]}
-           for r in rows}
+    out = {r["machine"]: {"machine": r["machine"], "last_seen": r["last"], "usd": r["usd"], "requests": r["n"],
+                          **({"tokens": r["tokens"], "api_tokens": r["api_tokens"], "api_usd": r["api_usd"]}
+                             if "tokens" in r.keys() else {})} for r in rows}
     for m, at in synced.items():
         out.setdefault(m, {"machine": m, "last_seen": None, "usd": 0, "requests": 0})["last_sync"] = at
     return sorted(out.values(), key=lambda x: -max(x.get("last_sync") or 0, x["last_seen"] or 0))
