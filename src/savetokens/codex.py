@@ -6,7 +6,9 @@ meter (`rate_limits`: % used, window length, reset time) in
 harness "codex", the same as Claude Code's statusline readings.
 
 A session on an API key has no plan meter: its usage is marked billing "api"
-and counts against the Codex API budget, if one is set. Codex models have no
+and counts against the Codex API budget, if one is set. So is one on another
+provider (the session's `model_provider`: a custom endpoint, a local server):
+recorded under that provider, as Codex records it, never as OpenAI's plan. Codex models have no
 built-in price; add one with `savetokens price` for API budgets.
 
 Counts only: never prompts, replies or tool output.
@@ -39,6 +41,48 @@ def auth_mode() -> str | None:
         return None
 
 
+LOCAL = {"oss", "ollama", "lmstudio"}
+
+
+def provider_of(pid) -> str | None:
+    """Who serves a session, from its model_provider: None for OpenAI (Codex's own), else the host of the
+    endpoint config.toml gives it (api.example.com -> example.com), else the id Codex records."""
+    pid = (pid or "").strip()
+    if not pid or pid == "openai":
+        return None
+    if pid.lower() in LOCAL:
+        return "local"
+    from .hermes import provider_name
+    try:
+        import tomllib
+        conf = tomllib.loads((codex_home() / "config.toml").read_text())
+        url = ((conf.get("model_providers") or {}).get(pid) or {}).get("base_url")
+    except (OSError, ValueError):
+        url = None
+    return provider_name("custom", url) if url else pid.lower()
+
+
+def fill_providers(store: Store, root: Path | None = None) -> int:
+    """Once: requests read before providers were, from sessions on another provider, put under it and billed
+    as API. Earlier ones were counted as OpenAI's plan."""
+    if store.meta("codex_providers_filled"):
+        return 0
+    n = 0
+    for path in transcripts(root):
+        try:
+            with open(path, "rb") as f:
+                d = json.loads(f.readline())
+        except (OSError, ValueError):
+            continue
+        p = d.get("payload") or {}
+        who = provider_of(p.get("model_provider")) if d.get("type") == "session_meta" else None
+        sid = p.get("id") or p.get("session_id")
+        if who and sid:
+            n += store.relabel(HARNESS, sid, who)
+    store.set_meta("codex_providers_filled", True)
+    return n
+
+
 def _ts(value):
     try:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
@@ -66,6 +110,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
     sid, model, project, sub = state.get("sid"), state.get("model"), state.get("project"), state.get("sub", False)
     cwd, branch = state.get("cwd"), state.get("branch")
     planned = state.get("planned", False)          # this session has shown a plan meter
+    who = state.get("provider")                     # another provider than OpenAI: provider_of
     usage, readings = [], []
     last_total = state.get("total")
     for line in data[:end].splitlines():
@@ -82,6 +127,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
             cwd = p.get("cwd") or cwd
             branch = (p.get("git") or {}).get("branch") or branch
             sub = sub or bool(p.get("parent_thread_id"))
+            who = provider_of(p.get("model_provider")) if "model_provider" in p else who
         elif kind == "turn_context":
             model = p.get("model") or model
         elif kind == "event_msg" and p.get("type") == "token_count":
@@ -113,11 +159,12 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
                 usage.append(e)
     api = billing == "api" or (not planned and billing is None and auth_mode() == "apikey")
     for e in usage:
-        e.billing = "api" if api else None
+        e.billing = "api" if api or who else None
+        e.provider = who
     added = store.add_usage(usage)
     _add_readings(store, readings)
     store.set_meta(f"codex_file:{path.name}", {"sid": sid, "model": model, "project": project, "sub": sub, "cwd": cwd, "branch": branch,
-                                              "planned": planned, "total": last_total})
+                                              "planned": planned, "total": last_total, "provider": who})
     store.set_offset(path, offset + end, size)
     store.conn.commit()
     return added

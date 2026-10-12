@@ -21,14 +21,54 @@
       <button role="tab" id="tab-projects" aria-controls="projects-tab" aria-selected="false">PROJECTS</button>
     </nav>
     <span class="grow"></span>
-    <span class="clock" id="clock"></span>
-    <button type="button" class="live" id="live" title="Refresh every 30 seconds (p)"><span class="dot"></span><span id="live-txt">live</span></button>
-    <button type="button" class="link" id="signout" hidden>sign out</button>
+    <div class="tools">
+      <div class="menu-host" data-menu id="setup" hidden>
+        <button type="button" class="chip" id="setup-btn" aria-expanded="false"><span class="half">◐</span>SETUP <span id="setup-count"></span><span class="caret">▾</span></button>
+        <div class="menu" id="setup-menu" hidden>
+          <div class="menu-head"><span class="cap" id="setup-title">FINISH SETTING UP</span><span class="dim" id="setup-done"></span></div>
+          <div class="progress"><i id="setup-bar"></i></div>
+          <ol id="setup-steps"></ol>
+          <span class="faint small">Or run <code>savetokens setup</code>: it finds your plans and asks for the rest.</span>
+        </div>
+      </div>
+      <div class="menu-host" data-menu id="adder" hidden>
+        <button type="button" class="chip" id="adder-btn" aria-expanded="false"><span class="plus">+</span>ADD MACHINE<span class="caret">▾</span></button>
+        <div class="menu wide" id="adder-menu" hidden>
+          <span class="cap">ADD A MACHINE · LAPTOPS, SERVERS, CI, GPU BOXES</span>
+          <span class="small">One code for up to 10 machines, for 24 hours. Agents already running on them carry on: nothing to restart.</span>
+          <h3>NEW MACHINE</h3>
+          <span class="small dim">Installs savetokens, sets up Claude Code, Codex and Hermes there, and joins this hub.</span>
+          <div class="cmd"><code id="add-cmd">…</code><button class="copy" type="button" id="add-copy">COPY</button></div>
+          <h3>ALREADY HAS SAVETOKENS</h3>
+          <span class="small dim">Including one joined to another or an old hub: it moves here and sends its whole history.</span>
+          <div class="cmd"><code id="add-join">…</code><button class="copy" type="button" id="add-join-copy">COPY</button></div>
+          <h3>CONTAINER OR CI</h3>
+          <div class="menu-foot">
+            <span class="small dim">Rebuilt often, so no join step: two environment variables, kept in its secret store.</span>
+            <button type="button" class="outline" id="add-token">MAKE A TOKEN</button>
+          </div>
+          <div class="cmd" id="add-env-row" hidden><code id="add-env"></code><button class="copy" type="button" id="add-env-copy">COPY</button></div>
+          <span class="small warnc" id="add-env-note" hidden>Shown once. Anyone with it can send usage to this hub.</span>
+          <p class="err" id="add-err" role="alert"></p>
+        </div>
+      </div>
+      <div class="pop-host" tabindex="0">
+        <span class="chip plain"><span class="live-dot" id="live-dot"></span><span id="clock"></span></span>
+        <div class="pop right"><div class="pop-in w320">
+          <span class="kv"><span class="dim">FORECAST</span><span id="pop-forecast"></span></span>
+          <span class="kv"><span class="dim">COVERAGE</span><span id="pop-coverage"></span></span>
+          <span class="kv"><span class="dim">UPDATES</span><span id="pop-updates"></span></span>
+          <span class="dim sep" id="track"></span>
+          <button type="button" class="link" id="live"></button>
+        </div></div>
+      </div>
+      <button type="button" class="link quiet-link" id="signout" hidden>sign out</button>
+    </div>
   </header>
-  <p class="meta" id="meta"></p>
+  <p class="meta" id="meta" hidden></p>
 
-  <section id="signin" class="box signin" hidden>
-    <span class="box-label">┤ SIGN IN ├</span>
+  <section id="signin" class="tile signin" hidden>
+    <span class="legend">┤ SIGN IN ├</span>
     <h1>Sign in</h1>
     <p>Enter a join code: run <code>savetokens pair</code> on a machine connected to this hub, or use the code
       from the line <code>savetokens server --setup</code> printed.</p>
@@ -42,120 +82,91 @@
   </section>
 
   <div id="view" hidden>
-    <div id="headline" class="headline" role="status">
-      <span class="box-label" id="headline-label">┤ STATUS ├</span>
-      <span class="bang" id="headline-bang">!</span>
-      <div class="headline-body">
-        <p id="headline-text"></p>
-        <ul class="pools" id="headline-pools"></ul>
+    <div id="headline" class="headsup" role="status">
+      <span class="legend" id="headline-label">┤ STATUS ├</span>
+      <p id="headline-text"></p>
+      <div class="pop-host" id="ontrack" tabindex="0" hidden>
+        <span class="chip"><span class="tick">✓</span><span id="ontrack-count"></span><span class="caret">▾</span></span>
+        <div class="pop right"><div class="pop-in w380" id="ontrack-list"></div></div>
       </div>
     </div>
 
-    <details id="setup" class="box fold" hidden>
-      <summary><span class="box-label">┤ <span id="setup-title">FINISH SETTING UP</span> ├</span><span class="dim" id="setup-count"></span></summary>
-      <ol id="setup-steps"></ol>
-      <p class="note">Or run <code>savetokens setup</code>: it finds your plans and asks for the rest, one question at a time.</p>
-    </details>
-    <details id="adder" class="box fold" hidden>
-      <summary><span class="box-label">┤ ADD A MACHINE ├</span><span class="dim">laptops, servers, CI, GPU boxes</span></summary>
-      <p>Paste this on each machine. It installs savetokens if needed and joins this hub. It works for 24 hours, for up to 10 machines.</p>
-      <div class="cmd"><code id="add-cmd">…</code><button class="copy" type="button" id="add-copy">COPY</button></div>
-      <p class="note">For CI, containers and short-lived machines, set two environment variables instead:
-        <button type="button" class="link" id="add-token">make a token</button></p>
-      <div class="cmd" id="add-env-row" hidden><code id="add-env"></code><button class="copy" type="button" id="add-env-copy">COPY</button></div>
-      <p class="note" id="add-env-note" hidden>Shown once. Keep it in your CI's secret store; anyone with it can send usage to this hub.</p>
-      <p class="err" id="add-err" role="alert"></p>
-    </details>
-
     <div id="spend" role="tabpanel" aria-labelledby="tab-spend">
-      <div class="hero">
-        <div class="hero-main">
-          <span class="caps dim" id="hero-label">SPEND · THIS MONTH SO FAR</span>
-          <span class="hero-row"><span class="hero-num" id="hero-cost">–</span><span class="hero-sub" id="hero-likely"></span></span>
-        </div>
-        <span class="dim" id="spend-src"></span>
+      <div class="periodbar"><span class="dim small" id="spend-src"></span><div class="seg" id="periods" role="group" aria-label="Period"></div></div>
+      <div class="cards kpis" id="kpis"></div>
+      <div class="split">
+        <section class="tile wide">
+          <span class="legend">┤ BY PROVIDER · <span id="period-name">THIS MONTH</span> ├</span>
+          <div class="legend right pop-host" tabindex="0">
+            <span class="help">how it's counted [?]</span>
+            <div class="pop right"><div class="pop-in w340" id="spend-note"></div></div>
+          </div>
+          <div class="scroll"><div class="grid providers" id="providers">
+            <div class="row head"><span>PROVIDER</span><span class="r">TOKENS</span><span class="r">SPEND</span><span class="r">LIKELY BY END</span><span class="r">API VALUE</span></div>
+          </div></div>
+        </section>
+        <section class="tile side mix-tile">
+          <span class="legend">┤ SPEND MIX ├</span>
+          <div class="mixbar" id="mixbar"></div>
+          <div class="mixlist" id="mixlist"></div>
+          <div class="kv foot-kv"><span class="dim">At API prices, plans save you</span><span id="saved"></span></div>
+        </section>
       </div>
-
-      <section class="box">
-        <span class="box-label">┤ PERIODS ├</span>
-        <div class="scroll"><div class="grid periods" id="periods">
-          <div class="row head"><span>PERIOD</span><span class="r">SO FAR</span><span class="r">LIKELY BY END</span><span class="r">COMING NEXT</span></div>
-        </div></div>
-      </section>
-
-      <section class="box">
-        <span class="box-label">┤ BY PROVIDER · <span id="period-name">THIS MONTH</span> ├</span>
-        <span class="box-aside">select a provider for models and ranges</span>
-        <div class="scroll"><div class="grid providers" id="providers">
-          <div class="row head"><span>PROVIDER</span><span class="r">TOKENS</span><span class="r">SPEND</span><span class="r">LIKELY BY END</span><span class="r">API VALUE</span></div>
-        </div></div>
-      </section>
-      <p class="note" id="spend-note"></p>
     </div>
 
     <div id="limits-tab" role="tabpanel" aria-labelledby="tab-limits" hidden>
-      <section class="box">
-        <span class="box-label">┤ SUBSCRIPTIONS ├</span>
-        <span class="box-aside">plans with usage limits: % of each limit</span>
-        <div class="limits" id="limits"></div>
-      </section>
-      <section class="box" id="api-box" hidden>
-        <span class="box-label">┤ API BUDGETS ├</span>
-        <span class="box-aside">pay as you go: dollars against the budget you set</span>
-        <div class="limits" id="api-limits"></div>
-      </section>
-      <p class="note">Bar: used now, then the likely range at reset. The white tick is the most likely point.</p>
-
-      <section class="box chart-box">
-        <span class="box-label">┤ USAGE PER HOUR ├</span>
-        <span class="box-aside" id="readout"></span>
-        <div class="seg" id="chart-pick" role="group" aria-label="What to chart"></div>
+      <div class="cards" id="limits"></div>
+      <section class="tile chart-tile">
+        <span class="legend">┤ USAGE PER HOUR ├</span>
+        <span class="legend right readout" id="readout"></span>
+        <div class="chart-top">
+          <div class="pills" id="chart-pick" role="group" aria-label="What to chart"></div>
+          <span class="dim small" id="demand-sum"></span>
+        </div>
         <div class="chart">
           <div class="ticks" id="ticks"></div>
           <div class="plot" id="plot"></div>
           <span></span>
           <div class="axis" id="axis"></div>
         </div>
-        <p class="note" id="demand-label"></p>
+        <p class="faint small" id="demand-label"></p>
       </section>
-
-      <section class="box">
-        <span class="box-label">┤ SESSIONS · LAST 24 HOURS ├</span>
-        <span class="box-aside" id="sessions-aside"></span>
-        <div class="scroll"><div class="grid sessions" id="sessions">
-          <div class="row head"><span></span><span>SESSION</span><span>TOOL</span><span class="r">TODAY</span><span class="r">LAST HOUR</span></div>
-        </div></div>
-      </section>
-
-      <button type="button" class="more-toggle" id="more-toggle"><span id="more-sign">+</span><span>MODELS, MACHINES, ALERTS AND LIMITS HIT</span></button>
-      <div class="more" id="more" hidden>
-        <section class="box small"><span class="box-label">┤ MODELS THIS WEEK ├</span><div id="models"></div></section>
-        <section class="box small"><span class="box-label">┤ MACHINES ├</span><div id="machines"></div></section>
-        <section class="box small"><span class="box-label">┤ RECENT ALERTS ├</span><div id="alerts"></div></section>
-        <section class="box small"><span class="box-label">┤ LIMITS HIT · 30 DAYS ├</span><div id="hits"></div></section>
+      <div class="split">
+        <section class="tile wide">
+          <span class="legend">┤ SESSIONS · 24 H ├</span>
+          <span class="legend right" id="sessions-aside"></span>
+          <div class="scroll"><div class="grid sessions" id="sessions">
+            <div class="row head"><span></span><span>SESSION</span><span>TOOL</span><span>TODAY</span><span class="r">LAST HR</span></div>
+          </div></div>
+          <button type="button" class="more-link" id="sessions-more" hidden></button>
+        </section>
+        <section class="tile side">
+          <span class="legend">┤ MODELS THIS WEEK ├</span>
+          <div id="models"></div>
+        </section>
+      </div>
+      <div class="split three">
+        <section class="tile wide"><span class="legend">┤ RECENT ALERTS ├</span><div id="alerts"></div></section>
+        <section class="tile side"><span class="legend">┤ MACHINES ├</span><div id="machines"></div></section>
+        <section class="tile side"><span class="legend">┤ LIMITS HIT · 30D ├</span><div id="hits"></div></section>
       </div>
     </div>
 
     <div id="projects-tab" role="tabpanel" aria-labelledby="tab-projects" hidden>
-      <section class="box">
-        <span class="box-label">┤ PROJECTS · <span id="projects-days">LAST 30 DAYS</span> ├</span>
-        <span class="box-aside">select a project for where its tokens went and its tasks</span>
-        <div class="scroll"><div class="grid projects" id="projects">
-          <div class="row head"><span>PROJECT</span><span class="r">TOKENS</span><span class="r">AT API PRICES</span><span class="r">PAID AS API</span><span>WHERE IT WENT</span></div>
-        </div></div>
-        <p class="note" id="projects-note"></p>
+      <div class="periodbar"><span class="dim small" id="projects-days"></span></div>
+      <div class="projcards" id="projects"></div>
+      <p class="faint small" id="projects-note"></p>
+      <section class="tile budgets-tile">
+        <span class="legend">┤ BUDGETS ├</span>
+        <span class="legend right">overall, project and task budgets you set</span>
+        <div class="cards flat" id="budget-cards"></div>
       </section>
-      <section class="box">
-        <span class="box-label">┤ BUDGETS ├</span>
-        <span class="box-aside">overall, project and task budgets you set</span>
-        <div class="limits" id="budget-cards"></div>
-      </section>
-      <p class="note">At API prices: what the usage would cost pay-as-you-go. Paid as API: what was billed that way,
+      <p class="faint small">At API prices: what the usage would cost pay-as-you-go. Paid as API: what was billed that way,
         real money; the rest is on plans. <span class="badge sub">PLAN</span><span class="badge api">API</span> mark which.</p>
     </div>
 
     <p class="foot">Read-only. Only token counts, costs and limit readings reach this page: never prompts, replies,
-      code or file contents. <span id="track"></span></p>
+      code or file contents.</p>
   </div>
 </main>
 

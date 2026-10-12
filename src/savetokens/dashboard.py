@@ -95,8 +95,7 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
         "usd_per_pct": 1 / rate if rate else None,
         "models": [{"model": r["model"], "harness": r["harness"], "share": r["w"] / total[r["harness"]],
                     "subagents": (r["sub"] or 0) / r["w"]} for r in models],
-        "machines": [{"machine": r["machine"], "last_seen": r["last"], "usd": r["usd"], "requests": r["n"]}
-                     for r in machines],
+        "machines": machine_list(machines, store.meta("machines_synced") or {}),
         "sessions": sessions, "accounts": accounts, "alerts": recent, "hits": hits[:6], "track_record": tr,
         "unpriced": {h: m for h in pools.TOOLS for m in [pools.unpriced(store, h, week)] if m},
     }
@@ -127,8 +126,35 @@ def project_view(store, now, days=30, most=25) -> dict:
     budgets = [o for o in forecast.outlook(store, now, goals=True) if o["kind"] == "goal"]
     for o in budgets:
         o["stage"] = alerts.stage(o, now)
-    return {"days": days, "list": rows[:most], "more": max(0, len(rows) - most), "budgets": budgets,
-            "unnamed": sum(1 for p in rows[:most] if not p["name"])}
+    shown = rows[:most]
+    _trend(store, shown, now, days)
+    return {"days": days, "list": shown, "more": max(0, len(rows) - most), "budgets": budgets,
+            "unnamed": sum(1 for p in shown if not p["name"])}
+
+
+TREND_DAYS = 7
+
+
+def _trend(store, rows, now, days):
+    """Each project's tokens in each of the last 7 days (24-hour steps back from now, the latest last), and its
+    sessions in the window."""
+    from .spend import TOKENS
+    if not rows:
+        return
+    ids = [p["id"] for p in rows]
+    marks = ",".join("?" * len(ids))
+    start = now - TREND_DAYS * 86400
+    by = {i: [0] * TREND_DAYS for i in ids}
+    for pid, d, t in store.conn.execute(
+            f"SELECT project_id, CAST((ts - ?) / 86400 AS INTEGER), SUM({TOKENS}) FROM usage"
+            f" WHERE project_id IN ({marks}) AND ts >= ? GROUP BY 1, 2", (start, *ids, start)):
+        if 0 <= d < TREND_DAYS:
+            by[pid][d] += t
+    sessions = dict(store.conn.execute(
+        f"SELECT project_id, COUNT(DISTINCT session_id) FROM usage WHERE project_id IN ({marks}) AND ts >= ?"
+        " GROUP BY 1", (*ids, now - days * 86400)).fetchall())
+    for p in rows:
+        p["last_days"], p["sessions"] = by[p["id"]], sessions.get(p["id"], 0)
 
 
 def charts(store, every, now, hours=24) -> list[dict]:
@@ -344,6 +370,16 @@ def bar(used, p10, p50, p90, width=40) -> str:
 
 
 KIND = {"subscription": "plan", "api": "API", "goal": "budget"}
+
+
+def machine_list(rows, synced):
+    """Machines with usage this week, and any that synced without it: when each last sent usage and,
+    on a hub, last synced (every 10 minutes while it runs)."""
+    out = {r["machine"]: {"machine": r["machine"], "last_seen": r["last"], "usd": r["usd"], "requests": r["n"]}
+           for r in rows}
+    for m, at in synced.items():
+        out.setdefault(m, {"machine": m, "last_seen": None, "usd": 0, "requests": 0})["last_sync"] = at
+    return sorted(out.values(), key=lambda x: -max(x.get("last_sync") or 0, x["last_seen"] or 0))
 
 
 def pool_status(snap) -> list[dict]:

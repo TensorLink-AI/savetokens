@@ -337,8 +337,10 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
         if has_hermes and not add_hermes_mcp(executable()):
             out("Hermes's mcp_servers is written inline, so the MCP server isn't added there; the skill still"
                 " works. Later: hermes mcp add savetokens --command savetokens --args mcp")
-    from . import maintain
+    from . import maintain, sync
     with Store() as s:
+        if server:
+            sync.restart(s)   # joining a hub (perhaps another one): send it everything
         n = capture.backfill(s)
         m = import_old_meter(s)
         maintain.run(s)

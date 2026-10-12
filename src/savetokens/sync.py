@@ -65,10 +65,29 @@ def _project_key(store, cfg):
     store.set_meta("project_key_checked", time.time())
 
 
+def restart(store: Store):
+    """Forget what was sent to and pulled from a hub, so the next sync sends this machine's whole history
+    (and its budgets and names) and reads the other machines' from the start. The hub ignores rows it has."""
+    store.conn.execute("DELETE FROM meta WHERE key LIKE 'pushed:%' OR key LIKE 'pulled:%'"
+                       " OR key IN ('project_key_checked', 'hub_url')")
+    store.conn.commit()
+
+
+def _same_hub(store: Store, cfg):
+    """A different hub than last time (another join line, or SAVETOKENS_SERVER changed): start over with it."""
+    url = settings(cfg)["server_url"].rstrip("/")
+    prev = store.meta("hub_url")
+    if prev and prev != url:
+        restart(store)
+    if prev != url:
+        store.set_meta("hub_url", url)
+
+
 def push(store: Store, cfg) -> int:
     """This machine's new rows, in batches. Returns rows sent."""
     sent = 0
     machine = store.machine
+    _same_hub(store, cfg)
     _project_key(store, cfg)
     for table, cols in SYNCED.items():
         legacy = time.time() - (store.meta("hub_legacy_usage") or 0) < LEGACY_RETRY
@@ -169,4 +188,40 @@ def pull(store: Store, cfg) -> dict:
         store.set_meta("hub_goal_spent", got["goal_spent"])
     if "projects" in got:
         store.set_meta("hub_projects", {"at": got.get("projects_at"), "totals": got["projects"]})
+    if got.get("hub_url"):
+        follow(store, cfg, got["hub_url"])
     return {"meter": len((got.get("meter") or {}).get("rows", [])), "paths": len(got.get("paths", []))}
+
+
+def follow(store: Store, cfg, url):
+    """The hub's own address, when it has one saved and it isn't the one this machine uses: switch to it if it
+    answers from here, so a hub that moves takes its machines with it. Set by environment: left alone."""
+    url = url.rstrip("/")
+    now = (cfg.get("server_url") or "").rstrip("/")
+    if not now or now == url or now.startswith(("http://127.0.0.1", "http://localhost")):
+        return False
+    try:
+        _call({**cfg, "server_url": url}, "/v1/project-key", timeout=10)
+    except Exception:   # not reachable from here (a private address, say): keep the one that works
+        return False
+    from .store import load_config, save_config
+    saved = load_config()
+    if (saved.get("server_url") or "").rstrip("/") == now:
+        saved["server_url"] = url
+        save_config(saved)
+    cfg["server_url"] = url
+    store.set_meta("hub_url", url)   # the same hub: nothing to send again
+    return True
+
+
+def trouble(store: Store, cfg, now=None):
+    """When the hub hasn't been reached since the last sync that worked: what to do about it. None when fine."""
+    err = store.meta("sync_error") if connected(cfg) else None
+    if not err:
+        return None
+    since = store.meta("synced_at")
+    from .alerts import span
+    when = f"for {span((now or time.time()) - since)}" if since else "yet"
+    return (f"hub {settings(cfg)['server_url']} not reached {when} ({err['error']}). Usage is kept here and sent"
+            " when it answers. If the hub moved: a new join line from its dashboard (Add a machine), then"
+            " savetokens join URL CODE")

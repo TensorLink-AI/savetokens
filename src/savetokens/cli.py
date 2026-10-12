@@ -277,6 +277,9 @@ def cmd_status(args):
         trouble = ephemeris.problem(s) if not sync.connected(cfg) else None
         if trouble:
             print("⚠ " + ephemeris.problem_text(trouble))
+        hub = sync.trouble(s, cfg, now)
+        if hub:
+            print("⚠ " + hub)
         src = looks[0]["source"] if looks else None
         made = s.meta("forecast_made_at")
         how = {"ephemeris": "Ephemeris", "baseline": "local baseline", None: "none yet"}[src]
@@ -1065,6 +1068,7 @@ def cmd_join(args):
     cfg.update(server_url=args.url, server_token=token)
     save_config(cfg)
     with Store() as s:
+        sync.restart(s)   # a hub it may never have sent to: all of the history, budgets and names
         n = sync.push(s, cfg)
         got = sync.pull(s, cfg)
     _out(args, {"server": args.url, "sent": n, "received": got["meter"]},
@@ -1084,8 +1088,8 @@ def cmd_pair(args):
 
     from .server import join_command
     got = sync._call(cfg, "/v1/pair", {"machines": args.machines, "hours": args.hours})
-    url = sync.settings(cfg)["server_url"].rstrip("/")
-    if url.startswith(("http://127.0.0.1", "http://localhost")):   # this is the hub: give the address others use
+    url = (got.get("url") or sync.settings(cfg)["server_url"]).rstrip("/")   # the hub knows its public address
+    if url.startswith(("http://127.0.0.1", "http://localhost")):   # an older hub: give the address others use
         from . import hub
         url = hub.address(urllib.parse.urlparse(url).port or 8787)[0]
     cmd = join_command(url, got["code"])
@@ -1117,6 +1121,7 @@ def cmd_connect(args):
         raise Fail("connect needs URL and --token (or --off)", "savetokens join URL CODE (no token needed)", USAGE)
     cfg.update(server_url=args.url, server_token=args.token)
     with Store() as s:
+        sync.restart(s)
         n = sync.push(s, cfg)
         got = sync.pull(s, cfg)
     save_config(cfg)
