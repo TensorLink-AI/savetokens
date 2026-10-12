@@ -72,7 +72,9 @@ function el(tag, cls, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k instanceof Node ? k : String(k));
   return e;
 }
-function clear(node, keep = 0) { while (node.childNodes.length > keep) node.lastChild.remove(); return node; }
+function clear(node) { while (node.firstChild) node.firstChild.remove(); return node; }
+// a table's rows go, its heading row (.row.head) stays
+function clearRows(node) { for (const c of [...node.childNodes]) if (!(c.classList && c.classList.contains("head"))) c.remove(); return node; }
 const empty = (text) => el("div", "empty", text);
 
 // ── view state ──
@@ -81,7 +83,7 @@ const PERIOD = { day: ["Today", "Next 24 hours", "by midnight", "24 h"], week: [
 let tab = store.get("st_tab") || "limits";
 let period = store.get("st_period") || "month";
 let live = store.get("st_live") !== "off";
-let sel = null, more = store.get("st_more") === "1", hover = null;
+let sel = null, more = store.get("st_more") === "1";
 const open = {};
 let last = null;
 
@@ -107,7 +109,7 @@ function drawHeadline(s) {
 // ── spend ──
 function drawSpend(s) {
   const sp = s.spend, rows = $("periods"), prov = $("providers");
-  clear(rows, 1); clear(prov, 1);
+  clearRows(rows); clearRows(prov);
   if (!sp || sp.error || !sp.periods) {
     rows.append(empty(sp && sp.error ? `Couldn't work out spend: ${sp.error}` : "No usage yet."));
     $("hero-cost").textContent = "–"; $("hero-likely").textContent = "";
@@ -206,15 +208,32 @@ function drawLimits(s) {
   for (const o of s.limits) box.append(limitCard(o, s.now));
 }
 
+let chartId = store.get("st_chart");
+const SHORT = (c) => c.group === "providers" ? c.label.replace(" tokens (millions)", " tokens")
+  : c.label.replace(" % of weekly limit", " limit").replace(" API $", " API spend");
+
 function drawChart(s) {
-  const d = s.demand || {}, plot = clear($("plot")), ticks = clear($("ticks")), axis = clear($("axis"));
+  // every series the hub sends (each tool's limit, each provider's tokens); an older one sends just `demand`
+  const list = (s.charts && s.charts.length) ? s.charts
+    : s.demand ? [{ id: s.demand.pool || "demand", group: "limits", ...s.demand }] : [];
+  const d = list.find((c) => c.id === chartId) || list.find((c) => s.demand && c.id === s.demand.pool) || list[0] || {};
+  const pick = clear($("chart-pick"));
+  if (list.length > 1) for (const c of list) {
+    const b = el("button", null, SHORT(c));
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(c.id === d.id));
+    b.addEventListener("click", () => { chartId = c.id; store.set("st_chart", c.id); drawChart(last); });
+    pick.append(b);
+  }
+  const plot = clear($("plot")), ticks = clear($("ticks")), axis = clear($("axis"));
   const past = d.past || [], next = d.next || [], lo = d.next_lo || [], hi = d.next_hi || [];
   $("demand-label").textContent = d.label ? `${d.label}, per hour. Solid: used. Outline: forecast. Hover any hour.` : "";
-  if (!past.length && !next.length) { plot.append(empty("No usage yet.")); $("readout").textContent = ""; return; }
-  const unit = d.unit === "$" ? "$" : "%";
-  const fmt = (v, dp = 1) => (unit === "$" ? `$${v.toFixed(dp + 1)}` : `${v.toFixed(dp)}%`);
+  if (!past.some((v) => v > 0) && !next.some((v) => v > 0)) { plot.append(empty("No usage yet.")); $("readout").textContent = ""; return; }
+  const unit = d.unit === "$" ? "$" : d.unit === "M" ? "M" : "%";
+  const fmt = (v, dp = 1) => unit === "$" ? `$${v.toFixed(dp + 1)}` : unit === "M" ? `${v.toFixed(v < 10 ? dp : 0)}M tokens` : `${v.toFixed(dp)}%`;
+  const tickTxt = (v) => unit === "$" ? `$${fmtNum(v)}` : unit === "M" ? `${fmtNum(v)}M` : `${fmtNum(v)}%`;
   const top = niceTop(Math.max(0.0001, ...past, ...next, ...hi));
-  for (const v of [top, top / 2, 0]) ticks.append(el("span", null, unit === "$" ? `$${fmtNum(v)}` : `${fmtNum(v)}%`));
+  for (const v of [top, top / 2, 0]) ticks.append(el("span", null, tickTxt(v)));
   plot.classList.toggle("dense", past.length + next.length > 72);
   const bars = [];
   past.forEach((v, i) => bars.push({ cls: "past", v, hour: d.start != null ? d.start + i * 3600 : null }));
@@ -228,19 +247,20 @@ function drawChart(s) {
   };
   bars.forEach((b, i) => {
     const col = el("div", `bar ${b.cls}` + (b.first ? " now" : ""));
+    col.title = b.hour != null ? when(b.hour, s.now) : "";
     if (b.cls === "next" && b.hi != null) {
       const r = el("div", "rng"); r.style.bottom = `${(100 * (b.lo || 0)) / top}%`;
       r.style.height = `${(100 * Math.max(0, b.hi - (b.lo || 0))) / top}%`; col.append(r);
     }
     const v = el("div", "val"); v.style.height = `${(100 * b.v) / top}%`; col.append(v);
-    col.addEventListener("mouseenter", () => { hover = i; plot.classList.add("hovering"); col.classList.add("hover"); readout(b); });
-    col.addEventListener("mouseleave", () => { hover = null; plot.classList.remove("hovering"); col.classList.remove("hover");
+    col.addEventListener("mouseenter", () => { plot.classList.add("hovering"); col.classList.add("hover"); readout(b); });
+    col.addEventListener("mouseleave", () => { plot.classList.remove("hovering"); col.classList.remove("hover");
                                                readout(bars[past.length] || bars[bars.length - 1]); });
     plot.append(col);
   });
   readout(bars[past.length] || bars[bars.length - 1]);
   const end = d.now_hour != null ? d.now_hour + (next.length - 1) * 3600 : null;
-  for (const t of [d.start != null ? when(d.start, s.now) : "", "now", end != null ? when(end, s.now) : ""]) axis.append(el("span", null, t));
+  for (const x of [d.start != null ? when(d.start, s.now) : "", "now", end != null ? when(end, s.now) : ""]) axis.append(el("span", null, x));
 }
 
 // ── sessions ──
@@ -255,7 +275,7 @@ function pauseText(x, now) {
 }
 
 function drawSessions(s) {
-  const box = clear($("sessions"), 1), rows = s.sessions || [];
+  const box = clearRows($("sessions")), rows = s.sessions || [];
   const running = rows.filter((x) => x.running).length;
   $("sessions-aside").textContent = rows.length ? `${running} running · select one to see what pausing it would do` : "";
   if (!rows.length) { box.append(empty("No sessions in the last 24 hours.")); return; }
@@ -267,7 +287,8 @@ function drawSessions(s) {
     const id = x.session, name = x.project || x.session;
     const tool = (TOOLS[x.harness] || x.harness || "") + (x.pool && x.pool.endsWith(":api") ? " · API" : "");
     const r = el("div", "row click" + (sel === id ? " sel" : ""), el("span", "dot" + (x.running ? " on" : "")),
-      el("span", "name", name), el("span", null, tool), el("span", "r today", pct(x.pct_week, 1)),
+      el("span", "name", name, x.project ? el("span", "sid", id) : null), el("span", null, tool),
+      el("span", "r today", pct(x.pct_week, 1)),
       el("span", "r", x.running && x.pace ? pct(x.pace, 1) : "–"));
     r.tabIndex = 0;
     const pick = () => { sel = sel === id ? null : id; drawSessions(last); };

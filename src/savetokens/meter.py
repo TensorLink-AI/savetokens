@@ -39,12 +39,18 @@ def hour_floor(ts):
     return int(ts // HOUR) * HOUR
 
 
+RESET_LOOKAHEAD = HOUR   # a lower reading with nothing back at the old level within this long is a reset
+
+
 def readings(store, name, since=0, until=None, account=None, harness=CLAUDE):
-    """[(ts, account, pct, resets)] oldest first, each pct the highest seen so far in its window.
+    """[(ts, account, pct, resets)] oldest first, stale readings raised to the level they lag behind.
 
     Every open session reports the meter as it last saw it, so an idle session keeps sending an older,
-    lower value. The meter never falls within a window, so a lower reading is stale: it is raised to
-    the window's running maximum instead of looking like the meter went down and back up.
+    lower value while active ones report the current one. Such a lower reading is stale: it is raised to
+    the window's running maximum. But a limit can also be reset early with its reset time unchanged: then
+    the meter really drops, and no reading comes back to the old level. So a lower reading counts as stale
+    only if a reading at the old level follows within RESET_LOOKAHEAD; if readings follow and all stay
+    lower, the window starts again from it (until readings follow, it can't be told, and stays stale).
     """
     q = "SELECT ts, account, pct, resets FROM meter WHERE harness = ? AND name = ? AND ts >= ? AND resets IS NOT NULL"
     p = [harness, name, since]
@@ -54,9 +60,28 @@ def readings(store, name, since=0, until=None, account=None, harness=CLAUDE):
     if account is not None:
         q += " AND account IS ?"
         p.append(account)
+    rows = store.conn.execute(q + " ORDER BY ts", p).fetchall()
+    # per (account, window): the highest reading from each reading's time to RESET_LOOKAHEAD after it
+    ahead, later = [0.0] * len(rows), [False] * len(rows)
+    by = defaultdict(list)
+    for i, (ts, acct, pct, resets) in enumerate(rows):
+        by[(acct, round(resets / HOUR))].append(i)
+    for idx in by.values():
+        window = []                           # a monotone deque of (ts, pct) over the next hour, scanning back
+        for k in range(len(idx) - 1, -1, -1):
+            ts, pct = rows[idx[k]][0], rows[idx[k]][2]
+            while window and window[0][0] > ts + RESET_LOOKAHEAD:
+                window.pop(0)
+            ahead[idx[k]] = max([pct] + [w[1] for w in window])
+            later[idx[k]] = bool(window)       # readings after it, within the lookahead, to judge it by
+            while window and window[-1][1] <= pct:
+                window.pop()
+            window.append((ts, pct))
     top, out = {}, []
-    for ts, acct, pct, resets in store.conn.execute(q + " ORDER BY ts", p):
+    for i, (ts, acct, pct, resets) in enumerate(rows):
         key = (acct, round(resets / HOUR))
+        if key in top and pct < top[key] and later[i] and ahead[i] < top[key]:
+            top[key] = pct                    # reset early: what follows stays below the old level
         top[key] = max(top.get(key, pct), pct)
         out.append((ts, acct, top[key], resets))
     return out
@@ -74,9 +99,9 @@ def latest(store, name, now, account=None, harness=CLAUDE):
     if not r:
         return None
     out = dict(r)
-    out["pct"] = store.conn.execute(
-        "SELECT MAX(pct) FROM meter WHERE harness = ? AND name = ? AND account IS ? AND ABS(resets - ?) < 1800"
-        " AND ts <= ?", (harness, name, r["account"], r["resets"], now)).fetchone()[0]
+    seen = [x for x in readings(store, name, since=r["resets"] - WEEK - HOUR, until=now + 1, account=r["account"],
+                                harness=harness) if abs(x[3] - r["resets"]) < 1800]
+    out["pct"] = seen[-1][2] if seen else r["pct"]   # stale readings raised; an early reset followed
     return out
 
 
@@ -119,7 +144,7 @@ def _rises(rows):
                     out.append((last[window][0], ts, pct - last[window][1]))
             elif not first and pct > 0:   # a new window: its usage so far happened since it opened, or since the last reading
                 out.append((max(resets - WEEK, prev_ts), ts, pct))
-            if window not in last or pct >= last[window][1]:
+            if window not in last or pct != last[window][1]:   # higher: used; lower: reset early
                 last[window] = (ts, pct)
             prev_ts, first = ts, False
     return out
@@ -148,17 +173,39 @@ def _spread(t0, t1, amount, usd, into):
         into[h] += amount * x / total
 
 
-def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE) -> float | None:
+def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE, account=None) -> float | None:
     """% of the weekly limit per captured dollar (per WEIGHT unit), where both are known.
 
     Measured over runs of readings (same account and window, no gap over `gap`), so whole-%
-    steps and the lag between a request and its reading average out.
+    steps and the lag between a request and its reading average out. With `account`, from that
+    account's readings and usage only (a Max 5x and a Max 20x account have different rates), falling
+    back to every account's together until it has enough of its own.
     """
+    if account is not None:
+        own = _rate(store, until, gap, harness, account)
+        return own if own is not None else _rate(store, until, gap, harness, None)
+    return _rate(store, until, gap, harness, None)
+
+
+def _rate(store, until, gap, harness, account):
+    """(% points, dollars) summed over each account's runs of readings, each against its own usage; as a rate."""
+    pct = dollars = 0.0
+    # every named account on its own (readings without one only when there's no named account at all:
+    # readings(account=None) is every reading, so mixing it in would count them twice)
+    accts = [account] if account is not None else ([a for a in accounts(store, harness) if a] or [None])
+    for acct in accts:
+        p, d = _account_rate(store, until, gap, harness, acct)
+        pct += p
+        dollars += d
+    return pct / dollars if dollars > 0 else None
+
+
+def _account_rate(store, until, gap, harness, account):
     import bisect
     runs, cur, key = [], None, None
-    for ts, acct, pct, resets in readings(store, "seven_day", until=until, harness=harness):
-        k = (acct, round(resets / HOUR))
-        if cur and k == key and ts - cur[1] <= gap:
+    for ts, _, pct, resets in readings(store, "seven_day", until=until, account=account, harness=harness):
+        k = round(resets / HOUR)
+        if cur and k == key and ts - cur[1] <= gap and pct >= cur[3]:
             cur[1], cur[3] = ts, pct
         else:
             if cur:
@@ -168,10 +215,14 @@ def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE) -> float | None:
         runs.append(cur)
     runs = [r for r in runs if r[3] > r[2]]
     if not runs:
-        return None
+        return 0.0, 0.0
     rows = store.conn.execute(f"SELECT ts, {WEIGHT} AS w FROM usage WHERE harness = ? AND {SUBSCRIPTION}"
-                              f" AND ts > ? AND ts <= ? AND {WEIGHT} > 0 ORDER BY ts",
-                              (harness, min(r[0] for r in runs), max(r[1] for r in runs))).fetchall()
+                              f" AND ts > ? AND ts <= ? AND {WEIGHT} > 0 AND account IS ? ORDER BY ts",
+                              (harness, min(r[0] for r in runs), max(r[1] for r in runs), account)).fetchall()
+    if not rows and account is not None:   # usage read before accounts were kept: count it all
+        rows = store.conn.execute(f"SELECT ts, {WEIGHT} AS w FROM usage WHERE harness = ? AND {SUBSCRIPTION}"
+                                  f" AND ts > ? AND ts <= ? AND {WEIGHT} > 0 ORDER BY ts",
+                                  (harness, min(r[0] for r in runs), max(r[1] for r in runs))).fetchall()
     ts, cum = [r[0] for r in rows], [0.0]
     for r in rows:
         cum.append(cum[-1] + r[1])
@@ -181,7 +232,7 @@ def rate(store, until=None, gap=2 * HOUR, harness=CLAUDE) -> float | None:
         if d > 0:
             pct += p1 - p0
             dollars += d
-    return pct / dollars if dollars > 0 else None
+    return pct, dollars
 
 
 def five_hour_ratio(store, until=None, harness=CLAUDE) -> float:

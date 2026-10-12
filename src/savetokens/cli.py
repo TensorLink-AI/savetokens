@@ -317,7 +317,7 @@ def cmd_status(args):
             print("\ntrack record (forecasts whose hours have all passed; error per hour in % of the weekly limit):")
             for provider, r in sorted(tr.items(), key=lambda kv: kv[1]["mae"]):
                 print(f"  {provider:10} off by {r['mae']:.2f} points an hour on average, over {r['forecasts']} forecasts")
-        rate, ratio = meter.rate(s), meter.five_hour_ratio(s)
+        rate, ratio = meter.rate(s, account=meter.active_account(s)), meter.five_hour_ratio(s)
         if rate:
             print(f"\n1% of the weekly limit ≈ ${1 / rate:,.2f} of usage at API prices; the 5-hour meter moves"
                   f" {ratio:.1f}x as fast")

@@ -51,7 +51,7 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     every = pools.pools(store, now)
     pool = focus(looks, every)
     hist = pools.history(store, pool, now, hours=hours)[0] if pool else []
-    rate = meter.rate(store)
+    rate = meter.rate(store, account=acct)
     source = looks[0]["source"] if looks else forecast.preferred_source(store, acct)
     week = now - 7 * 86400
     models = store.conn.execute(
@@ -91,6 +91,7 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
                    "pool": pool.id if pool else None, "unit": "$" if pool and pool.kind == "api" else "%",
                    "label": (f"{pool.tool} API $" if pool.kind == "api" else f"{pool.tool} % of weekly limit")
                    if pool else None},
+        "charts": charts(store, every, now, hours),
         "usd_per_pct": 1 / rate if rate else None,
         "models": [{"model": r["model"], "harness": r["harness"], "share": r["w"] / total[r["harness"]],
                     "subagents": (r["sub"] or 0) / r["w"]} for r in models],
@@ -112,6 +113,26 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     level, text = headline(snap)
     snap["headline"] = {"level": level, "text": text}
     return snap
+
+
+def charts(store, every, now, hours=24) -> list[dict]:
+    """Every series the browser view can chart: each tool's limit (% of the weekly limit, or $ of an API budget)
+    and each provider's tokens, the last `hours` used and the next `hours` forecast."""
+    from . import spend
+    out = []
+    for p in every:
+        hist = pools.history(store, p, now, hours=hours)[0]
+        fc = _hourly_forecast(store, p.key, forecast.preferred_source(store, p.key), now, hours)
+        if hist or fc:
+            out.append({"id": p.id, "group": "limits", "unit": "$" if p.kind == "api" else "%",
+                        "label": f"{p.tool} API $" if p.kind == "api" else f"{p.tool} % of weekly limit",
+                        **demand_view(hist, fc, now, hours)})
+    for prov, hist in spend.series(store, now):
+        k = spend.key(prov)
+        fc = _hourly_forecast(store, k, forecast.preferred_source(store, k), now, hours)
+        out.append({"id": k, "group": "providers", "unit": "M", "label": f"{spend.label(prov)} tokens (millions)",
+                    **demand_view(hist, fc, now, hours)})
+    return out
 
 
 def demand_view(hist, fc, now, hours):
@@ -136,6 +157,7 @@ def top_sessions(store, now, rate=None, since_hours=24, limit=8):
     W = meter.WEIGHT
     rows = store.conn.execute(
         f"SELECT session_id, harness, MAX(billing) AS billing, MAX(project) AS project, MAX(machine) AS machine,"
+        f" MAX(account) AS account,"
         f" SUM({W}) AS w, SUM(COALESCE(cost_usd, 0)) AS usd, COUNT(*) AS n,"
         f" SUM(CASE WHEN subagent THEN {W} ELSE 0 END) AS sub, MIN(ts) AS first, MAX(ts) AS last,"
         f" SUM(CASE WHEN ts >= ? THEN {W} ELSE 0 END) AS hour_w,"
@@ -144,15 +166,18 @@ def top_sessions(store, now, rate=None, since_hours=24, limit=8):
         (now - 3600, now - 3600, since)).fetchall()
     budgets = pools.budgets(store)
     rates = {}
+    active = meter.active_account(store, now)   # the account `rate` (when given) was measured for
 
     def pct(r, w, usd):
         """% of the session's own limit for `w` (its weight) or `usd` (on an API key)."""
         if r["billing"] == "api":
             b = budgets.get(r["harness"])
             return 100.0 * usd / b["usd"] if b and b["usd"] > 0 else None
-        if r["harness"] not in rates:
-            rates[r["harness"]] = rate if rate and r["harness"] == meter.CLAUDE else meter.rate(store, harness=r["harness"])
-        k = rates[r["harness"]]
+        key = (r["harness"], r["account"])   # each account's own rate: a 5x and a 20x plan differ
+        if key not in rates:
+            given = rate and r["harness"] == meter.CLAUDE and r["account"] in (None, active)
+            rates[key] = rate if given else meter.rate(store, harness=r["harness"], account=r["account"])
+        k = rates[key]
         return w * k if k else None
 
     def pool_of(r):
@@ -162,10 +187,13 @@ def top_sessions(store, now, rate=None, since_hours=24, limit=8):
         totals[pool_of(r)] = totals.get(pool_of(r), 0.0) + r["w"]
         hour_totals[pool_of(r)] = hour_totals.get(pool_of(r), 0.0) + (r["hour_w"] or 0.0)
     out = []
+    from . import projects
+    names = projects.names(store)
     for r in rows:
-        model = store.conn.execute("SELECT model, project FROM usage WHERE session_id = ? AND NOT subagent"
+        model = store.conn.execute("SELECT model, project, project_id FROM usage WHERE session_id = ? AND NOT subagent"
                                    " ORDER BY ts DESC LIMIT 1", (r["session_id"],)).fetchone()
-        out.append({"session": r["session_id"][:8], "project": (model[1] if model and model[1] else r["project"]),
+        name = (names.get(model[2]) if model and model[2] else None) or (model[1] if model and model[1] else r["project"])
+        out.append({"session": r["session_id"][:8], "project": name,
                     "machine": r["machine"], "harness": r["harness"], "pool": pool_of(r),
                     "share": r["w"] / totals[pool_of(r)], "pct_week": pct(r, r["w"], r["usd"]),
                     "pace": pct(r, r["hour_w"] or 0.0, r["hour_usd"] or 0.0),   # % of its limit in the last hour

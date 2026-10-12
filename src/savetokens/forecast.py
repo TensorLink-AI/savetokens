@@ -278,7 +278,7 @@ def _pool_outlook(store, p, now, source, cut, cut_hours):
         scale = meter.five_hour_ratio(store, harness=p.harness) if name == "five_hour" else 1.0
         used = r["pct"]
         if now - r["ts"] > 600:   # a stale reading: add what was captured since, at the meter's rate
-            rate = rate if rate is not None else (meter.rate(store, harness=p.harness) or 0.0)
+            rate = rate if rate is not None else (meter.rate(store, harness=p.harness, account=acct) or 0.0)
             since = store.conn.execute(f"SELECT COALESCE(SUM({meter.WEIGHT}), 0) FROM usage WHERE harness = ?"
                                        f" AND {meter.SUBSCRIPTION} AND ts > ? AND ts <= ?",
                                        (p.harness, r["ts"], now)).fetchone()[0]

@@ -20,7 +20,10 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index
          # the page's two typefaces, served from here (SIL Open Font License: fonts/*-OFL.txt)
          "/fonts/archivo-black.woff2": ("fonts/archivo-black.woff2", "font/woff2"),
          "/fonts/archivo-black-ext.woff2": ("fonts/archivo-black-ext.woff2", "font/woff2"),
-         "/fonts/share-tech-mono.woff2": ("fonts/share-tech-mono.woff2", "font/woff2")}
+         "/fonts/ibm-plex-mono-latin-400.woff2": ("fonts/ibm-plex-mono-latin-400.woff2", "font/woff2"),
+         "/fonts/ibm-plex-mono-latin-600.woff2": ("fonts/ibm-plex-mono-latin-600.woff2", "font/woff2"),
+         "/fonts/ibm-plex-mono-latin-ext-400.woff2": ("fonts/ibm-plex-mono-latin-ext-400.woff2", "font/woff2"),
+         "/fonts/ibm-plex-mono-latin-ext-600.woff2": ("fonts/ibm-plex-mono-latin-ext-600.woff2", "font/woff2")}
 HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; font-src 'self';"
                                " img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",

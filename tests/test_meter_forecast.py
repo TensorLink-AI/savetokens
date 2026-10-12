@@ -115,3 +115,35 @@ def test_stale_readings_from_idle_sessions_are_not_counted_as_usage(store):
     hist, _ = meter.demand(store, T0)
     assert abs(sum(v for _, v in hist) - 2.0) < 1e-9
     assert meter.latest(store, "seven_day", T0, "a1")["pct"] == 3.0       # not the idle session's 1%
+
+
+def test_each_account_has_its_own_rate_so_a_5x_and_a_20x_plan_dont_blend(store):
+    from savetokens import meter
+    from savetokens.store import Usage
+    for acct, pct_per_usd in (("max5", 0.4), ("max20", 0.1)):   # a 5x plan fills four times as fast per dollar
+        for i in range(12):
+            t = T0 - 12 * H + i * H
+            store.add_meter("claude-code", acct, {"seven_day": (pct_per_usd * 10 * (i + 1), T0 + 3 * 86400)}, ts=t)
+            store.add_usage([Usage("claude-code", acct, f"{acct}{i}", t - 60, "claude-opus-5-5", cost_usd=10.0,
+                                   account=acct)])
+    assert abs(meter.rate(store, account="max5") - 0.4) < 0.01
+    assert abs(meter.rate(store, account="max20") - 0.1) < 0.01
+    assert 0.1 < meter.rate(store) < 0.4                                   # together, they blend
+    assert meter.rate(store, account="new") == meter.rate(store)          # no data of its own yet: the pooled rate
+
+
+def test_a_limit_reset_early_with_the_same_reset_time_is_followed(store):
+    """The meter reaches 50%, is reset to ~10% (its reset time unchanged), and climbs to 30%: 20 points used since,
+    which must show as usage, not be hidden under the old 50% until it's passed."""
+    r = T0 + 4 * 86400
+    t = T0 - 20 * H
+    for pct in [40, 45, 50]:                                    # before the early reset
+        store.add_meter("claude-code", "a1", {"seven_day": (pct, r)}, ts=t)
+        t += 600
+    store.add_meter("claude-code", "a1", {"seven_day": (50, r)}, ts=T0 - 16 * H)   # an idle session's last word
+    for i, pct in enumerate(range(10, 31, 2)):                  # after it: every reading lower than 50
+        store.add_meter("claude-code", "a1", {"seven_day": (float(pct), r)}, ts=T0 - 12 * H + i * 1800)
+    hist, _ = meter.demand(store, T0)
+    used = sum(v for h, v in hist if h >= T0 - 12 * H - 3600)
+    assert abs(used - 20.0) < 1e-6
+    assert meter.latest(store, "seven_day", T0, "a1")["pct"] == 30.0     # not the 50% from before the reset
