@@ -137,7 +137,7 @@ def test_the_local_view_needs_its_key_and_a_local_host(local):
     code, headers, body = _get(local + "/")
     assert code == 200 and b"<title>savetokens</title>" in body
     assert "script-src 'self'" in headers["Content-Security-Policy"] and "unsafe-inline" not in body.decode()
-    for f, kind in (("/app.js", "javascript"), ("/app.css", "css")):
+    for f, kind in (("/app.js", "javascript"), ("/app.css", "css"), ("/favicon.svg", "svg")):
         code, headers, _ = _get(local + f)
         assert code == 200 and kind in headers["Content-Type"]
     code, headers, body = _get(local + "/fonts/red-hat-mono-latin.woff2")     # the typefaces come from here, not Google
