@@ -129,6 +129,10 @@ def test_the_local_view_needs_its_key_and_a_local_host(local):
     for f, kind in (("/app.js", "javascript"), ("/app.css", "css")):
         code, headers, _ = _get(local + f)
         assert code == 200 and kind in headers["Content-Type"]
+    code, headers, body = _get(local + "/fonts/share-tech-mono.woff2")     # the typefaces come from here, not Google
+    assert code == 200 and headers["Content-Type"] == "font/woff2" and body[:4] == b"wOF2"
+    assert "font-src 'self'" in headers["Content-Security-Policy"]
+    assert _get(local + "/fonts/archivoblack-OFL.txt")[0] == 404           # only the files listed are served
     assert _get(local + "/v1/dashboard")[0] == 401
     assert _get(local + "/v1/dashboard", {"Authorization": "Bearer nope"})[0] == 401
     code, _, body = _get(local + "/v1/dashboard", {"Authorization": "Bearer k3y"})

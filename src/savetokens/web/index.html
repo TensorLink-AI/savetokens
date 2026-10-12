@@ -8,121 +8,147 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand"><span class="mark" aria-hidden="true"></span>savetokens</div>
-  <div class="meta" id="meta"></div>
-  <div class="actions">
-    <button id="refresh" type="button" title="Refresh now">Refresh</button>
-    <button id="signout" type="button" hidden>Sign out</button>
-  </div>
-</header>
+<div class="page">
+<main class="wrap">
+  <header class="top">
+    <div class="brand" aria-label="savetokens">
+      <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="word">savetokens</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tab-spend" aria-controls="spend" aria-selected="true">SPEND</button>
+      <button role="tab" id="tab-limits" aria-controls="limits-tab" aria-selected="false">LIMITS</button>
+    </nav>
+    <span class="grow"></span>
+    <span class="clock" id="clock"></span>
+    <button type="button" class="live" id="live" title="Refresh every 30 seconds (p)"><span class="dot"></span><span id="live-txt">live</span></button>
+    <button type="button" class="link" id="signout" hidden>sign out</button>
+  </header>
+  <p class="meta" id="meta"></p>
 
-<main id="app">
-  <section id="signin" class="signin" hidden>
+  <section id="signin" class="box signin" hidden>
+    <span class="box-label">┤ SIGN IN ├</span>
     <h1>Sign in</h1>
     <p>Enter a join code: run <code>savetokens pair</code> on a machine connected to this hub, or use the code
       from the line <code>savetokens server --setup</code> printed.</p>
     <form id="signin-form">
+      <span class="prompt">===&gt;</span>
       <input id="code" name="code" autocomplete="one-time-code" placeholder="XXXX-XXXX" maxlength="9" required
              spellcheck="false" autocapitalize="characters" aria-label="Join code">
-      <button type="submit">Sign in</button>
+      <button type="submit">SIGN IN</button>
     </form>
     <p class="err" id="signin-err" role="alert"></p>
   </section>
 
   <div id="view" hidden>
-    <details id="setup" class="setup" hidden>
-      <summary><span id="setup-title">Finish setting up</span><span class="muted" id="setup-count"></span></summary>
+    <details id="setup" class="box fold" hidden>
+      <summary><span class="box-label">┤ <span id="setup-title">FINISH SETTING UP</span> ├</span><span class="dim" id="setup-count"></span></summary>
       <ol id="setup-steps"></ol>
       <p class="note">Or run <code>savetokens setup</code>: it finds your plans and asks for the rest, one question at a time.</p>
     </details>
-    <details id="adder" class="setup" hidden>
-      <summary><span>Add a machine</span><span class="muted"> laptops, servers, CI, GPU boxes</span></summary>
+    <details id="adder" class="box fold" hidden>
+      <summary><span class="box-label">┤ ADD A MACHINE ├</span><span class="dim">laptops, servers, CI, GPU boxes</span></summary>
       <p>Paste this on each machine. It installs savetokens if needed and joins this hub. It works for 24 hours, for up to 10 machines.</p>
-      <div class="cmd"><code id="add-cmd">…</code><button class="copy" type="button" id="add-copy">Copy</button></div>
+      <div class="cmd"><code id="add-cmd">…</code><button class="copy" type="button" id="add-copy">COPY</button></div>
       <p class="note">For CI, containers and short-lived machines, set two environment variables instead:
-        <button type="button" id="add-token">Make a token</button></p>
-      <div class="cmd" id="add-env-row" hidden><code id="add-env"></code><button class="copy" type="button" id="add-env-copy">Copy</button></div>
+        <button type="button" class="link" id="add-token">make a token</button></p>
+      <div class="cmd" id="add-env-row" hidden><code id="add-env"></code><button class="copy" type="button" id="add-env-copy">COPY</button></div>
       <p class="note" id="add-env-note" hidden>Shown once. Keep it in your CI's secret store; anyone with it can send usage to this hub.</p>
       <p class="err" id="add-err" role="alert"></p>
     </details>
-    <nav class="tabs" role="tablist">
-      <button role="tab" id="tab-spend" aria-controls="spend" aria-selected="true">Spend</button>
-      <button role="tab" id="tab-limits" aria-controls="limits-tab" aria-selected="false">Limits</button>
-    </nav>
+
+    <div id="headline" class="headline" role="status">
+      <span class="box-label" id="headline-label">┤ STATUS ├</span>
+      <span class="bang" id="headline-bang">!</span>
+      <p id="headline-text"></p>
+    </div>
 
     <div id="spend" role="tabpanel" aria-labelledby="tab-spend">
-      <section>
-        <div class="h2row"><h2>Spend so far, and where it's heading</h2><span class="muted" id="spend-src"></span></div>
-        <div id="periods" class="cards three"></div>
+      <div class="hero">
+        <div class="hero-main">
+          <span class="caps dim" id="hero-label">SPEND · THIS MONTH SO FAR</span>
+          <span class="hero-row"><span class="hero-num" id="hero-cost">–</span><span class="hero-sub" id="hero-likely"></span></span>
+        </div>
+        <span class="dim" id="spend-src"></span>
+      </div>
+
+      <section class="box">
+        <span class="box-label">┤ PERIODS ├</span>
+        <div class="scroll"><div class="grid periods" id="periods">
+          <div class="row head"><span>PERIOD</span><span class="r">SO FAR</span><span class="r">LIKELY BY END</span><span class="r">COMING NEXT</span></div>
+        </div></div>
       </section>
-      <section>
-        <h2>Coming up</h2>
-        <div id="coming" class="cards three"></div>
+
+      <section class="box">
+        <span class="box-label">┤ BY PROVIDER · <span id="period-name">THIS MONTH</span> ├</span>
+        <span class="box-aside">select a provider for models and ranges</span>
+        <div class="scroll"><div class="grid providers" id="providers">
+          <div class="row head"><span>PROVIDER</span><span class="r">TOKENS</span><span class="r">SPEND</span><span class="r">LIKELY BY END</span><span class="r">$ / M TOKENS</span></div>
+        </div></div>
       </section>
-      <section>
-        <div class="h2row"><h2>By provider</h2>
-          <div class="seg" role="group" aria-label="Period">
-            <button type="button" data-period="day">Today</button><button type="button" data-period="week">This week</button><button type="button" data-period="month" aria-pressed="true">This month</button>
-          </div></div>
-        <div class="panel scroll"><table id="providers"><thead><tr>
-          <th>Provider</th><th class="num">Tokens</th><th class="num">Spend</th><th class="num">Likely by end</th>
-          <th class="num" id="next-h">Next 30 days</th><th class="num">$ / M tokens</th></tr></thead></table></div>
-        <p class="note" id="spend-note"></p>
-      </section>
+      <p class="note" id="spend-note"></p>
     </div>
 
     <div id="limits-tab" role="tabpanel" aria-labelledby="tab-limits" hidden>
-    <div id="headline" class="headline" role="status"></div>
-
-    <section>
-      <h2>Limits</h2>
-      <div id="limits" class="cards"></div>
-    </section>
-
-    <section>
-      <div class="h2row"><h2>Usage per hour</h2><span class="muted" id="demand-label"></span></div>
-      <div class="panel"><div id="chart" class="chart"></div>
-        <div class="legend"><span><i class="sw past"></i>used</span><span><i class="sw next"></i>forecast</span>
-          <span><i class="sw band"></i>likely range</span></div></div>
-    </section>
-
-    <section>
-      <h2>Sessions, last 24 hours</h2>
-      <div class="panel scroll"><table id="sessions"><thead><tr>
-        <th></th><th>Session</th><th>Tool</th><th class="num">Today</th><th class="num">Last hour</th>
-        <th>If you stop it</th></tr></thead><tbody></tbody></table></div>
-      <p class="note">Today and last hour are % of each session's own limit: its plan's weekly limit, or its API budget.</p>
-    </section>
-
-    <div class="cols">
-      <section>
-        <h2>Models this week</h2>
-        <div id="models" class="panel"></div>
+      <section class="box">
+        <span class="box-label">┤ LIMITS ├</span>
+        <div class="limits" id="limits"></div>
       </section>
-      <section>
-        <h2>Machines this week</h2>
-        <div id="machines" class="panel"></div>
-      </section>
-    </div>
+      <p class="note">Bar: used now, then the likely range at reset. The white tick is the most likely point.</p>
 
-    <div class="cols">
-      <section>
-        <h2>Recent alerts</h2>
-        <div id="alerts" class="panel"></div>
+      <section class="box chart-box">
+        <span class="box-label">┤ USAGE PER HOUR ├</span>
+        <span class="box-aside" id="readout"></span>
+        <div class="chart">
+          <div class="ticks" id="ticks"></div>
+          <div class="plot" id="plot"></div>
+          <span></span>
+          <div class="axis" id="axis"></div>
+        </div>
+        <p class="note" id="demand-label"></p>
       </section>
-      <section>
-        <h2>Limits you've hit</h2>
-        <div id="hits" class="panel"></div>
-      </section>
-    </div>
 
+      <section class="box">
+        <span class="box-label">┤ SESSIONS · LAST 24 HOURS ├</span>
+        <span class="box-aside" id="sessions-aside"></span>
+        <div class="scroll"><div class="grid sessions" id="sessions">
+          <div class="row head"><span></span><span>SESSION</span><span>TOOL</span><span class="r">TODAY</span><span class="r">LAST HOUR</span></div>
+        </div></div>
+      </section>
+
+      <button type="button" class="more-toggle" id="more-toggle"><span id="more-sign">+</span><span>MODELS, MACHINES, ALERTS AND LIMITS HIT</span></button>
+      <div class="more" id="more" hidden>
+        <section class="box small"><span class="box-label">┤ MODELS THIS WEEK ├</span><div id="models"></div></section>
+        <section class="box small"><span class="box-label">┤ MACHINES ├</span><div id="machines"></div></section>
+        <section class="box small"><span class="box-label">┤ RECENT ALERTS ├</span><div id="alerts"></div></section>
+        <section class="box small"><span class="box-label">┤ LIMITS HIT · 30 DAYS ├</span><div id="hits"></div></section>
+      </div>
     </div>
 
     <p class="foot">Read-only. Only token counts, costs and limit readings reach this page: never prompts, replies,
       code or file contents. <span id="track"></span></p>
   </div>
 </main>
+
+<footer class="bar">
+  <div class="bar-in">
+    <form id="cmd-form" hidden>
+      <span class="prompt">===&gt;</span>
+      <input id="cmd" spellcheck="false" autocomplete="off" aria-label="Command"
+             placeholder="spend · limits · day · week · month · refresh · pause · sel SESSION (esc to close)">
+    </form>
+    <div id="keys" class="keys">
+      <button type="button" data-key="/"><b>/</b> command</button>
+      <button type="button" data-key="1"><b>1</b> spend</button>
+      <button type="button" data-key="2"><b>2</b> limits</button>
+      <button type="button" data-key="r"><b>r</b> refresh</button>
+      <button type="button" data-key="p"><b>p</b> <span id="key-p">pause</span></button>
+      <span class="grow"></span>
+    </div>
+    <span class="msg" id="msg" role="status"></span>
+  </div>
+</footer>
+</div>
 <script src="app.js"></script>
 </body>
 </html>
