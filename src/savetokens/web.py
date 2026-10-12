@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).with_name("web")
 FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/index.html": ("index.html", "text/html; charset=utf-8"),
          "/app.js": ("app.js", "text/javascript; charset=utf-8"), "/app.css": ("app.css", "text/css; charset=utf-8"),
+         "/favicon.svg": ("favicon.svg", "image/svg+xml"),
          # the page's two typefaces, served from here (SIL Open Font License: fonts/*-OFL.txt)
          "/fonts/red-hat-mono-latin.woff2": ("fonts/red-hat-mono-latin.woff2", "font/woff2"),
          "/fonts/red-hat-mono-latin-ext.woff2": ("fonts/red-hat-mono-latin-ext.woff2", "font/woff2"),
