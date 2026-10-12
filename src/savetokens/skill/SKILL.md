@@ -16,6 +16,7 @@ Use the savetokens MCP tools when they're available. Otherwise run the same thin
 | `pacing_brief` | `savetokens advise --json` | each limit: used, likely at reset, chance of running out, room left in points and hours; this session's usage; options ranked by measured effect, each with the exact change to make |
 | `estimate_job` | `savetokens estimate --like big --json` | a job's size in points, hours of work at the user's pace, finish time including any wait for a 5-hour reset, and a better start time if one avoids waiting |
 | `spend_summary` | `savetokens spend --json` | tokens and $ by provider and model: so far today, this week and this month; likely by each one's end; and the next day, week and 30 days. Subscriptions count as a fixed cost |
+| `efficiency` | `savetokens efficiency --json` | where tokens go, for any tool and provider: facts (context re-sent and how much the cache served, prompt growth, reasoning share, $ by provider, model and project) and what-ifs, each with its assumption |
 | `suggest_setup` | `savetokens suggest --json` | what to set up (a budget, a model's price, the forecaster), each with the exact command and what to ask the user for |
 
 Points are % of a limit: a plan's weekly limit, or an API budget. Times are epoch seconds; say them as local clock times ("Wed 13:20").
@@ -53,6 +54,7 @@ Never stop the user's task on your own; tell them and let them decide.
 ## Rules
 
 - **Never change settings, models or sessions without asking.** Propose; the user decides.
+- **Facts and what-ifs are different.** A fact is accounting; a what-if is arithmetic under the assumption it states. Say "would cost $X less at the cache price", never "saves $X". A price comparison with another model says nothing about whether that model can do the work.
 - **Dollar figures on a plan are API-equivalent, not charges.** On an API budget (`kind: api`) they are real spend.
 - **If savetokens isn't installed**, say so and point to `savetokens install`.
 - **Setup is the user's call.** Show what `suggest_setup` proposes, fill in what they tell you (a budget, a price), and run the command only after they agree. A plan's price detected from their login comes as the default (e.g. `--usd 200`): confirm it with them. For an Ephemeris key, ask them to run `savetokens setup` themselves, so the key never passes through the conversation.

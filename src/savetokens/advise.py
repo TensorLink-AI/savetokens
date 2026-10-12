@@ -17,13 +17,19 @@ import statistics
 import time
 from pathlib import Path
 
-from . import alerts, dashboard, forecast, meter, pools, pricing
+from . import alerts, dashboard, forecast, meter, pools
 
 ACTIVE_GAP = 600          # requests further apart than this are a pause, not work
 STAT_DAYS = 28
-BIG_CONTEXT = 120_000     # tokens re-read per request above which starting fresh pays off
-FRESH_CONTEXT = 20_000    # what a fresh session with a short handover note re-reads
-CHEAP = "claude-sonnet-5-5"
+# How to make each change, per tool (instructions only: what to change is worked out from the data)
+SUBAGENT_HOW = {
+    "claude-code": "set `model:` in .claude/agents/*.md, pass the model when starting a subagent, or start sessions"
+                   " with CLAUDE_CODE_SUBAGENT_MODEL={model}",
+    "codex": "set the subagent's model in ~/.codex/config.toml (or pass -m {model} for delegated runs)",
+    "hermes": "set the delegated task's model to {model} in Hermes's config",
+}
+EFFORT_HOW = {"claude-code": "/effort medium for routine work", "codex": 'model_reasoning_effort = "medium" in config.toml',
+              "hermes": "a lower reasoning effort in Hermes's model settings"}
 
 
 # ── measuring ────────────────────────────────────────────────────────────────
@@ -139,21 +145,6 @@ def sizes(store, now, harness, project=None, scale=None):
 
 # ── options ──────────────────────────────────────────────────────────────────
 
-def _subagent_saving(store, now, scale, sid=None, hours=24):
-    """$ a day saved if subagents on Opus or Fable had run on Sonnet (same tokens, Sonnet's price)."""
-    q = ("SELECT model, SUM(input) i, SUM(output) o, SUM(cache_read) cr, SUM(cache_write_5m) c5,"
-         " SUM(cache_write_1h) c1, SUM(cost_usd) usd FROM usage WHERE harness = ? AND subagent AND cost_usd > 0"
-         " AND ts >= ?" + (" AND session_id = ?" if sid else "") + " GROUP BY model")
-    p = [meter.CLAUDE, now - hours * 3600] + ([sid] if sid else [])
-    save = 0.0
-    for r in store.conn.execute(q, p):
-        if pricing.is_expensive(r["model"]):
-            cheap = pricing.cost(CHEAP, input=r["i"], output=r["o"], cache_read=r["cr"], cache_write_5m=r["c5"],
-                                 cache_write_1h=r["c1"])
-            save += max(0.0, r["usd"] - cheap)
-    return save * 24 / hours
-
-
 def levers(store, now, looks, sessions, me=None, scale=None) -> list[dict]:
     """Options, biggest measured effect first. Each: {id, title, effect, points, how}."""
     scale = scale or Scale(store, now)
@@ -179,37 +170,7 @@ def levers(store, now, looks, sessions, me=None, scale=None) -> list[dict]:
         out.append({"id": "pause", "title": f"Pause {name} for {w['hours']} hours", "points": w["adds"],
                     "effect": f"Pausing {name} {effect}.", "how": f"Stop or park the {name} session; resume later."})
 
-    # subagents on Opus/Fable -> Sonnet
-    rate = scale.rate(meter.CLAUDE)
-    if rate:
-        mine = (_subagent_saving(store, now, scale, me["session_full"])
-                if me and me.get("session_full") and me["harness"] == meter.CLAUDE else 0)
-        every = _subagent_saving(store, now, scale)
-        usd = mine if mine >= 0.5 * every and mine > 0 else every
-        if usd * rate >= 0.5:
-            where = "this session's" if usd == mine else "your"
-            out.append({"id": "subagents", "title": "Run subagents on Sonnet", "points": usd * rate,
-                        "effect": f"Moving {where} Opus/Fable subagents to Sonnet saves about {usd * rate:.1f} points"
-                                  f" of the weekly limit a day at today's pace (if the limit counts usage by API price).",
-                        "how": "Pass model \"sonnet\" when starting search and exploration subagents; set"
-                               " `model: sonnet` in .claude/agents/*.md; or start new sessions with"
-                               " CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-5-5."})
-
-    # long contexts: start fresh between tasks
-    for x in sorted((x for x in sessions if x.get("running") and x.get("session")), key=lambda x: -(x.get("pace") or 0)):
-        p = profile(store, now, _full(store, x["session"]), scale, hours=1)
-        if not p or not p["context_tokens"] or p["context_tokens"] < BIG_CONTEXT or not p["points_last_hour"]:
-            continue
-        cut = 1 - FRESH_CONTEXT / p["context_tokens"]
-        pts = p["points_last_hour"] * 0.8 * cut * dashboard.WHAT_IF_HOURS   # re-reading is most of a long session's cost
-        if pts >= 0.5:
-            name = p["project"] or p["session"]
-            out.append({"id": "fresh", "title": f"Start {name} fresh at its next task", "points": pts,
-                        "effect": f"{name} re-reads about {p['context_tokens'] / 1000:.0f}k tokens a request; a fresh"
-                                  f" session saves about {pts:.1f} points over the next {dashboard.WHAT_IF_HOURS} hours.",
-                        "how": "At the end of the current task: write a short handover note, then /clear or start a new"
-                               " session. (Compacting saves little at this size; clearing does.)"})
-        break
+    out += _engine_levers(store, now, sessions, me, scale)
 
     if worst:
         # the 5-hour limit is the one in the way: wait for its reset
@@ -227,17 +188,82 @@ def levers(store, now, looks, sessions, me=None, scale=None) -> list[dict]:
             out.append({"id": "move", "title": f"Move some work to {tool}", "points": None,
                         "effect": f"{o['label']} is at {o['used']:.0f}%, likely {o['p50']:.0f}% by its reset.",
                         "how": f"Run the next self-contained task in {tool}."})
-        if worst["kind"] == "api":
-            out.append({"id": "api", "title": "Cut the API bill", "points": None,
-                        "effect": f"{worst['label']}: ${worst['spent_usd']:,.0f} of ${worst['budget_usd']:,.0f} {worst['per']}.",
-                        "how": "Keep prompt caching on, use a cheaper model for bulk work, and send batch jobs"
-                               " through the batch API."})
-    if me and me.get("model") and pricing.is_expensive(me["model"]):
-        out.append({"id": "effort", "title": "Lower the effort for routine work", "points": None,
-                    "effect": "Not measured here; fewer thinking tokens on edits, tests and small fixes.",
-                    "how": "/effort medium (Claude Code) or model_reasoning_effort = \"medium\" (Codex config.toml)."})
+    for x in out:
+        x.setdefault("kind", "forecast")
     measured = sorted((x for x in out if x["points"]), key=lambda x: -x["points"])
     return measured + [x for x in out if not x["points"]]
+
+
+def _pts(scale, harness, billing, usd):
+    per = scale.usd_per_point(harness, billing)
+    return usd / per if per and usd else None
+
+
+def _engine_levers(store, now, sessions, me, scale) -> list[dict]:
+    """Facts and what-ifs from the last day's records (efficiency.py): no thresholds, no tool rules."""
+    from . import efficiency
+    out, since = [], now - 86400
+
+    # a running conversation whose prompt has grown: what the growth cost (an upper bound on starting fresh)
+    best = None
+    for x in sessions:
+        if not (x.get("running") and x.get("session")):
+            continue
+        sid = _full(store, x["session"])
+        f = efficiency.facts(store, since, now, {"session_id": sid})
+        c = f["context"]
+        if c and c["growth_usd"] > 0 and (best is None or c["growth_usd"] > best[1]["growth_usd"]):
+            best = (x, c, f, sid)
+    if best:
+        x, c, f, sid = best
+        p = profile(store, now, sid, scale, hours=1)
+        name = (p or {}).get("project") or x["session"]
+        h = (p or {}).get("harness") or x.get("harness")
+        billing = "api" if (p or {}).get("pool", "").endswith(":api") else None
+        ctx = f" Its prompt is now about {p['context_tokens'] / 1000:.0f}k tokens, re-sent each request." \
+            if p and p.get("context_tokens") else ""
+        out.append({"id": "fresh", "kind": "what-if", "title": f"Start {name} fresh at its next task",
+                    "points": _pts(scale, h, billing, c["growth_usd"]), "usd": c["growth_usd"],
+                    "effect": f"The part of {name}'s prompts beyond where it started cost ${c['growth_usd']:,.2f} today.{ctx}"
+                              " That's the most starting fresh could save; a handover note costs a little back.",
+                    "how": "At the end of the current task: write a short handover note, then clear the conversation"
+                           " or start a new session."})
+
+    # subagent work at the prices of a cheaper model you already use from the same provider
+    swaps = efficiency.as_model(store, since, now, {"subagent": 1})
+    if swaps:
+        s = swaps[0]
+        h = next((r[0] for r in store.conn.execute(
+            "SELECT harness FROM usage WHERE model = ? AND subagent AND ts >= ? LIMIT 1", (s["model"], since))), None)
+        out.append({"id": "subagents", "kind": "what-if", "title": f"Run subagents on {s['as']}",
+                    "points": _pts(scale, h, None, s["saving_usd"]), "usd": s["saving_usd"],
+                    "effect": f"Today's subagent work on {s['model']} would have cost ${s['saving_usd']:,.2f} less at"
+                              f" {s['as']}'s prices, a model you already use. Price only: whether it does the job as"
+                              " well isn't measured yet.",
+                    "how": SUBAGENT_HOW.get(h, "set the subagents' model to {model}").format(model=s["as"])})
+
+    # by tool: re-sent context not served from cache, and how much output is reasoning
+    for h in [r[0] for r in store.conn.execute("SELECT DISTINCT harness FROM usage WHERE ts >= ?", (since,))]:
+        f = efficiency.facts(store, since, now, {"harness": h})
+        tool = pools.TOOLS.get(h, h)
+        bill = "api" if any(b["name"] == "api" for b in f["by"].get("billing", [])) else None
+        c = f["context"]
+        if c and c["cache_saving_usd"] > 0:
+            out.append({"id": f"cache:{h}", "kind": "what-if", "title": f"Cache more of {tool}'s re-sent context",
+                        "points": _pts(scale, h, bill, c["cache_saving_usd"]), "usd": c["cache_saving_usd"],
+                        "effect": f"{c['resent_uncached_tokens']:,} re-sent tokens were billed as fresh input today;"
+                                  f" at the cache price that's ${c['cache_saving_usd']:,.2f} less (writing them to the"
+                                  f" cache once costs up to ${c['cache_write_cost_usd']:,.2f}).",
+                        "how": "Keep prompt caching on, and keep the start of the prompt (instructions, tools) unchanged"
+                               " between requests so it can be reused."})
+        r = f["reasoning"]
+        if r and r["tokens"]:
+            out.append({"id": f"reasoning:{h}", "kind": "fact", "title": f"Lower {tool}'s effort for routine work",
+                        "points": None,
+                        "effect": f"{r['share_of_output']:.0%} of {tool}'s output tokens today were reasoning"
+                                  f" ({r['tokens']:,} tokens).",
+                        "how": EFFORT_HOW.get(h, "a lower reasoning effort for routine work")})
+    return out
 
 
 def _full(store, short):

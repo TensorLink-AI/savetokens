@@ -97,7 +97,8 @@ def parse_line(d: dict, subagent_file=False, acct=None):
               request_id=f"{msg.get('id')}:{d.get('requestId')}",
               input=int(u.get("input_tokens") or 0), output=int(u.get("output_tokens") or 0),
               cache_read=int(u.get("cache_read_input_tokens") or 0), cache_write_5m=w5m, cache_write_1h=w1h,
-              account=acct, project=Path(d["cwd"]).name if d.get("cwd") else None)
+              account=acct, project=Path(d["cwd"]).name if d.get("cwd") else None, cwd=d.get("cwd") or None,
+              thread=sid + (f"/{d['agentId']}" if d.get("isSidechain") and d.get("agentId") else ""))
     e.cost_usd = pricing.cost(model, input=e.input, output=e.output, cache_read=e.cache_read,
                               cache_write_5m=w5m, cache_write_1h=w1h, fast=u.get("speed") == "fast")
     return e, None
@@ -167,6 +168,8 @@ def ingest_file(store: Store, path: Path, acct=None, max_bytes: int | None = Non
         e, h = parse_line(d, sub, acct)
         if e:
             e.billing = bill
+            if sub:   # each subagent's transcript is its own conversation
+                e.thread = f"{e.session_id}/{path.stem}"
         if e and (e.request_id not in usage or e.output > usage[e.request_id].output):
             usage[e.request_id] = e
         if h:

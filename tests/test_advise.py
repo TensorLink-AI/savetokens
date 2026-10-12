@@ -16,13 +16,16 @@ from conftest import H, T0, week_of_readings
 def _busy(store, ctx=200_000):
     """A running session with Opus subagents and a long context, on top of a week of readings."""
     week_of_readings(store, T0 - 72 * H, 72, per_hour=1.0, resets=T0 + 30 * H, usd_per_pct=1.0)
-    rows = []
+    rows = [Usage("claude-code", "other", "o1", T0 - 5000, "claude-sonnet-5-5", input=100, output=100,   # also used
+                  cost_usd=0.001, thread="other")]
     for i in range(30):
         t = T0 - 3000 + i * 90
-        rows.append(Usage("claude-code", "synth-1", f"m{i}", t, "claude-opus-5-5", input=2, cache_read=ctx,
-                          output=500, cost_usd=0.05, project="synth"))
+        rows.append(Usage("claude-code", "synth-1", f"m{i}", t, "claude-opus-5-5", input=2,
+                          cache_read=ctx // 4 + i * ctx // 40, output=500, project="synth", thread="synth-1",
+                          cost_usd=pricing.cost("claude-opus-5-5", input=2, cache_read=ctx // 4 + i * ctx // 40,
+                                                output=500)))
         rows.append(Usage("claude-code", "synth-1", f"s{i}", t + 30, "claude-opus-5-5", subagent=True,
-                          input=10_000, cache_read=40_000, output=2_000, project="synth",
+                          input=10_000, cache_read=40_000, output=2_000, project="synth", thread=f"synth-1/a{i}",
                           cost_usd=pricing.cost("claude-opus-5-5", input=10_000, cache_read=40_000, output=2_000)))
     store.add_usage(rows)
     maintain.update(store, T0, use_ephemeris=False)
@@ -36,8 +39,12 @@ def test_the_brief_ranks_measured_options_and_knows_this_session(store):
     assert "subagents" in ids and "fresh" in ids
     measured = [o["points"] for o in b["options"] if o["points"]]
     assert measured == sorted(measured, reverse=True)
+    assert all(o["kind"] in ("fact", "what-if", "forecast") for o in b["options"])
     sub = next(o for o in b["options"] if o["id"] == "subagents")
-    assert "model: sonnet" in sub["how"] and sub["points"] > 0
+    assert sub["kind"] == "what-if" and "Price only" in sub["effect"] and sub["points"] > 0
+    assert "CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-5-5" in sub["how"]    # the cheaper model you already use
+    fresh = next(o for o in b["options"] if o["id"] == "fresh")
+    assert fresh["kind"] == "what-if" and "the most starting fresh could save" in fresh["effect"]
     text = advise.brief_text(b)
     assert text.startswith(b["headline"]["text"]) and "Options, biggest first" in text
 
@@ -79,7 +86,8 @@ def test_the_mcp_server_lists_and_calls_its_tools(store, monkeypatch):
     got = {r["id"]: r for r in map(json.loads, out.getvalue().splitlines())}
     assert set(got) == {1, 2, 3, 4, 5}                       # no reply to the notification
     assert got[1]["result"]["serverInfo"]["name"] == "savetokens"
-    assert {t["name"] for t in got[2]["result"]["tools"]} == {"pacing_brief", "estimate_job", "spend_summary", "suggest_setup"}
+    assert {t["name"] for t in got[2]["result"]["tools"]} == {"pacing_brief", "estimate_job", "spend_summary",
+                                                        "suggest_setup", "efficiency"}
     assert "weekly limit" in got[3]["result"]["content"][0]["text"]
     assert "points" in got[4]["result"]["content"][0]["text"]
     assert got[5]["error"]["code"] == -32602

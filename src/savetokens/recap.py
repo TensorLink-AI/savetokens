@@ -110,7 +110,16 @@ def recap(store, now=None, days=7) -> dict:
         "hits": _hits(store, since, now), "previous_hits": _hits(store, before, since),
         "weeks": _weeks(store, since, now),
         "budgets": [_budget(store, p, since, now, now) for p in pools_.pools(store, now) if p.kind == "api"],
+        "efficiency": _efficiency(store, since, now),
     }
+
+
+def _efficiency(store, since, now):
+    """The week's context facts and its biggest same-work what-if (efficiency.py), for one line each."""
+    from . import efficiency
+    f = efficiency.facts(store, since, now)
+    w = efficiency.what_ifs(f)
+    return {"context": f["context"], "top": w[0] if w else None}
 
 
 def _date(ts):
@@ -183,6 +192,15 @@ def text(r) -> str | None:
         elif w["forecast"] is not None and w["final"] - w["forecast"] >= 1:
             line += f", {w['final'] - w['forecast']:.0f} points over the {w['forecast']:.0f}% forecast early that week"
         lines.append(line + ".")
+    e = r.get("efficiency") or {}
+    c = e.get("context")
+    if c and c["resent_share"]:
+        lines.append(f"  {c['resent_share']:.0%} of prompt tokens were context re-sent"
+                     + (f", {c['resent_cached_share']:.0%} of it from the cache." if c["resent_cached_share"] is not None else "."))
+    if e.get("top"):
+        w = e["top"]
+        lines.append(f"  Biggest what-if: {w['title'].lower()}, up to {_usd(w['saving_usd'])}"
+                     " (`savetokens efficiency` for the assumptions).")
     if r["hits"] or r["previous_hits"]:
         lines.append(f"  Limit hits: {r['hits']} (the {r['days']} days before: {r['previous_hits']}).")
     elif use:

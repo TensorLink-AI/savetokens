@@ -25,7 +25,7 @@ JSON_NOTE = '\n\n--json prints one JSON object on stdout with "ok": true or fals
 # `savetokens --help`: the commands by what you'd want, then the jobs people do most (one call answers most tasks)
 GROUPS = [
     ("start", ["install", "setup", "suggest", "uninstall"]),
-    ("see where you stand", ["status", "recap", "advise", "spend", "watch", "web", "dashboard"]),
+    ("see where you stand", ["status", "recap", "efficiency", "advise", "spend", "watch", "web", "dashboard"]),
     ("before a big job", ["estimate", "check"]),
     ("budgets and prices", ["api", "plan", "price", "ephemeris"]),
     ("several machines", ["server", "pair", "join", "connect"]),
@@ -73,6 +73,9 @@ EXAMPLES = {
     "price": ["savetokens price gpt-6-astra 2 8              # $2 in, $8 out per million tokens",
               "savetokens price my-model 3 15 0.3            # with a cache-read price"],
     "advise": ["savetokens advise", "savetokens advise --json"],
+    "efficiency": ["savetokens efficiency                        # the last 7 days: facts, then what-ifs",
+                   "savetokens efficiency --project webapp --days 30",
+                   "savetokens efficiency --tool codex --as gpt-6-luna   # the same tokens at another model's prices"],
     "recap": ["savetokens recap                              # the last 7 days against your plan",
               "savetokens recap --days 30 --json"],
     "estimate": ["savetokens estimate --like big",
@@ -436,17 +439,8 @@ def cmd_price(args):
     prices[args.model] = [args.input, args.output] + ([args.cache_read] if args.cache_read is not None else [])
     save_config(cfg)
     pricing.reset()
-    n = 0
     with Store() as s:
-        rows = s.conn.execute("SELECT rowid, model, input, output, cache_read, cache_write_5m, cache_write_1h"
-                              " FROM usage WHERE cost_usd IS NULL AND model IS NOT NULL").fetchall()
-        for r in rows:
-            c = pricing.cost(r["model"], input=r["input"], output=r["output"], cache_read=r["cache_read"],
-                             cache_write_5m=r["cache_write_5m"], cache_write_1h=r["cache_write_1h"])
-            if c is not None:
-                s.conn.execute("UPDATE usage SET cost_usd = ? WHERE rowid = ?", (c, r["rowid"]))
-                n += 1
-        s.conn.commit()
+        n = pricing.reprice(s)
     _out(args, {"model": args.model, "input": args.input, "output": args.output, "cache_read": args.cache_read,
                 "repriced": n},
          f"{args.model}: ${args.input:g} in, ${args.output:g} out per million tokens; {n:,} requests priced")
@@ -636,6 +630,17 @@ def cmd_check(args):
                 "job": mcp._clean(job) if job else None},
          "\n".join([text + (": " + "; ".join(reasons) if reasons else "")] + ([job["summary"]] if job else [])))
     return code
+
+
+def cmd_efficiency(args):
+    from . import efficiency
+    from .store import Store
+    where = {k: v for k, v in (("harness", args.tool), ("provider", args.provider), ("project", args.project),
+                               ("model", args.model)) if v}
+    with Store() as s:
+        r = efficiency.report(s, days=args.days, where=where or None, model=args.as_model)
+    _out(args, r, efficiency.text(r))
+    return OK
 
 
 def cmd_recap(args):
@@ -909,6 +914,14 @@ def main(argv=None):
     s.add_argument("input", type=float, help="$ per million input tokens")
     s.add_argument("output", type=float, help="$ per million output tokens")
     s.add_argument("cache_read", type=float, nargs="?", help="$ per million cached input tokens (default: a tenth of input)")
+    s = cmd("efficiency", cmd_efficiency, "where tokens go and what the same work would cost done differently:"
+            " facts and what-ifs, any tool or provider")
+    s.add_argument("--days", type=int, default=7, help="how many days back (default 7)")
+    s.add_argument("--tool", choices=["claude-code", "codex", "hermes"], help="only this tool")
+    s.add_argument("--provider", help="only this provider (anthropic, openai, openrouter, ...)")
+    s.add_argument("--project", help="only this project (its folder name)")
+    s.add_argument("--model", help="only this model")
+    s.add_argument("--as", dest="as_model", metavar="MODEL", help="price the same tokens at this model's prices")
     s = cmd("recap", cmd_recap, "how the last week went against your plan: under or over budget and forecast, limit hits")
     s.add_argument("--days", type=int, default=7, help="how many days back (default 7)")
     s = cmd("advise", cmd_advise, "where the limits stand and what to change, biggest effect first")
