@@ -106,6 +106,15 @@ def push(store: Store, cfg) -> int:
         except urllib.error.HTTPError as e:   # a hub older than budgets: they stay on this machine
             if e.code != 400:
                 raise
+    from . import projects
+    names = projects.shareable(store) if cfg.get("share_names") else {}
+    if names != store.meta("pushed:names") and (names or store.meta("pushed:names") is None):
+        try:   # only when asked: project and task names, to your own hub, for its dashboard
+            _call(cfg, "/v1/settings", {"names": names})
+            store.set_meta("pushed:names", names)
+        except urllib.error.HTTPError as e:   # a hub from before names: they stay here
+            if e.code != 400:
+                raise
     from . import setup
     found = setup.detected()   # plan names and list prices, so the server's setup list can name them
     if found != store.meta("pushed:detected"):

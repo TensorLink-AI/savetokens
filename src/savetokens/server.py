@@ -251,6 +251,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
         def _settings(self, user, body):
             if "detected" in body:
                 return self._detected(user, body)
+            if "names" in body:
+                return self._names(user, body["names"])
             if "goals" in body:
                 return self._goals(user, body)
             budgets, plans, at = body["budgets"], body.get("plans") or {}, float(body["at"])
@@ -268,6 +270,23 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     s.set_meta("tz", body["tz"])   # the user's clock, for days, weeks and months
             with lock:
                 dirty.add(user)
+            self._send(200, {"ok": True})
+
+        def _names(self, user, names):
+            """Project and task names a machine chose to send (`savetokens projects --share-names on`), so the
+            dashboard can show them; {} clears what it sent."""
+            short = lambda v, n=80: isinstance(v, str) and 0 < len(v) <= n
+            if not isinstance(names, dict):
+                return self._send(400, {"error": "bad names"})
+            got = {"projects": {k: v for k, v in list((names.get("projects") or {}).items())[:2000]
+                                if short(k, 32) and short(v)},
+                   "tasks": {k: {"name": v["name"], "project_id": v.get("project_id") if short(v.get("project_id"), 32)
+                                 else None, "source": v.get("source") if short(v.get("source"), 16) else None,
+                                 "done": v.get("done") if isinstance(v.get("done"), (int, float)) else None}
+                             for k, v in list((names.get("tasks") or {}).items())[:5000]
+                             if short(k, 32) and isinstance(v, dict) and short(v.get("name"), 120)}}
+            with users.store(user) as s:
+                s.set_meta("shared_names", got)
             self._send(200, {"ok": True})
 
         def _team(self, user):
@@ -421,8 +440,10 @@ def _valid_goals(goals) -> bool:
                     and g.get("unit") in UNITS and isinstance(g.get("amount"), (int, float)) and g["amount"] > 0
                     and (g.get("period") in PERIODS or isinstance(g.get("by"), (int, float)))
                     and isinstance(g.get("start"), (int, float)) and isinstance(g.get("scope"), dict)
-                    and all(isinstance(x, str) and len(x) <= 32
-                            for k in ("projects", "tasks") for x in (g["scope"].get(k) or [])[:50]))
+                    and g.get("count") in (None, "api", "all")
+                    and all(isinstance(g["scope"].get(k) or [], list) and len(g["scope"].get(k) or []) <= 50
+                            and all(isinstance(x, str) and len(x) <= 32 for x in g["scope"].get(k) or [])
+                            for k in ("projects", "tasks", "providers", "tools")))
     return isinstance(goals, dict) and len(goals) <= 100 and all(
         isinstance(k, str) and len(k) <= 32 and ok(g) for k, g in goals.items())
 
@@ -437,10 +458,9 @@ def _hub_projects(s, now=None):
         if p.kind == "goal":
             since, _ = pools.period(p.budget, now)
             spent[p.id] = {"spent": pools.spent(s, p, since, now), "since": since, "at": now}
-    totals = [{"id": r[0], "usd": r[1], "tokens": r[2], "requests": r[3]} for r in s.conn.execute(
-        "SELECT project_id, COALESCE(SUM(cost_usd), 0), SUM(input + cache_read + cache_write_5m + cache_write_1h"
-        " + output), COUNT(*) FROM usage WHERE project_id IS NOT NULL AND ts >= ? GROUP BY project_id",
-        (now - 30 * 86400,))]
+    # "usd" (everything at API prices) for machines from before the split
+    totals = [{"id": pid, "usd": t["value_usd"], **t} for pid, t in projects.split(s, "project_id",
+                                                                                   now - 30 * 86400).items()]
     return {"project_key": projects.key(s), "goals": s.meta("goals"), "goals_at": s.meta("goals_at"),
             "goal_spent": spent, "projects": totals, "projects_at": now}
 

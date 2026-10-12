@@ -105,6 +105,10 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
         snap["spend"] = spend.summary(store, now)
     except Exception as e:   # the limits view must not depend on it
         snap["spend"] = {"error": str(e)[:200]}
+    try:
+        snap["projects"] = project_view(store, now)
+    except Exception as e:   # nor on this
+        snap["projects"] = {"error": str(e)[:200]}
     from . import setup
     try:
         snap["setup"] = setup.steps(store, now, on_server=on_server)
@@ -113,6 +117,18 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     level, text = headline(snap)
     snap["headline"] = {"level": level, "text": text, "items": pool_status(snap)}
     return snap
+
+
+def project_view(store, now, days=30, most=25) -> dict:
+    """The Projects tab: each project's tokens, API value and API spend, split by tool, provider and plan or
+    API, with its biggest tasks; and every budget you set, with its forecast."""
+    from . import projects
+    rows = projects.report(store, now - days * 86400, tasks_each=8)
+    budgets = [o for o in forecast.outlook(store, now, goals=True) if o["kind"] == "goal"]
+    for o in budgets:
+        o["stage"] = alerts.stage(o, now)
+    return {"days": days, "list": rows[:most], "more": max(0, len(rows) - most), "budgets": budgets,
+            "unnamed": sum(1 for p in rows[:most] if not p["name"])}
 
 
 def charts(store, every, now, hours=24) -> list[dict]:

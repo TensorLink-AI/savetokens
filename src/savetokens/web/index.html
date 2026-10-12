@@ -18,6 +18,7 @@
     <nav class="tabs" role="tablist">
       <button role="tab" id="tab-spend" aria-controls="spend" aria-selected="true">SPEND</button>
       <button role="tab" id="tab-limits" aria-controls="limits-tab" aria-selected="false">LIMITS</button>
+      <button role="tab" id="tab-projects" aria-controls="projects-tab" aria-selected="false">PROJECTS</button>
     </nav>
     <span class="grow"></span>
     <span class="clock" id="clock"></span>
@@ -103,11 +104,6 @@
         <span class="box-aside">pay as you go: dollars against the budget you set</span>
         <div class="limits" id="api-limits"></div>
       </section>
-      <section class="box" id="goal-box" hidden>
-        <span class="box-label">┤ BUDGETS ├</span>
-        <span class="box-aside">project, task and overall budgets</span>
-        <div class="limits" id="goal-limits"></div>
-      </section>
       <p class="note">Bar: used now, then the likely range at reset. The white tick is the most likely point.</p>
 
       <section class="box chart-box">
@@ -140,6 +136,24 @@
       </div>
     </div>
 
+    <div id="projects-tab" role="tabpanel" aria-labelledby="tab-projects" hidden>
+      <section class="box">
+        <span class="box-label">┤ PROJECTS · <span id="projects-days">LAST 30 DAYS</span> ├</span>
+        <span class="box-aside">select a project for where its tokens went and its tasks</span>
+        <div class="scroll"><div class="grid projects" id="projects">
+          <div class="row head"><span>PROJECT</span><span class="r">TOKENS</span><span class="r">AT API PRICES</span><span class="r">PAID AS API</span><span>WHERE IT WENT</span></div>
+        </div></div>
+        <p class="note" id="projects-note"></p>
+      </section>
+      <section class="box">
+        <span class="box-label">┤ BUDGETS ├</span>
+        <span class="box-aside">overall, project and task budgets you set</span>
+        <div class="limits" id="budget-cards"></div>
+      </section>
+      <p class="note">At API prices: what the usage would cost pay-as-you-go. Paid as API: what was billed that way,
+        real money; the rest is on plans. <span class="badge sub">PLAN</span><span class="badge api">API</span> mark which.</p>
+    </div>
+
     <p class="foot">Read-only. Only token counts, costs and limit readings reach this page: never prompts, replies,
       code or file contents. <span id="track"></span></p>
   </div>
@@ -150,12 +164,13 @@
     <form id="cmd-form" hidden>
       <span class="prompt">===&gt;</span>
       <input id="cmd" spellcheck="false" autocomplete="off" aria-label="Command"
-             placeholder="spend · limits · day · week · month · refresh · pause · sel SESSION (esc to close)">
+             placeholder="spend · limits · projects · day · week · month · refresh · pause · sel SESSION (esc to close)">
     </form>
     <div id="keys" class="keys">
       <button type="button" data-key="/"><b>/</b> command</button>
       <button type="button" data-key="1"><b>1</b> spend</button>
       <button type="button" data-key="2"><b>2</b> limits</button>
+      <button type="button" data-key="3"><b>3</b> projects</button>
       <button type="button" data-key="r"><b>r</b> refresh</button>
       <button type="button" data-key="p"><b>p</b> <span id="key-p">pause</span></button>
       <span class="grow"></span>

@@ -5,8 +5,9 @@
   api           Claude Code or Codex on an API key, or Hermes on any provider's API: a dollar
                 budget per day, week or month, set with `savetokens api`, against the API
                 price of what was used
-  goal          a budget you set with `savetokens budget`: overall or for projects, in dollars or
-                tokens, per day, week or month or a total by a date; every tool and provider counts
+  goal          a budget you set with `savetokens budget`: overall or for a project or task, in dollars or
+                tokens, per day, week or month or a total by a date; it counts API spend only (real
+                money) or all usage at API prices, from every provider and tool or the ones you name
 
 Each pool has its own demand series, forecast paths and alerts. A subscription's demand is
 in % of its weekly limit an hour; an API pool's is in dollars an hour.
@@ -100,8 +101,8 @@ UNITS = {"usd": "COALESCE(cost_usd, 0)", "tokens": "input + cache_read + cache_w
 
 
 def goals_(store) -> dict:
-    """{id: {"label", "scope": {"projects": [ids]} or {}, "unit": usd|tokens, "amount", "period" | "by",
-    "start", "tz"}}. Kept in the store, so the hub has them too."""
+    """{id: {"label", "scope": {"projects"|"tasks": [ids], "providers": [..], "tools": [..]}, "count": api|all,
+    "unit": usd|tokens, "amount", "period" | "by", "start", "tz"}}. Kept in the store, so the hub has them too."""
     return store.meta("goals") or {}
 
 
@@ -122,19 +123,52 @@ def remove_goal(store, gid) -> bool:
     return True
 
 
-def _scope(goal):
+COUNTS = {"api": "API spend: only what was billed pay-as-you-go", "all": "all usage, at API prices"}
+
+
+def counts(goal) -> str:
+    """What a budget counts: "api" (real money: pay-as-you-go only) or "all" (plan usage too, at API prices).
+    Budgets from before this was asked count everything."""
+    return goal.get("count") or "all"
+
+
+def _scope(goal, store=None):
+    """SQL (where, args) for the requests a budget counts: its project or task, providers and tools, and
+    whether plan usage counts."""
+    from . import spend
     sc = goal.get("scope") or {}
+    where, args = [], []
     for col, key in (("task_id", "tasks"), ("project_id", "projects")):
         ids = sc.get(key)
         if ids:
-            return f"{col} IN ({','.join('?' * len(ids))})", list(ids)
-    return "1", []
+            where.append(f"{col} IN ({','.join('?' * len(ids))})")
+            args += list(ids)
+            break
+    for expr, key in ((spend.PROVIDER, "providers"), ("harness", "tools")):
+        if sc.get(key):
+            where.append(f"{expr} IN ({','.join('?' * len(sc[key]))})")
+            args += list(sc[key])
+    if counts(goal) == "api":
+        var, fixed = spend._variable(plans(store) if store is not None else {})
+        where.append(f"({var})")
+        args += fixed
+    return " AND ".join(where) or "1", args
+
+
+def describe(goal) -> str:
+    """What a budget counts, in words: "API spend · OpenAI · Codex"."""
+    sc = goal.get("scope") or {}
+    from . import spend
+    parts = ["API spend" if counts(goal) == "api" else "all usage at API prices" if goal.get("unit", "usd") == "usd"
+             else "all usage"]
+    parts += [spend.label(p) for p in sc.get("providers") or []] + [TOOLS.get(t, t) for t in sc.get("tools") or []]
+    return " · ".join(parts)
 
 
 def history(store, pool: Pool, now, hours=meter.HISTORY_HOURS):
     """(hourly demand [(hour, value)], % per weight unit or None) for a pool."""
     if pool.kind == "goal":
-        where, args = _scope(pool.budget)
+        where, args = _scope(pool.budget, store)
         end = meter.hour_floor(now)
         got = {}
         for h, v in store.conn.execute(
@@ -171,7 +205,7 @@ def spent(store, pool: Pool, since, until):
         hub = (store.meta("hub_goal_spent") or {}).get(pool.id)
         if hub and hub["since"] == since and until - hub["at"] < 3600:   # the hub's total: every machine
             return hub["spent"]
-        where, args = _scope(pool.budget)
+        where, args = _scope(pool.budget, store)
         return store.conn.execute(f"SELECT COALESCE(SUM({UNITS[pool.unit]}), 0) FROM usage WHERE {where}"
                                   " AND ts >= ? AND ts <= ?", args + [since, until]).fetchone()[0]
     return store.conn.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM usage WHERE harness = ? AND billing = 'api'"
