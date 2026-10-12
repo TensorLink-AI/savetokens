@@ -31,7 +31,7 @@ GROUPS = [
     ("before a big job", ["estimate", "check"]),
     ("budgets, projects and tasks", ["budget", "projects", "project", "tasks", "task", "api", "plan", "price",
                                      "ephemeris"]),
-    ("several machines", ["server", "pair", "join", "connect"]),
+    ("several machines", ["server", "pair", "join", "connect", "otel"]),
     ("run by install, in the background", ["maintain", "backfill", "mcp"]),
 ]
 COMMON = """common jobs:
@@ -76,6 +76,8 @@ EXAMPLES = {
     "price": ["savetokens price gpt-6-astra 2 8              # $2 in, $8 out per million tokens",
               "savetokens price my-model 3 15 0.3            # with a cache-read price"],
     "advise": ["savetokens advise", "savetokens advise --json"],
+    "otel": ["savetokens otel                               # paste the lines where the agent runs",
+             "savetokens otel --json"],
     "budget": ["savetokens budget                              # every budget, with its forecast",
                "savetokens budget --usd 500 --per month         # overall: every tool, provider and machine",
                "savetokens budget --project webapp --usd 150 --per month",
@@ -112,7 +114,8 @@ EXAMPLES = {
     "server": ["savetokens server --setup                     # this machine is the hub, from now on",
                "savetokens server --stop",
                "savetokens server --host 0.0.0.0 --port 8787  # run it yourself, in the foreground",
-               "savetokens server --add-user sam              # a teammate's own view and token"],
+               "savetokens server --add-user sam              # a teammate's own view and token",
+               "echo \"$ANTHROPIC_ADMIN_KEY\" | savetokens server --provider-key anthropic   # API usage no reader saw"],
 }
 
 
@@ -859,6 +862,30 @@ def cmd_budget(args):
     return OK
 
 
+def cmd_otel(args):
+    """The lines that send an agent's OpenTelemetry to your hub (a token of its own, from the hub)."""
+    from . import sync
+    from .store import load_config
+    cfg = load_config()
+    if not sync.connected(cfg):
+        raise Fail("not connected to a hub: telemetry goes to a hub", "savetokens server --setup")
+    try:
+        got = sync._call(cfg, "/v1/token", {})
+    except Exception as e:
+        raise Fail(f"the hub didn't give a token: {e}")
+    url = (got.get("url") or cfg["server_url"]).rstrip("/")
+    env = {"OTEL_EXPORTER_OTLP_ENDPOINT": url, "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+           "OTEL_EXPORTER_OTLP_HEADERS": f"Authorization=Bearer {got['token']}", "OTEL_LOGS_EXPORTER": "otlp",
+           "OTEL_TRACES_EXPORTER": "otlp"}
+    claude = {"CLAUDE_CODE_ENABLE_TELEMETRY": "1"}
+    lines = ["# any agent or app that exports OpenTelemetry (GenAI conventions):"]
+    lines += [f"export {k}='{v}'" for k, v in env.items()]
+    lines += ["# Claude Code also needs (only where savetokens isn't installed: there it reads Claude Code already):"]
+    lines += [f"export {k}={v}" for k, v in claude.items()]
+    _out(args, {"env": env, "claude_code": claude}, "\n".join(lines))
+    return OK
+
+
 def cmd_efficiency(args):
     from . import efficiency
     from .store import Store
@@ -1055,6 +1082,16 @@ def cmd_server(args):
     if args.pair:
         print(f"savetokens join URL {server.Users(data).pair(args.pair)}  (valid 10 minutes, once)")
         return 0
+    if args.provider_key:
+        from . import providers
+        if args.provider_key not in providers.NAMES:
+            raise Fail(f"providers: {', '.join(providers.NAMES)}")
+        key = "" if sys.stdin.isatty() else sys.stdin.read().strip()
+        path = providers.keys_path(data, args.user or "me")
+        providers.save_key(path, args.provider_key, key or None)
+        print(f"{args.provider_key}: " + (f"admin key kept in {path} (only you can read it); the hub reads its"
+                                          " usage report hourly" if key else "removed (pipe a key in to set one)"))
+        return 0
     if args.setup:
         from . import hub
         return 0 if hub.setup(args.port, data, interactive=sys.stdin.isatty()) else 1
@@ -1170,6 +1207,7 @@ def main(argv=None):
     s = cmd("project", cmd_project, "make this folder one project on every machine (writes a .savetokens file)")
     s.add_argument("action", choices=["link"], help="link: this folder and everything under it is one project")
     s.add_argument("name", nargs="?", help="what to call it (default: the repo's or folder's name)")
+    cmd("otel", cmd_otel, "the lines that send any agent's OpenTelemetry to your hub (a token of its own)")
     s = cmd("efficiency", cmd_efficiency, "where tokens go and what the same work would cost done differently:"
             " facts and what-ifs, any tool or provider")
     s.add_argument("--days", type=int, default=7, help="how many days back (default 7)")
@@ -1209,6 +1247,9 @@ def main(argv=None):
     s.add_argument("--setup", action="store_true",
                    help="make this machine the hub: starts on boot, prints the line that adds other machines")
     s.add_argument("--stop", action="store_true", help="stop the hub set up with --setup (the data stays)")
+    s.add_argument("--provider-key", metavar="PROVIDER", help="anthropic or openai: an admin key on stdin, so the hub"
+                                                              " counts API usage no reader saw (nothing piped: remove)")
+    s.add_argument("--user", metavar="NAME", help="with --provider-key: whose (default: me, the first user)")
     p.epilog = _overview_help(helps) + "\n\n" + COMMON + "\n\n" + EXIT_CODES
     args = p.parse_args(argv)
     try:
