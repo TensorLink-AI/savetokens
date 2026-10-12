@@ -103,7 +103,24 @@ function drawHeadline(s) {
   const level = { bad: "act", warn: "warn", ok: "ok" }[h.level] || "none";
   $("headline").className = `headline ${level}`;
   $("headline-label").textContent = { act: "┤ ACT NOW ├", warn: "┤ HEADS-UP ├", ok: "┤ ON TRACK ├" }[level] || "┤ STATUS ├";
-  $("headline-text").textContent = h.text || "Nothing to report yet.";
+  // the headline names the plan or API budget it's about, with its badge; the others get a line each below
+  const items = h.items || [], p = clear($("headline-text")), ul = clear($("headline-pools"));
+  const lead = (h.level === "bad" || h.level === "warn") && items.length ? items[0] : null;
+  if (lead) p.append(badge(lead.kind), h.text);
+  else p.append(items.length > 1 ? "On track: nothing below is likely to run out early."
+    : h.text || "Nothing to report yet.");
+  if (items.length > 1)
+    for (const x of lead ? items.slice(1) : items) ul.append(el("li", `lvl-${x.level}`, badge(x.kind),
+      el("span", "pool-tool", x.tool), el("span", "pool-text", x.text)));
+  ul.hidden = !ul.childNodes.length;
+}
+
+// plan or API: a badge that tells them apart at a glance, wherever either appears
+function badge(kind) {
+  const [cls, txt, tip] = { subscription: ["sub", "PLAN", "Subscription: usage limits, a fixed price"],
+    api: ["api", "API", "Pay as you go: billed per token"], goal: ["goal", "BUDGET", "A budget you set"] }[kind]
+    || ["goal", String(kind || "").toUpperCase(), ""];
+  const b = el("span", `badge ${cls}`, txt); if (tip) b.title = tip; return b;
 }
 
 // ── spend ──
@@ -138,18 +155,19 @@ function drawSpend(s) {
     rows.append(r);
   }
   $("period-name").textContent = PERIOD[period][0].toUpperCase();
-  const cells = (x, last4) => [el("span", "r", tok(x.tokens)), el("span", "r spend", usd2(x.cost != null ? x.cost : x.usd)),
+  const worth = (x) => x.api_value ? usd2(x.api_value) : "–";
+  const cells = (x) => [el("span", "r", tok(x.tokens)), el("span", "r spend", usd2(x.cost != null ? x.cost : x.usd)),
     el("span", "r", x.projected && x.projected.cost ? usd(x.projected.cost[1]) : x.projected_usd != null ? usd(x.projected_usd) : "–"),
-    el("span", "r dim", last4)];
+    el("span", "r dim", worth(x))];
   for (const e of sp.providers || []) {
     const x = e.periods[period];
     if (!x) continue;
     const id = e.label;
-    const perM = e.plan && !e.usd_per_mtok ? "plan" : e.usd_per_mtok ? usd(e.usd_per_mtok) : "–";
     const r = el("div", "row click" + (open[id] ? " sel" : ""),
       el("span", null, el("span", "mark-col", open[id] ? "−" : "+"), el("span", "name", e.label),
-         e.plan ? el("span", "plan", `plan ${usd(e.plan.usd)}/${e.plan.period}`) : null),
-      ...cells(x, perM));
+         e.plan ? badge("subscription") : null, e.plan ? el("span", "plan", `${usd(e.plan.usd)}/${e.plan.period}`) : null,
+         x.usd > 0.005 || !e.plan ? badge("api") : null),
+      ...cells(x));
     r.tabIndex = 0;
     const toggle = () => { open[id] = !open[id]; drawSpend(last); };
     r.addEventListener("click", toggle);
@@ -161,15 +179,17 @@ function drawSpend(s) {
         + (x.next && x.next.cost ? ` (${rng(x.next.cost, usd)})` : "")));
       for (const m of (e.models || []).filter((m) => m.periods[period])) {
         const y = m.periods[period];
-        d.append(el("div", "row", el("span", null, m.model || "unknown"), ...cells(y,
-          m.share_tokens != null ? `${Math.round(m.share_tokens * 100)}% of tokens` : "")));
+        const mr = el("div", "row", el("span", null, m.model || "unknown"), ...cells(y));
+        if (m.share_tokens != null) mr.title = `${Math.round(m.share_tokens * 100)}% of ${e.label}'s tokens`;
+        d.append(mr);
       }
       prov.append(d);
     }
   }
   const t = sp.periods[period];
-  if (t) prov.append(el("div", "row total", el("span", null, "All providers"), ...cells(t, t.next && t.next.cost ? `next ${usd(t.next.cost[1])}` : "")));
-  $("spend-note").textContent = "Spend is pay-as-you-go plus subscriptions, spread evenly over time."
+  if (t) prov.append(el("div", "row total", el("span", null, "All providers"), ...cells(t)));
+  $("spend-note").textContent = "Spend is pay-as-you-go plus subscriptions, spread evenly over time, so two plans at the same price spend the same."
+    + " API value is what the same usage would cost at pay-as-you-go prices: on a plan, that's what the plan saves you."
     + (Object.keys(sp.plans || {}).length ? "" : " On a subscription? Add its price: savetokens plan anthropic --usd 200 --per month");
 }
 
@@ -177,11 +197,14 @@ function drawSpend(s) {
 function limitCard(o, now) {
   const api = o.kind === "api";
   const crit = o.stage === "act" || o.stage === "last_call" || o.used >= 100, warn = !crit && !!o.eta;
-  const tool = (TOOLS[o.harness] || o.harness || "") + (api ? " · API" : "");
-  const label = api ? `Budget, ${usd(o.budget_usd)} ${o.per || ""}` : String(o.label || "").replace(/^(Codex|Hermes) /, "");
-  const card = el("div", "limit" + (crit ? " crit" : warn ? " warn" : ""));
-  card.append(el("span", "tool", `${tool} · ${label}`, o.stage ? el("span", `stage ${o.stage}`, o.stage.replace("_", "-")) : null));
-  card.append(el("span", "big", el("span", "num", pct(o.used)), el("span", "dim", api ? `${usd2(o.spent_usd)} spent` : "used")));
+  const goal = o.kind === "goal", money = api || (goal && o.unit === "usd");
+  const tool = goal ? String(o.label || "").replace(/ budget$/, "") : (TOOLS[o.harness] || o.harness || "");
+  const label = api ? `${usd(o.budget_usd)} ${o.per || ""}` : goal ? `${money ? usd(o.amount) : tok(o.amount)} ${o.per || ""}`
+    : String(o.label || "").replace(/^.* plan's /, "");
+  const card = el("div", "limit " + (o.kind || "") + (crit ? " crit" : warn ? " warn" : ""));
+  card.append(el("span", "tool", badge(o.kind), `${tool} · ${label}`, o.stage ? el("span", `stage ${o.stage}`, o.stage.replace("_", "-")) : null));
+  card.append(el("span", "big", el("span", "num", pct(o.used)), el("span", "dim",
+    api ? `${usd2(o.spent_usd)} spent` : goal ? `${money ? usd2(o.spent) : tok(o.spent)} spent` : "of the limit used")));
   const m = el("div", "meter");
   if (o.p10 != null && o.p90 != null) {
     const b = el("div", "band"); b.style.left = `${clamp(o.p10)}%`; b.style.width = `${clamp(o.p90) - clamp(o.p10)}%`; m.append(b);
@@ -205,12 +228,15 @@ function drawLimits(s) {
     box.append(empty("No limits known yet. Send a message in Claude Code or Codex with savetokens installed, or set an API budget: savetokens api hermes --budget 100"));
     return;
   }
-  for (const o of s.limits) box.append(limitCard(o, s.now));
+  const api = clear($("api-limits")), goals = clear($("goal-limits"));
+  for (const o of s.limits) (o.kind === "api" ? api : o.kind === "goal" ? goals : box).append(limitCard(o, s.now));
+  $("api-box").hidden = !api.childNodes.length; $("goal-box").hidden = !goals.childNodes.length;
+  if (!box.childNodes.length) box.append(empty("No subscription limits yet: they appear after a message in Claude Code or Codex."));
 }
 
 let chartId = store.get("st_chart");
 const SHORT = (c) => c.group === "providers" ? c.label.replace(" tokens (millions)", " tokens")
-  : c.label.replace(" % of weekly limit", " limit").replace(" API $", " API spend");
+  : c.label.replace(" % of weekly limit", " plan limit").replace(" API $", " API spend");
 
 function drawChart(s) {
   // every series the hub sends (each tool's limit, each provider's tokens); an older one sends just `demand`

@@ -447,10 +447,25 @@ def _hub_projects(s, now=None):
 
 def engine_loop(users: Users, dirty: set, lock: threading.Lock, stop: threading.Event, log=print):
     """Every minute: run the engine for users with new data, and for everyone whose forecast is due."""
+    from . import pricing
+    seen = None
     while not stop.is_set():
         with lock:
             fresh = set(dirty)
             dirty.clear()
+        pricing.refresh()                # the price catalogue, once a day, as machines do
+        cat = pricing.catalogue_at()
+        if cat != seen:                  # newer on disk (fetched here or by a machine sharing this home)
+            pricing.reset()
+            seen = cat
+
+        def reprice(s, key):
+            # requests that came in unpriced (a model newer than the machine's catalogue) or were priced
+            # on the machine after they were sent: priced here once a newer catalogue knows them
+            if key in fresh or s.meta("repriced_with") != cat:
+                if pricing.reprice(s):
+                    fresh.add(key)
+                s.set_meta("repriced_with", cat)
         for name in users.names():
             try:
                 with users.store(name) as s:
@@ -458,6 +473,7 @@ def engine_loop(users: Users, dirty: set, lock: threading.Lock, stop: threading.
                     from . import providers   # opted in with an admin key: API usage no reader saw
                     if providers.sync(s, users.data, name, now, log=lambda m, n=name: log(f"{n}: {m}")):
                         fresh.add(name)
+                    reprice(s, name)
                     if name in fresh or maintain.refresh_due(s, s.meta("forecast_made_at"), now):
                         maintain.update(s, now, log=lambda m, n=name: log(f"{n}: {m}"))
             except Exception as e:   # one user's failure must not stop the others
@@ -468,6 +484,7 @@ def engine_loop(users: Users, dirty: set, lock: threading.Lock, stop: threading.
             try:
                 with tm.store(team) as s:
                     now = time.time()
+                    reprice(s, f"team:{team}")
                     if f"team:{team}" in fresh or maintain.refresh_due(s, s.meta("forecast_made_at"), now):
                         maintain.update(s, now, log=lambda m, n=team: log(f"team {n}: {m}"))
             except Exception as e:

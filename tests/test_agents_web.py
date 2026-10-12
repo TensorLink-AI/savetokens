@@ -75,7 +75,7 @@ def test_check_gives_its_verdict_as_the_exit_code(capsys, monkeypatch):
     monkeypatch.setattr(time, "time", lambda: T0)
     code, out = run(capsys, "check", "--json")
     assert code == cli.AT_RISK and out["verdict"] == "at_risk"
-    assert any(x["label"] == "Codex weekly limit" and x["stage"] for x in out["limits"])
+    assert any(x["label"] == "Codex plan's weekly limit" and x["stage"] for x in out["limits"])
     code, out = run(capsys, "check", "--tool", "claude-code", "--json")
     assert code == 0 and out["verdict"] == "on_track" and {x["pool"] for x in out["limits"]} == {"claude-code"}
     monkeypatch.setattr(advise, "estimate", lambda *a, **k: {"finish": None, "waits": [], "summary": "too big",

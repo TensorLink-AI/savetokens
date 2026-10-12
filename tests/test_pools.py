@@ -80,15 +80,16 @@ def test_claude_and_codex_plans_are_separate_pools(store, homes):
     assert [p.id for p in pools.pools(store, T0)] == ["claude-code", "codex"]
     new = maintain.update(store, T0, use_ephemeris=False)
     looks = {(o["pool"], o["name"]): o for o in forecast.outlook(store, T0)}
-    assert looks[("claude-code", "seven_day")]["label"] == "weekly limit"
+    assert looks[("claude-code", "seven_day")]["label"] == "Claude Code plan's weekly limit"
     cx = looks[("codex", "seven_day")]
-    assert cx["label"] == "Codex weekly limit" and cx["used"] == 72.0
+    assert cx["label"] == "Codex plan's weekly limit" and cx["used"] == 72.0
     assert cx["eta"] and cx["eta"] < T0 + 2 * 86400                    # 1.5% an hour: out in ~19h, before the reset
-    assert "Codex weekly limit" in {a["message"].split(":")[0] for a in new}
+    assert "Codex plan's weekly limit" in {a["message"].split(":")[0] for a in new}
     assert not alerts.check(store, T0)                                  # once per stage
     snap = dashboard.snapshot(store, T0)
     assert snap["demand"]["pool"] == "codex"                            # the chart follows the pool running out
-    assert "Codex weekly limit" in snap["headline"]["text"]
+    assert snap["headline"]["text"].startswith("Codex plan runs out of its weekly limit")
+    assert [(x["tool"], x["badge"]) for x in snap["headline"]["items"]][0] == ("Codex", "plan")
     assert "Codex wk" in "\n".join(dashboard.render(snap, width=100, color=False))
 
 

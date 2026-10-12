@@ -154,3 +154,31 @@ def test_install_sh_is_the_one_line_installer_without_a_hub(tmp_path):
                        stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "args").read_text().split() == ["install", "--no-ephemeris", "--yes"]
+
+
+def test_the_hub_prices_requests_that_arrived_unpriced_once_its_catalogue_knows_the_model(tmp_path, monkeypatch):
+    import threading
+    from savetokens import maintain, pricing
+    from savetokens.store import Usage
+    users = server.Users(tmp_path / "srv")
+    users.add("me")
+    with users.store("me") as s:
+        s.add_usage([Usage("codex", "c", "c1", 1.7e9, "brand-new-model", input=1_000_000, provider="acme")])
+    monkeypatch.setattr(pricing, "_fetch", lambda: [{"id": "acme/brand-new-model",
+                                                      "pricing": {"prompt": "0.000001", "completion": "0.000003"}}])
+    monkeypatch.setattr(maintain, "update", lambda *a, **k: [])
+
+    class Once(threading.Event):     # one pass of the loop
+        def __init__(self):
+            super().__init__()
+            self.n = 0
+
+        def is_set(self):
+            self.n += 1
+            return self.n > 1
+
+        def wait(self, timeout=None):
+            return True
+    server.engine_loop(users, set(), threading.Lock(), Once(), log=lambda *_: None)
+    with users.store("me") as s:
+        assert s.conn.execute("SELECT cost_usd FROM usage").fetchone()[0] == 1.0

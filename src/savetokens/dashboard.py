@@ -111,7 +111,7 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
     except Exception:   # nor on this
         snap["setup"] = []
     level, text = headline(snap)
-    snap["headline"] = {"level": level, "text": text}
+    snap["headline"] = {"level": level, "text": text, "items": pool_status(snap)}
     return snap
 
 
@@ -327,30 +327,70 @@ def bar(used, p10, p50, p90, width=40) -> str:
     return "".join(cells)
 
 
-def headline(snap):
-    """(level, text): the one line that says whether you're fine, for the top of every view."""
+KIND = {"subscription": "plan", "api": "API", "goal": "budget"}
+
+
+def pool_status(snap) -> list[dict]:
+    """One line per subscription, API budget and budget: which it is, and whether it lasts. Worst first."""
     now = snap["now"]
-    looks = [o for o in snap["limits"] if o.get("p50") is not None]
-    urgent = sorted((o for o in looks if o.get("eta")), key=lambda o: o["eta"])
-    if urgent:
-        o = urgent[0]
-        text = (f"At this pace you'll run out of your {o['label']} around {alerts.when(o['eta'], now)},"
-                f" {alerts.span(o['resets'] - o['eta'])} before it "
-                + ("resets." if o.get("kind") != "api" else f"{o['period']} ends."))
-        best = [x for x in snap.get("sessions") or [] if (x.get("if_stopped") or {}).get("eta")
-                and x["if_stopped"].get("pool", o.get("pool")) == o.get("pool")]
-        if best:
-            x = max(best, key=lambda x: x["if_stopped"]["eta_if_stopped"] or float("inf"))
-            later = x["if_stopped"]["eta_if_stopped"]
-            gain = "would get you to the reset" if later is None else f"buys about {alerts.span(later - o['eta'])}"
-            if later is None or later - o["eta"] >= 1800:
-                text += f" Pausing {x.get('project') or x['session']} {gain}."
-        return ("bad" if o.get("stage") in ("act", "last_call") else "warn"), text
-    mains = [o for o in looks if o["name"] in ("seven_day", "budget")]   # each pool's long limit
-    if mains:
-        parts = [f"{o['label']} likely {o['p50']:.0f}% by {alerts.when(o['resets'], now)}"
-                 f" ({o['p_hit']:.0%} chance of running out first)" for o in mains]
-        return "ok", "On track: " + "; ".join(parts) + "."
+    by = {}
+    for o in snap["limits"]:
+        by.setdefault(o["pool"], []).append(o)
+    out = []
+    for pool, looks in by.items():
+        o0 = looks[0]
+        tool = o0["label"].removesuffix(" budget") if o0["kind"] == "goal" else \
+            next((p["tool"] for p in snap.get("pools") or [] if p["id"] == pool), pool)
+        base = {"pool": pool, "tool": tool, "kind": o0["kind"], "badge": KIND.get(o0["kind"], o0["kind"])}
+        urgent = sorted((o for o in looks if o.get("eta") and o.get("p50") is not None), key=lambda o: o["eta"])
+        if urgent:
+            o = urgent[0]
+            what = NAME_IN.get(o["name"], "budget")
+            if o["used"] >= 100:
+                text = f"{what} used up until {alerts.when(o['resets'], now)}."
+            else:
+                text = (f"runs out of its {what} around {alerts.when(o['eta'], now)},"
+                        f" {alerts.span(o['resets'] - o['eta'])} before it "
+                        + ("resets." if o["kind"] == "subscription" else f"{o.get('period') or 'period'} ends."))
+            best = [x for x in snap.get("sessions") or [] if (x.get("if_stopped") or {}).get("eta")
+                    and x["if_stopped"].get("pool", o.get("pool")) == o.get("pool")]
+            if best and o["used"] < 100:
+                x = max(best, key=lambda x: x["if_stopped"]["eta_if_stopped"] or float("inf"))
+                later = x["if_stopped"]["eta_if_stopped"]
+                gain = "would get you to the reset" if later is None else f"buys about {alerts.span(later - o['eta'])}"
+                if later is None or later - o["eta"] >= 1800:
+                    text += f" Pausing {x.get('project') or x['session']} {gain}."
+            out.append({**base, "level": "bad" if o.get("stage") in ("act", "last_call") or o["used"] >= 100
+                        else "warn", "eta": o["eta"], "text": text})
+            continue
+        main = next((o for o in looks if o["name"] in ("seven_day", "budget", "goal") and o.get("p50") is not None),
+                    None)
+        if main:
+            what = NAME_IN.get(main["name"], "budget")
+            text = (f"on track: {what} likely {main['p50']:.0f}% by {alerts.when(main['resets'], now)}"
+                    f" ({main['p_hit']:.0%} chance of running out first).")
+            out.append({**base, "level": "ok", "eta": None, "text": text})
+        else:
+            out.append({**base, "level": "none", "eta": None, "text": "forecast on its way: within the hour."})
+    rank = {"bad": 0, "warn": 1, "ok": 2, "none": 3}
+    return sorted(out, key=lambda x: (rank[x["level"]], x["eta"] or float("inf")))
+
+
+NAME_IN = {"five_hour": "5-hour limit", "seven_day": "weekly limit", "budget": "API budget", "goal": "budget"}
+
+
+def headline(snap):
+    """(level, text): the one line that says whether you're fine, for the top of every view. It names which
+    subscription or API budget it's about."""
+    items = pool_status(snap)
+    if items and items[0]["level"] in ("bad", "warn"):
+        x = items[0]
+        text = f"{x['tool']} {x['badge']} {x['text']}" if x["kind"] != "goal" else f"{x['tool']} budget: {x['text']}"
+        return x["level"], text[0].upper() + text[1:]
+    ready = [x for x in items if x["level"] == "ok"]
+    if ready:
+        return "ok", "On track: " + "; ".join(f"{x['tool']} {x['badge']} {x['text'].removeprefix('on track: ')}"
+                                              .rstrip(".") for x in ready) + "."
     if snap["limits"]:
         return "ok", "Forecast on its way: the first one arrives within the hour."
     return "none", ("No limit readings yet: send a message in Claude Code or Codex with savetokens installed,"

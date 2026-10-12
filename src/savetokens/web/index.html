@@ -44,7 +44,10 @@
     <div id="headline" class="headline" role="status">
       <span class="box-label" id="headline-label">┤ STATUS ├</span>
       <span class="bang" id="headline-bang">!</span>
-      <p id="headline-text"></p>
+      <div class="headline-body">
+        <p id="headline-text"></p>
+        <ul class="pools" id="headline-pools"></ul>
+      </div>
     </div>
 
     <details id="setup" class="box fold" hidden>
@@ -83,7 +86,7 @@
         <span class="box-label">┤ BY PROVIDER · <span id="period-name">THIS MONTH</span> ├</span>
         <span class="box-aside">select a provider for models and ranges</span>
         <div class="scroll"><div class="grid providers" id="providers">
-          <div class="row head"><span>PROVIDER</span><span class="r">TOKENS</span><span class="r">SPEND</span><span class="r">LIKELY BY END</span><span class="r">$ / M TOKENS</span></div>
+          <div class="row head"><span>PROVIDER</span><span class="r">TOKENS</span><span class="r">SPEND</span><span class="r">LIKELY BY END</span><span class="r">API VALUE</span></div>
         </div></div>
       </section>
       <p class="note" id="spend-note"></p>
@@ -91,8 +94,19 @@
 
     <div id="limits-tab" role="tabpanel" aria-labelledby="tab-limits" hidden>
       <section class="box">
-        <span class="box-label">┤ LIMITS ├</span>
+        <span class="box-label">┤ SUBSCRIPTIONS ├</span>
+        <span class="box-aside">plans with usage limits: % of each limit</span>
         <div class="limits" id="limits"></div>
+      </section>
+      <section class="box" id="api-box" hidden>
+        <span class="box-label">┤ API BUDGETS ├</span>
+        <span class="box-aside">pay as you go: dollars against the budget you set</span>
+        <div class="limits" id="api-limits"></div>
+      </section>
+      <section class="box" id="goal-box" hidden>
+        <span class="box-label">┤ BUDGETS ├</span>
+        <span class="box-aside">project, task and overall budgets</span>
+        <div class="limits" id="goal-limits"></div>
       </section>
       <p class="note">Bar: used now, then the likely range at reset. The white tick is the most likely point.</p>
 

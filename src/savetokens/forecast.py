@@ -284,7 +284,7 @@ def _pool_outlook(store, p, now, source, cut, cut_hours):
                                        (p.harness, r["ts"], now)).fetchone()[0]
             used += since * rate * scale
         codex = p.harness != meter.CLAUDE
-        o = {**base, "name": name, "label": (f"{p.tool} " if codex else "") + NAMES[name],
+        o = {**base, "name": name, "label": f"{p.tool} plan's {NAMES[name]}",
              "short": (CODEX_SHORT if codex else SHORT)[name], "used": used, "read_at": r["ts"],
              "resets": r["resets"], "p_hit": 1.0 if used >= 100 else None, "eta": now if used >= 100 else None}
         out.append(_project(o, paths, now, max(0.0, 100 - used), scale, cut, cut_hours))
