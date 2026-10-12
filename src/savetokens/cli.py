@@ -826,11 +826,13 @@ def cmd_team(args):
     got = _team_call(f"/v1/team?days={args.days}")
     with Store() as s:
         names = projects.names(s)
-    lines = [f"{got['team']} ({got['members']} members; you're {got['role']}): ${got['usd']:,.2f},"
+    plural = lambda n, one, many: f"{n} {one if n == 1 else many}"
+    lines = [f"{got['team']} ({plural(got['members'], 'member', 'members')}; you're {got['role']}): ${got['usd']:,.2f},"
              f" {got['tokens'] / 1e6:,.1f}M tokens in {got['days']} days."]
     for pr in got["projects"][:10]:
         name = pr["name"] or names.get(pr["id"]) or f"project {pr['id'][:8]}"
-        lines.append(f"  {name:<28} ${pr['usd']:>10,.2f}  {pr['tokens'] / 1e6:>8,.1f}M tokens  {pr['people']} people")
+        lines.append(f"  {name:<28} ${pr['usd']:>10,.2f}  {pr['tokens'] / 1e6:>8,.1f}M tokens"
+                     f"  {plural(pr['people'], 'person', 'people')}")
     for o in got["budgets"]:
         lines.append(f"  {o['label']}: {o['used']:.0f}% used" + (f", likely {o['p50']:.0f}% by the end" if o.get("p50")
                                                                  is not None else ""))
