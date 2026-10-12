@@ -194,3 +194,29 @@ def test_a_newer_client_still_pushes_to_an_older_hub(store, running, monkeypatch
     store.add_usage([Usage("claude-code", "s", "r1", T0, "m", reasoning=5, thread="s")])
     assert sync.push(store, {"server_url": url, "server_token": token}) >= 1
     assert store.meta("hub_legacy_usage")
+
+
+def test_two_chatgpt_accounts_are_two_codex_plans_each_with_its_own_limits(store, homes):
+    a = rollout(homes, "rollout-a-c1.jsonl", sid="c1", creator_account_id="acc-1", creator_user_id="u1")
+    b = rollout(homes, "rollout-b-c2.jsonl", sid="c2", creator_account_id="acc-2", creator_user_id="u2")
+    for i in range(24):   # one account nearly full, the other barely used: interleaved, as on two machines
+        a.turn(T0 - (48 - 2 * i) * H, week=3.0 * (i + 1), resets=T0 + 2 * 86400)
+        b.turn(T0 - (47 - 2 * i) * H, week=0.5 * (i + 1), resets=T0 + 4 * 86400)
+    codex.backfill(store)
+    got = pools.pools(store, T0)
+    assert [p.harness for p in got] == ["codex", "codex"] and len({p.key for p in got}) == 2
+    assert [p.name for p in got] == ["Codex (account 1)", "Codex (account 2)"]   # the latest used first
+    looks = {(o["pool"], o["name"]): o for o in forecast.outlook(store, T0)}
+    used = sorted(o["used"] for (_, n), o in looks.items() if n == "seven_day")
+    assert used == [12.0, 72.0]                                         # each its own meter, not one mixed series
+    for p in got:   # each account's history rises only with its own readings
+        hist, _ = meter.demand(store, T0, harness="codex", account=p.account)
+        assert abs(sum(v for _, v in hist) - {1: 11.5, 2: 69.0}[p.n]) < 1e-6   # account 1 read last: 0.5 → 12
+
+
+def test_one_chatgpt_account_is_one_codex_plan_as_before(store, homes):
+    r = rollout(homes, creator_account_id="acc-1", creator_user_id="u1")
+    for i in range(6):
+        r.turn(T0 - (6 - i) * H, week=10.0 + 2 * i)
+    codex.backfill(store)
+    assert [(p.id, p.name, p.account) for p in pools.pools(store, T0)] == [("codex", "Codex", None)]

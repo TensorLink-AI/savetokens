@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import time
 import sys
 
 from savetokens import cli, dashboard, ephemeris, pools, setup
@@ -54,7 +55,7 @@ def test_setup_yes_takes_the_detected_prices_and_lists_the_rest(homes, capsys):
     (homes / "hermes").mkdir()
     assert cli.main(["setup", "--json"]) == 0                      # without --yes: changes nothing
     out = json.loads(capsys.readouterr().out)
-    assert out["changed"] == [] and {"plan:anthropic", "plan:openai", "budget:hermes", "forecaster"} <= set(out["left"])
+    assert out["changed"] == [] and {"plan:anthropic", "plan:openai", "budget:tool:hermes", "forecaster"} <= set(out["left"])
     cmds = {s["id"]: s["command"] for s in out["steps"]}
     assert cmds["plan:anthropic"] == "savetokens plan anthropic --usd 200 --per month"
     assert "someone@example.com" not in json.dumps(out)
@@ -63,7 +64,7 @@ def test_setup_yes_takes_the_detected_prices_and_lists_the_rest(homes, capsys):
     assert out["changed"] == ["plan anthropic", "plan openai"] and "plan:anthropic" not in out["left"]
     with Store() as s:
         assert {p: v["usd"] for p, v in pools.plans(s).items()} == {"anthropic": 200, "openai": 200}
-        assert pools.budgets(s) == {}                               # a budget is never guessed
+        assert pools.budgets(s) == {} and pools.goals_(s) == {}     # a budget is never guessed
 
 
 def test_the_guided_pass_asks_once_each_and_checks_the_key(homes, monkeypatch):
@@ -79,7 +80,8 @@ def test_the_guided_pass_asks_once_each_and_checks_the_key(homes, monkeypatch):
         got = setup.run(s, load_config(), ask=lambda q: (log.append(q), next(answers))[1],
                         secret=lambda q: next(keys), out=log.append)
         assert {p: v["usd"] for p, v in pools.plans(s).items()} == {"anthropic": 200, "openai": 30}
-        assert pools.budgets(s)["hermes"]["usd"] == 50
+        g = pools.goals_(s)["hermes"]
+        assert (g["amount"], g["scope"], g["count"]) == (50, {"tools": ["hermes"]}, "api")
     text = "\n".join(map(str, log))
     assert "Claude Max 20x: what does it cost a month? [$200" in text and setup.SIGNUP in text
     assert "didn't accept" in text and "1,500 credits" in text and "good" not in text
@@ -234,3 +236,20 @@ def test_an_empty_claude_folder_is_not_claude_code(homes, monkeypatch):
     assert setup.claude_plan() is None
     (homes / "claude" / "projects").mkdir()                     # it has run here
     assert setup.claude_plan() is not None
+
+
+def test_each_provider_paid_by_api_gets_its_own_budget_step(store):
+    from savetokens.store import Usage
+    now = time.time()
+    store.add_usage([Usage("claude-code", "s", "s1", now - 3600, "m", cost_usd=4.0, billing="api", provider="saygm.com"),
+                     Usage("hermes", "h", "h1", now - 3600, "m", cost_usd=1.5, billing="api", provider="chutes.ai"),
+                     Usage("claude-code", "p", "p1", now - 3600, "m", cost_usd=9.0)])          # on the plan: no budget
+    pools.add_budget(store, 20, "month", providers=["chutes"])                  # set by its short name
+    steps = {x["id"]: x for x in setup.steps(store, now, cfg={}, found={})}
+    assert {k for k in steps if k.startswith("budget:")} == {"budget:provider:saygm.com", "budget:provider:chutes.ai"}
+    assert not steps["budget:provider:saygm.com"]["done"]
+    assert steps["budget:provider:saygm.com"]["command"] == "savetokens budget --provider saygm.com --usd USD --per month"
+    assert steps["budget:provider:chutes.ai"]["done"] and steps["budget:provider:chutes.ai"]["title"] == "Chutes budget: $20 a month"
+    pools.add_budget(store, 100, "month")                                       # an overall one covers the rest
+    steps = {x["id"]: x for x in setup.steps(store, now, cfg={}, found={})}
+    assert steps["budget:provider:saygm.com"]["done"] and steps["budget:provider:saygm.com"]["title"] == "saygm.com: in your overall budget"

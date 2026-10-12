@@ -15,6 +15,7 @@ Counts only: never prompts, replies or tool output.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -111,6 +112,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
     cwd, branch = state.get("cwd"), state.get("branch")
     planned = state.get("planned", False)          # this session has shown a plan meter
     who = state.get("provider")                     # another provider than OpenAI: provider_of
+    acct = state.get("account")                     # the ChatGPT account and user it ran as, hashed
     usage, readings = [], []
     last_total = state.get("total")
     for line in data[:end].splitlines():
@@ -128,6 +130,8 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
             branch = (p.get("git") or {}).get("branch") or branch
             sub = sub or bool(p.get("parent_thread_id"))
             who = provider_of(p.get("model_provider")) if "model_provider" in p else who
+            if p.get("creator_account_id") or p.get("creator_user_id"):
+                acct = account_hash(p.get("creator_account_id"), p.get("creator_user_id"))
         elif kind == "turn_context":
             model = p.get("model") or model
         elif kind == "event_msg" and p.get("type") == "token_count":
@@ -152,7 +156,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
                           input=max(0, int(last.get("input_tokens") or 0) - cached), cache_read=cached,
                           cache_write_5m=int(last.get("cache_write_input_tokens") or 0),
                           output=int(last.get("output_tokens") or 0), project=project, thread=sid, cwd=cwd,
-                          branch=branch,
+                          branch=branch, account=acct,
                           reasoning=int(last["reasoning_output_tokens"]) if "reasoning_output_tokens" in last else None)
                 e.cost_usd = pricing.cost(model, input=e.input, output=e.output, cache_read=e.cache_read,
                                           cache_write_5m=e.cache_write_5m)
@@ -162,22 +166,27 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
         e.billing = "api" if api or who else None
         e.provider = who
     added = store.add_usage(usage)
-    _add_readings(store, readings)
+    _add_readings(store, readings, acct)
     store.set_meta(f"codex_file:{path.name}", {"sid": sid, "model": model, "project": project, "sub": sub, "cwd": cwd, "branch": branch,
-                                              "planned": planned, "total": last_total, "provider": who})
+                                              "planned": planned, "total": last_total, "provider": who, "account": acct})
     store.set_offset(path, offset + end, size)
     store.conn.commit()
     return added
 
 
-def _add_readings(store: Store, readings):
+def account_hash(account_id, user_id) -> str:
+    """One ChatGPT login (a workspace and its user, as each has its own limits), as a short hash: never the ids."""
+    return hashlib.sha1(f"{account_id or ''}:{user_id or ''}".encode()).hexdigest()[:12]
+
+
+def _add_readings(store: Store, readings, account=None):
     kept, rows = {}, []
     for ts, window, pct, resets in sorted(readings):
         k = kept.get(window)
         if k and pct == k[1] and ts - k[0] < THIN_SECONDS:
             continue
         kept[window] = (ts, pct)
-        rows.append((store.machine, HARNESS, None, ts, window, pct, resets))
+        rows.append((store.machine, HARNESS, account, ts, window, pct, resets))
     if rows:
         store.insert("meter", ["machine", "harness", "account", "ts", "name", "pct", "resets"], rows)
 

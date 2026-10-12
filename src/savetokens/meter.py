@@ -111,6 +111,13 @@ def active_account(store, now=None, harness=CLAUDE):
     return r[0] if r else None
 
 
+def recent_accounts(store, since, harness=CLAUDE):
+    """The named accounts with limit readings since `since`, the latest read first."""
+    return [r[0] for r in store.conn.execute(
+        "SELECT account FROM meter WHERE harness = ? AND ts >= ? AND account IS NOT NULL GROUP BY account"
+        " ORDER BY MAX(ts) DESC", (harness, since))]
+
+
 def accounts(store, harness=CLAUDE):
     return [r[0] for r in store.conn.execute("SELECT DISTINCT account FROM meter WHERE harness = ?", (harness,))]
 
@@ -150,11 +157,13 @@ def _rises(rows):
     return out
 
 
-def _hourly_usd(store, since, until, harness=CLAUDE):
-    """Captured subscription usage per hour, by WEIGHT."""
+def _hourly_usd(store, since, until, harness=CLAUDE, account=None):
+    """Captured subscription usage per hour, by WEIGHT (one account's, with `account`)."""
     out = defaultdict(float)
+    one = " AND account IS ?" if account is not None else ""
     for ts, c in store.conn.execute(f"SELECT ts, {WEIGHT} FROM usage WHERE harness = ? AND {SUBSCRIPTION}"
-                                    f" AND ts >= ? AND ts < ?", (harness, since, until)):
+                                    f" AND ts >= ? AND ts < ?{one}",
+                                    (harness, since, until) + ((account,) if account is not None else ())):
         if c and c > 0:
             out[hour_floor(ts)] += c
     return out
@@ -254,17 +263,18 @@ def five_hour_ratio(store, until=None, harness=CLAUDE) -> float:
     return a / b if b >= 5 and a > 0 else DEFAULT_RATIO
 
 
-def demand(store, now, hours=HISTORY_HOURS, harness=CLAUDE):
-    """Complete hours before now: [(hour, % of the weekly limit used)], oldest first, plus the $ rate used."""
+def demand(store, now, hours=HISTORY_HOURS, harness=CLAUDE, account=None):
+    """Complete hours before now: [(hour, % of the weekly limit used)], oldest first, plus the $ rate used.
+    Every account's together, or one account's (when several are in use, each has its own limits)."""
     end = hour_floor(now)
     start = end - hours * HOUR
-    rows = readings(store, "seven_day", until=end, harness=harness)
+    rows = readings(store, "seven_day", until=end, account=account, harness=harness)
     rises = [r for r in _rises(rows) if r[1] > start]
-    usd = _hourly_usd(store, start - WEEK, end, harness)
+    usd = _hourly_usd(store, start - WEEK, end, harness, account)
     series = defaultdict(float)
     for t0, t1, rise in rises:
         _spread(max(t0, start - WEEK), min(t1, end - 1), rise, usd, series)
-    r = rate(store, until=end, harness=harness)
+    r = rate(store, until=end, harness=harness, account=account)
     first = rows[0][0] if rows else end
     if r:
         for h, v in usd.items():

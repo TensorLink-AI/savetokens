@@ -14,6 +14,7 @@ in % of its weekly limit an hour; an API pool's is in dollars an hour.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,8 @@ class Pool:
     kind: str            # "subscription" | "api"
     key: str | None      # forecast paths, ledger series and alerts: the account for Claude's plan, else the id
     budget: dict | None = None
+    account: str | None = None   # a plan's own account, when several are in use (each has its own limits)
+    n: int = 0                   # and which of them: 1 is the latest used
 
     @property
     def unit(self):
@@ -42,6 +45,11 @@ class Pool:
     @property
     def tool(self):
         return TOOLS.get(self.harness, self.harness)
+
+    @property
+    def name(self):
+        """The tool, and which account when several are in use: "Codex (account 2)"."""
+        return f"{self.tool} (account {self.n})" if self.n else self.tool
 
 
 def budgets(store) -> dict:
@@ -87,7 +95,13 @@ def pools(store, now=None, goals=False) -> list[Pool]:
     now = now or time.time()
     out = []
     for h in sorted(meter.harnesses(store, since=now - ACTIVE_SECONDS), key=lambda h: h != meter.CLAUDE):
-        out.append(Pool(h, h, "subscription", meter.active_account(store, now, h) if h == meter.CLAUDE else h))
+        accts = meter.recent_accounts(store, now - ACTIVE_SECONDS, h)
+        if len(accts) < 2:   # one account: every reading is its
+            out.append(Pool(h, h, "subscription", meter.active_account(store, now, h) if h == meter.CLAUDE else h))
+            continue
+        for i, a in enumerate(accts):   # several: each its own limits, forecast and alerts
+            out.append(Pool(h if i == 0 else f"{h}:{a[:6]}", h, "subscription",
+                            a if h == meter.CLAUDE else f"{h}:{a}", account=a, n=i + 1))
     for h, b in sorted(budgets(store).items(), key=lambda kv: kv[0] != meter.CLAUDE):
         out.append(Pool(f"{h}:api", h, "api", f"{h}:api", b))
     if goals:
@@ -113,6 +127,17 @@ def set_goal(store, gid, goal):
     store.set_meta("goals_at", time.time())
 
 
+def add_budget(store, usd, period="month", providers=(), tools=()) -> str:
+    """A budget on API spend (real money), for some providers or tools, or overall. Its id."""
+    from . import spend
+    label = " + ".join([spend.label(p) for p in providers] + [TOOLS.get(t, t) for t in tools]) or "Overall"
+    scope = {k: sorted(v) for k, v in (("providers", [p.lower() for p in providers]), ("tools", list(tools))) if v}
+    gid = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "budget"
+    set_goal(store, gid, {"label": label, "scope": scope, "count": "api", "unit": "usd", "amount": float(usd),
+                          "period": period, "start": time.time(), "tz": time.localtime().tm_gmtoff})
+    return gid
+
+
 def remove_goal(store, gid) -> bool:
     g = goals_(store)
     if gid not in g:
@@ -132,6 +157,11 @@ def counts(goal) -> str:
     return goal.get("count") or "all"
 
 
+def stem(provider) -> str:
+    """A provider's name without its domain ending: "chutes.ai" -> "chutes", "saygm.com" -> "saygm"."""
+    return provider.lower().split(".")[0] if "." in provider else provider.lower()
+
+
 def _scope(goal, store=None):
     """SQL (where, args) for the requests a budget counts: its project or task, providers and tools, and
     whether plan usage counts."""
@@ -144,10 +174,14 @@ def _scope(goal, store=None):
             where.append(f"{col} IN ({','.join('?' * len(ids))})")
             args += list(ids)
             break
-    for expr, key in ((spend.PROVIDER, "providers"), ("harness", "tools")):
-        if sc.get(key):
-            where.append(f"{expr} IN ({','.join('?' * len(sc[key]))})")
-            args += list(sc[key])
+    if sc.get("providers"):   # a provider by any of its names: "chutes" is the "chutes.ai" Hermes records
+        names = sorted({n for p in sc["providers"] for n in (p, stem(p))})
+        where.append(f"({spend.PROVIDER} IN ({','.join('?' * len(names))})"
+                     + "".join(f" OR {spend.PROVIDER} LIKE ?" for _ in names) + ")")
+        args += names + [f"{n}.%" for n in names]
+    if sc.get("tools"):
+        where.append(f"harness IN ({','.join('?' * len(sc['tools']))})")
+        args += list(sc["tools"])
     if counts(goal) == "api":
         var, fixed = spend._variable(plans(store) if store is not None else {})
         where.append(f"({var})")
@@ -178,7 +212,7 @@ def history(store, pool: Pool, now, hours=meter.HISTORY_HOURS):
         return ([(h, got.get(h, 0.0)) for h in range(int(min(got)), int(end), meter.HOUR)] if got else []), None
     if pool.kind == "api":
         return meter.spend(store, now, hours, pool.harness), None
-    return meter.demand(store, now, hours, pool.harness)
+    return meter.demand(store, now, hours, pool.harness, pool.account)
 
 
 def period(budget, now):
