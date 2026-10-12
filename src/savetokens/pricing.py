@@ -171,6 +171,14 @@ def refresh(force=False, now=None) -> int:
     return len(rates)
 
 
+def catalogue_at() -> float:
+    """When the catalogue on disk was fetched (0: none). A long-running hub uses it to notice a newer one."""
+    try:
+        return json.loads(_path().read_text()).get("fetched_at", 0)
+    except (OSError, ValueError):
+        return 0
+
+
 def reprice(store) -> int:
     """Price every request that had no price when it was read, now that one is known. Hermes usage its plan
     includes stays unpriced on purpose. Returns requests priced."""

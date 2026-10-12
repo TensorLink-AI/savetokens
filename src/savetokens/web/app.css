@@ -96,7 +96,7 @@ code { font-family: var(--mono); color: var(--white); }
   border: 1px solid var(--line); }
 .headline .box-label { color: var(--dim); }
 .headline .bang { font-weight: 700; font-size: 18px; color: var(--dim); }
-.headline p { margin: 0; flex: 1; font-size: 17px; line-height: 1.55; color: var(--text); text-wrap: pretty; }
+.headline p { margin: 0; font-size: 17px; line-height: 1.55; color: var(--text); text-wrap: pretty; }
 .headline.warn { border-color: var(--yellow); } .headline.warn .box-label, .headline.warn .bang, .headline.warn p { color: var(--yellow); }
 .headline.act { border-color: var(--red); } .headline.act .box-label, .headline.act .bang, .headline.act p { color: var(--red); }
 .headline.ok .box-label { color: var(--cyan); }
@@ -127,7 +127,23 @@ code { font-family: var(--mono); color: var(--white); }
 .mark-col { color: var(--cyan); display: inline-block; width: 10px; margin-right: 10px; }
 .providers .row { grid-template-columns: minmax(0, 2fr) repeat(4, minmax(0, 1fr)); }
 .providers .name { color: var(--white); }
-.providers .plan { color: var(--dim); margin-left: 10px; }
+.providers .plan { color: var(--dim); margin-left: 6px; }
+.providers .badge { margin-left: 10px; }
+/* plan vs API: a filled badge for a subscription, an outlined one for pay as you go */
+.badge { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .08em; line-height: 1;
+  padding: 3px 6px 2px; margin-right: 8px; border: 1px solid; vertical-align: 1px; white-space: nowrap; }
+.badge.sub { background: var(--cream); border-color: var(--cream); color: var(--bg); }
+.badge.api { background: transparent; border-color: var(--orange); color: var(--orange); }
+.badge.goal { background: transparent; border-color: var(--dim); border-style: dashed; color: var(--dim); }
+.headline-body { flex: 1; min-width: 0; }
+.headline .pools { list-style: none; margin: 12px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line); }
+.headline .pools li { display: grid; grid-template-columns: auto 9em 1fr; align-items: baseline; gap: 0 4px;
+  padding: 3px 0; color: var(--text); font-size: 14px; }
+.headline .pools .pool-tool { color: var(--white); }
+.headline .pools li.lvl-warn .pool-text { color: var(--yellow); }
+.headline .pools li.lvl-bad .pool-text { color: var(--red); }
+.headline .pools li.lvl-ok .pool-text, .headline .pools li.lvl-none .pool-text { color: var(--dim); }
+.limit.api .meter .fill { background: var(--orange); }
 .providers .spend { color: var(--white); }
 .providers .total { color: var(--white); font-weight: 600; border-bottom: none; }
 .providers .total span:first-child { padding-left: 20px; }
@@ -229,6 +245,8 @@ code { font-family: var(--mono); color: var(--white); }
 .msg.bad { color: var(--red); }
 
 @media (max-width: 640px) {
+  .headline .pools li { grid-template-columns: auto 1fr; }
+  .headline .pools .pool-text { grid-column: 1 / -1; padding-left: 2px; }
   .wrap { padding: 20px 16px 32px; }
   .top { gap: 16px; }
   .word { font-size: 24px; }

@@ -27,7 +27,7 @@ def test_render_draws_bars_sparklines_and_the_run_out_time(store):
     lines = dashboard.render(dashboard.snapshot(store, T0), width=90, color=False)
     text = "\n".join(lines)
     assert "LIMITS" in text and "weekly" in text and "█" in text and "USAGE PER HOUR" in text
-    assert lines[2].startswith("⚠ At this pace you'll run out of your")   # the answer comes first (here the 5-hour)
+    assert lines[2].startswith("⚠ Claude Code plan runs out of its 5-hour limit")   # the answer first, naming the plan
 
 
 def test_bar_shows_now_likely_and_high_end():

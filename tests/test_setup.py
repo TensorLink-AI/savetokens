@@ -206,7 +206,7 @@ def test_a_first_run_shows_what_it_found(homes, capsys):
     finally:
         t.time = real
     out = capsys.readouterr().out
-    assert "Found in your history" in out or "Codex weekly limit" in out
+    assert "Found in your history" in out or "Codex plan's weekly limit" in out
 
 
 def test_one_key_file_for_every_ephemeris_tool(homes, monkeypatch):
