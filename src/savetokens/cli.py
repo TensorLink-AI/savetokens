@@ -952,6 +952,10 @@ def cmd_budget(args):
             scope["providers"] = sorted({p.lower() for p in args.provider})
         if args.tool:
             scope["tools"] = sorted(set(args.tool))
+        if label == "Overall" and (args.provider or args.tool):   # named for what it counts: one per provider or tool
+            from . import spend
+            label = " + ".join([spend.label(p) for p in scope.get("providers", [])]
+                               + [pools.TOOLS.get(t, t) for t in scope.get("tools", [])])
         count = args.count or ("api" if unit == "usd" else "all")
         goal = {"label": label, "scope": scope, "count": count, "unit": unit, "amount": float(amount),
                 "start": time.time(), "tz": time.localtime().tm_gmtoff}
