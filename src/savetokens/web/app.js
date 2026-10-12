@@ -77,6 +77,12 @@ function clear(node) { while (node.firstChild) node.firstChild.remove(); return 
 function clearRows(node) { for (const c of [...node.childNodes]) if (!(c.classList && c.classList.contains("head"))) c.remove(); return node; }
 const empty = (text) => el("div", "empty", text);
 const kv = (k, v) => el("span", "kv", el("span", "dim", k), el("span", null, v));
+// extra words go behind an ⓘ: shown on hover or focus
+function info(text, side = "right") {
+  const i = el("span", "info pop-host", el("span", "i", "i"), el("span", `pop ${side}`, el("span", "pop-in w320", text)));
+  i.tabIndex = 0; i.setAttribute("aria-label", "About this");
+  return i;
+}
 // a tile with a label cut into its border; with `pop`, a panel that opens on hover or focus
 function tile(cls, legend, pop) {
   const t = el("div", "tile " + cls);
@@ -110,6 +116,10 @@ function drawMeta(s) {
   if (s.sync_error) problems.push("Server unreachable: showing this machine only");
   $("meta").textContent = problems.join(" · ");
   $("meta").hidden = !problems.length;
+}
+
+function planBadge(plan) {
+  const b = badge("subscription"); b.title = `Subscription: ${usd(plan.usd)} a ${plan.period}`; return b;
 }
 
 // plan or API: a badge that tells them apart at a glance, wherever either appears
@@ -156,8 +166,6 @@ function drawSpend(s) {
     kpis.append(empty(sp && sp.error ? `Couldn't work out spend: ${sp.error}` : "No usage yet."));
     return;
   }
-  const src = SOURCE[sp.source];
-  $("spend-src").textContent = src ? `forecast: ${src}` + (s.forecast_made_at ? `, made ${ago(s.forecast_made_at, s.now)}` : "") : "forecast on its way";
   const [name, nextName, by] = PERIOD[period], x = sp.periods[period];
   if (x) {
     const payg = x.usd || 0, fixed = x.fixed_usd || 0, pj = x.projected || {}, nx = x.next || {};
@@ -169,14 +177,14 @@ function drawSpend(s) {
     };
     kpi(`${name.toUpperCase()} SO FAR`, usd2(x.cost), `${tok(x.tokens)} tokens`,
       [["pay as you go", usd2(payg)], ["subscriptions", usd2(fixed)], ["tokens", tok(x.tokens)], ["requests", (x.requests || 0).toLocaleString("en-US")]]);
-    kpi(`LIKELY ${by.toUpperCase()}`, pj.cost ? usd(pj.cost[1]) : "–", pj.cost ? `range ${rng(pj.cost, usd)}` : "forecast on its way",
-      [["likely", pj.cost ? usd(pj.cost[1]) : "–"], ["range", pj.cost ? rng(pj.cost, usd) : "–"], ["tokens", pj.tokens ? `${tok(pj.tokens[1])} (${rng(pj.tokens, tok)})` : "–"]]);
+    kpi("LIKELY BY END", pj.cost ? usd(pj.cost[1]) : "–", pj.cost ? `range ${rng(pj.cost, usd)}` : "forecast on its way",
+      [[`likely ${by}`, pj.cost ? usd(pj.cost[1]) : "–"], ["range", pj.cost ? rng(pj.cost, usd) : "–"], ["tokens", pj.tokens ? `${tok(pj.tokens[1])} (${rng(pj.tokens, tok)})` : "–"]]);
     kpi(nextName.toUpperCase(), nx.cost ? usd(nx.cost[1]) : "–", nx.cost ? `range ${rng(nx.cost, usd)}` : "forecast on its way",
       [["likely", nx.cost ? usd(nx.cost[1]) : "–"], ["of which subscriptions", usd(nx.fixed_usd)], ["tokens", nx.tokens ? `${tok(nx.tokens[1])} (${rng(nx.tokens, tok)})` : "–"]]);
     const saved = Math.max(0, (x.api_value || 0) - x.cost);
     kpi("API VALUE", usd(x.api_value), saved > 0.005 ? `plans save you ${usd(saved)}` : "what it'd cost pay-as-you-go",
       [["API value of all usage", usd2(x.api_value)], ["what you pay", usd2(x.cost)], ["saved by plans", usd2(saved)]]);
-    $("saved").textContent = `${usd(saved)} ${name.toLowerCase()}`;
+    $("saved").textContent = usd(saved);
   }
   $("period-name").textContent = name.toUpperCase();
   const cells = (y) => [el("span", "r", tok(y.tokens)), el("span", "r spend", usd2(y.cost != null ? y.cost : y.usd)),
@@ -187,7 +195,7 @@ function drawSpend(s) {
     const y = e.periods[period], id = e.label;
     const r = el("div", "row click" + (open[id] ? " sel" : ""),
       el("span", null, el("span", "mark-col", open[id] ? "▼" : "▶"), el("span", "name", e.label),
-         e.plan ? badge("subscription") : null, e.plan ? el("span", "plan", `${usd(e.plan.usd)}/${e.plan.period}`) : null,
+         e.plan ? planBadge(e.plan) : null,
          y.usd > 0.005 || !e.plan ? badge("api") : null),
       ...cells(y));
     r.tabIndex = 0;
@@ -232,7 +240,7 @@ function limitCard(o, now) {
     : `${String(o.label || "").replace(/^.* plan's /, "").replace(/^./, (c) => c.toUpperCase())}`;
   const card = tile("limit " + (o.kind || "") + (crit ? " crit" : warn ? " warn" : ""), null, true);
   card.prepend(el("span", "legend", "┤ ", tool, api ? " · API" : goal ? " · budget" : "", " ├"));
-  card.append(el("span", "label", badge(o.kind), label, o.stage ? el("span", "stage", `· ${o.stage.replace("_", "-")}`) : null));
+  card.append(el("span", "label", badge(o.kind), label));
   card.append(el("span", "big", el("span", "num", pct(o.used)), el("span", "dim",
     api ? `${usd2(o.spent_usd)} spent` : goal ? `${money ? usd2(o.spent) : tok(o.spent)} spent` : "used")));
   const m = el("div", "meter");
@@ -245,11 +253,13 @@ function limitCard(o, now) {
   const end = api || goal ? "the period's end" : "reset";
   let main;
   if (o.used >= 100) main = `Used up until ${api || goal ? "the period ends" : "it resets"}`;
-  else if (o.eta) main = `Runs out around ${when(o.eta, now)}, ${span(o.resets - o.eta)} early`;
-  else if (o.p50 != null) main = `Likely ${pct(o.p50)} by ${end} · ${Math.round((o.p_hit || 0) * 100)}% risk`;
+  else if (o.eta) main = `Runs out ${when(o.eta, now)}, ${span(o.resets - o.eta)} early`;
+  else if (o.p50 != null) main = `Likely ${pct(o.p50)} · ${Math.round((o.p_hit || 0) * 100)}% risk`;
   else main = "Forecast on its way";
   card.append(el("span", "main", main));
   if (goal && o.counts) card.append(el("span", "dim small", `Counts ${o.counts}`));
+  if (o.stage) card._pop.append(kv("alert", o.stage.replace("_", "-")));
+  if (o.eta) card._pop.append(kv("runs out", `${when(o.eta, now)}, ${span(o.resets - o.eta)} before ${api || goal ? "the period ends" : "it resets"}`));
   card._pop.append(kv(`likely at ${end}`, pct(o.p50)), kv("range", o.p10 != null ? `${pct(o.p10)}–${pct(o.p90)}` : "–"),
     kv("chance of running out", o.p_hit != null ? `${Math.round(o.p_hit * 100)}%` : "–"),
     kv(api || goal ? "period ends" : "resets", `${when(o.resets, now)} (in ${span(o.resets - now)})`),
@@ -392,9 +402,9 @@ function drawLists(s) {
   for (const m of s.machines || []) {
     const off = m.last_sync && s.now - m.last_sync > QUIET;
     mach.append(el("div", "stack", el("span", "n", String(m.machine || "?").slice(0, 12), off ? el("span", "badge quiet", "QUIET") : null),
-      el("span", "s", `${(m.requests || 0).toLocaleString("en-US")} requests · `
-        + (m.last_sync ? `synced ${ago(m.last_sync, s.now)}` : m.last_seen ? `last seen ${ago(m.last_seen, s.now)}` : "no usage this week")),
-      off ? el("span", "s warnc", "Not reaching this hub. Switched off, or pointed at an old address: add it again with ADD MACHINE.") : null));
+      el("span", "s", m.last_sync ? `synced ${ago(m.last_sync, s.now)}` : m.last_seen ? `last seen ${ago(m.last_seen, s.now)}` : "no usage this week",
+        off ? info("Not reaching this hub for over a day. Switched off, or pointed at an old address: add it again with ADD MACHINE.") : null),
+      el("span", "s", `${(m.requests || 0).toLocaleString("en-US")} requests this week`)));
   }
   const accts = s.accounts || [];
   if (accts.length > 1) mach.append(el("div", "s dim", `Claude accounts: ${accts.map((a) => (a.account || "?") + (a.active ? " (in use)" : "")).join(", ")}`));
@@ -441,7 +451,7 @@ const splitText = (tot) => (b) => `${TOOLS[b.tool] || b.tool} ${b.billing === "a
 function drawProjects(s) {
   const pv = s.projects, grid = clear($("projects")), cards = clear($("budget-cards"));
   if (!pv || pv.error) { grid.append(empty(pv ? `Couldn't add up projects: ${pv.error}` : "No projects yet.")); return; }
-  $("projects-days").textContent = `PROJECTS · LAST ${pv.days} DAYS · hover a project for where its tokens went and its tasks`;
+  $("projects-days").textContent = `PROJECTS · LAST ${pv.days} DAYS`;
   const all = pv.list.reduce((a, p) => a + (p.tokens || 0), 0) || 1;
   for (const p of [...pv.list].sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0))) {
     const name = p.name || `project ${p.id.slice(0, 8)}`;
@@ -472,10 +482,9 @@ function drawProjects(s) {
     grid.append(c);
   }
   if (!pv.list.length) grid.append(empty("No usage with a project yet: it's counted from the folder each session runs in."));
-  const notes = [];
-  if (pv.more) notes.push(`${pv.more} smaller projects: savetokens projects`);
-  if (pv.unnamed) notes.push("Names stay on your machines, so this hub shows ids. To see names here, run on each machine: savetokens projects --share-names on");
-  $("projects-note").textContent = notes.join(" · ");
+  const note = clear($("projects-note"));
+  if (pv.unnamed) note.append("ids, not names ", info("Names stay on your machines, so this hub shows ids. To see names here, run on each machine: savetokens projects --share-names on"));
+  if (pv.more) note.append(el("span", "dim", ` · ${pv.more} more `), info("Smaller projects: savetokens projects lists them all."));
   for (const o of pv.budgets) cards.append(limitCard(o, s.now));
   if (!pv.budgets.length) cards.append(empty("No budgets yet. e.g. savetokens budget --project webapp --usd 150 --per month (API spend), add --count all to count plan usage too"));
 }
