@@ -182,3 +182,25 @@ def test_the_hub_prices_requests_that_arrived_unpriced_once_its_catalogue_knows_
     server.engine_loop(users, set(), threading.Lock(), Once(), log=lambda *_: None)
     with users.store("me") as s:
         assert s.conn.execute("SELECT cost_usd FROM usage").fetchone()[0] == 1.0
+
+
+def test_a_hub_set_up_for_remote_machines_always_gives_its_own_address(running, monkeypatch):
+    users, token, url = running
+    monkeypatch.delenv("SAVETOKENS_PUBLIC_URL", raising=False)
+    auth = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    assert server.set_public_url(users.data, "https://hub.example.com/") == "https://hub.example.com"
+    got = json.loads(_req(url + "/v1/pair", auth, b"{}")[1])          # the browser was on 127.0.0.1
+    assert got["command"] == f"curl -fsSL https://hub.example.com/join | sh -s {got['code']}"
+    assert server.public_url(users.data) == "https://hub.example.com"
+    with pytest.raises(ValueError):
+        server.set_public_url(users.data, "hub.example.com; rm -rf /")
+    server.set_public_url(users.data, None)
+    assert server.public_url(users.data) is None
+
+
+def test_https_from_tailscale_serve_or_funnel_is_found(monkeypatch):
+    monkeypatch.setattr(hub.shutil, "which", lambda n: "/usr/bin/" + n)
+    status = {"Web": {"box.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8787"}}}}}
+    run = lambda *a, **k: subprocess.CompletedProcess(a, 0, json.dumps(status), "")
+    assert hub.https_name(8787, run) == "https://box.tail1234.ts.net"
+    assert hub.https_name(9000, run) is None                           # serving something else

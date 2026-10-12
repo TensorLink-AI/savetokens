@@ -143,16 +143,24 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             self.end_headers()
             self.wfile.write(data)
 
-        def _base(self):
-            """This server's address as the caller reached it (behind a proxy too), or None if odd."""
-            fixed = os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL")
+        def _base(self, others=False):
+            """This server's address as the caller reached it (behind a proxy too), or None if odd. others: for a
+            command to paste on another machine, where 127.0.0.1 would mean that machine."""
+            fixed = public_url(users.data)   # set up for remote machines: always that address
             if fixed:
-                return fixed.rstrip("/")
+                return fixed
             host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",")[0].strip()
             proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip()
             if proto not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9.\-]+(:\d{1,5})?|\[[0-9a-fA-F:.]+\](:\d{1,5})?",
                                                                     host):
                 return None
+            name, _, port = host.rpartition(":") if not host.endswith("]") else (host, "", "")
+            listening = self.server.server_address[0] if hasattr(self, "server") else ""
+            if others and (name or host) in ("127.0.0.1", "localhost", "[::1]") and listening in ("0.0.0.0", "::"):
+                from . import hub
+                url, how = hub.address(int(port) if port.isdigit() else 80)
+                if how != "local":
+                    return url
             return f"{proto}://{host}"
 
         def _script(self):
@@ -177,7 +185,7 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             if not (1 <= machines <= MAX_INVITE_MACHINES and 60 <= seconds <= MAX_INVITE_SECONDS):
                 return self._send(400, {"error": f"machines is 1 to {MAX_INVITE_MACHINES}, hours at most"
                                                  f" {MAX_INVITE_SECONDS // 3600}"})
-            code, base = users.pair(user, seconds, machines), self._base()
+            code, base = users.pair(user, seconds, machines), self._base(others=True)
             self._send(200, {"code": code, "expires_in": int(seconds), "machines": machines, "url": base,
                              "command": join_command(base, code) if base else None})
 
@@ -212,7 +220,7 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             if path == "/v1/pair":
                 return self._pair(user)
             if path == "/v1/token":
-                return self._send(200, {"token": users.add(user), "url": self._base()})
+                return self._send(200, {"token": users.add(user), "url": self._base(others=True)})
             if path in ("/v1/logs", "/v1/traces"):   # OpenTelemetry (OTLP over HTTP, JSON)
                 return self._otel(user)
             if path == "/v1/team":
@@ -251,6 +259,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
         def _settings(self, user, body):
             if "detected" in body:
                 return self._detected(user, body)
+            if "names" in body:
+                return self._names(user, body["names"])
             if "goals" in body:
                 return self._goals(user, body)
             budgets, plans, at = body["budgets"], body.get("plans") or {}, float(body["at"])
@@ -268,6 +278,23 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                     s.set_meta("tz", body["tz"])   # the user's clock, for days, weeks and months
             with lock:
                 dirty.add(user)
+            self._send(200, {"ok": True})
+
+        def _names(self, user, names):
+            """Project and task names a machine chose to send (`savetokens projects --share-names on`), so the
+            dashboard can show them; {} clears what it sent."""
+            short = lambda v, n=80: isinstance(v, str) and 0 < len(v) <= n
+            if not isinstance(names, dict):
+                return self._send(400, {"error": "bad names"})
+            got = {"projects": {k: v for k, v in list((names.get("projects") or {}).items())[:2000]
+                                if short(k, 32) and short(v)},
+                   "tasks": {k: {"name": v["name"], "project_id": v.get("project_id") if short(v.get("project_id"), 32)
+                                 else None, "source": v.get("source") if short(v.get("source"), 16) else None,
+                                 "done": v.get("done") if isinstance(v.get("done"), (int, float)) else None}
+                             for k, v in list((names.get("tasks") or {}).items())[:5000]
+                             if short(k, 32) and isinstance(v, dict) and short(v.get("name"), 120)}}
+            with users.store(user) as s:
+                s.set_meta("shared_names", got)
             self._send(200, {"ok": True})
 
         def _team(self, user):
@@ -421,8 +448,10 @@ def _valid_goals(goals) -> bool:
                     and g.get("unit") in UNITS and isinstance(g.get("amount"), (int, float)) and g["amount"] > 0
                     and (g.get("period") in PERIODS or isinstance(g.get("by"), (int, float)))
                     and isinstance(g.get("start"), (int, float)) and isinstance(g.get("scope"), dict)
-                    and all(isinstance(x, str) and len(x) <= 32
-                            for k in ("projects", "tasks") for x in (g["scope"].get(k) or [])[:50]))
+                    and g.get("count") in (None, "api", "all")
+                    and all(isinstance(g["scope"].get(k) or [], list) and len(g["scope"].get(k) or []) <= 50
+                            and all(isinstance(x, str) and len(x) <= 32 for x in g["scope"].get(k) or [])
+                            for k in ("projects", "tasks", "providers", "tools")))
     return isinstance(goals, dict) and len(goals) <= 100 and all(
         isinstance(k, str) and len(k) <= 32 and ok(g) for k, g in goals.items())
 
@@ -437,10 +466,9 @@ def _hub_projects(s, now=None):
         if p.kind == "goal":
             since, _ = pools.period(p.budget, now)
             spent[p.id] = {"spent": pools.spent(s, p, since, now), "since": since, "at": now}
-    totals = [{"id": r[0], "usd": r[1], "tokens": r[2], "requests": r[3]} for r in s.conn.execute(
-        "SELECT project_id, COALESCE(SUM(cost_usd), 0), SUM(input + cache_read + cache_write_5m + cache_write_1h"
-        " + output), COUNT(*) FROM usage WHERE project_id IS NOT NULL AND ts >= ? GROUP BY project_id",
-        (now - 30 * 86400,))]
+    # "usd" (everything at API prices) for machines from before the split
+    totals = [{"id": pid, "usd": t["value_usd"], **t} for pid, t in projects.split(s, "project_id",
+                                                                                   now - 30 * 86400).items()]
     return {"project_key": projects.key(s), "goals": s.meta("goals"), "goals_at": s.meta("goals_at"),
             "goal_spent": spent, "projects": totals, "projects_at": now}
 
@@ -547,8 +575,33 @@ def join_script(base):
     return install_script(base)
 
 
-def public_url():
-    return (os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/") or None
+def public_url(data=None):
+    """The address machines join this hub at: SAVETOKENS_PUBLIC_URL, else what `server --setup` or
+    `server --public-url` saved with the hub's data."""
+    env = (os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    if env or data is None:
+        return env or None
+    try:
+        return (Path(data) / PUBLIC_URL_FILE).read_text().strip().rstrip("/") or None
+    except OSError:
+        return None
+
+
+PUBLIC_URL_FILE = "public_url"
+
+
+def set_public_url(data, url):
+    """Save (or, with None, forget) the address every join command uses."""
+    path = Path(data) / PUBLIC_URL_FILE
+    if not url:
+        path.unlink(missing_ok=True)
+        return None
+    url = url.strip().rstrip("/")
+    if not re.fullmatch(r"https?://[A-Za-z0-9.\-]+(:\d{1,5})?(/[A-Za-z0-9._~\-/]*)?", url):
+        raise ValueError(f"not an http(s) address: {url!r}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(url + "\n")
+    return url
 
 
 def first_user(users: Users, log=print):
@@ -563,7 +616,7 @@ def first_user(users: Users, log=print):
         log("Your token, for containers and cloud sessions (SAVETOKENS_TOKEN), is in first-token.txt.")
     if users.names() == ["me"] and not users.joined("me"):
         code = users.pair("me", seconds=7 * 86400, uses=INVITE_MACHINES)
-        base = public_url() or "<this server's URL>"
+        base = public_url(users.data) or "<this server's URL>"
         log(f"Add your machines (this code works for a week, for up to {INVITE_MACHINES} machines):")
         log(f"  {join_command(base, code)}")
         log("More codes later: `savetokens pair` on a joined machine, or 'Add a machine' in the browser view.")

@@ -84,7 +84,9 @@ EXAMPLES = {
              "savetokens otel --json"],
     "budget": ["savetokens budget                              # every budget, with its forecast",
                "savetokens budget --usd 500 --per month         # overall: every tool, provider and machine",
-               "savetokens budget --project webapp --usd 150 --per month",
+               "savetokens budget --project webapp --usd 150 --per month   # real API spend, any provider",
+               "savetokens budget --project webapp --usd 500 --count all   # plan usage too, at API prices",
+               "savetokens budget --project webapp --provider openai --usd 100   # one provider's API spend",
                "savetokens budget --project . --tokens 30M --by 2026-12-15   # this folder's project, by a date",
                "savetokens budget --task \"Add OAuth\" --tokens 3M    # a task in this folder's project",
                "savetokens budget --off webapp"],
@@ -94,7 +96,9 @@ EXAMPLES = {
              "savetokens task pattern '[A-Z]+-[0-9]+'       # issue keys in branch names are tasks",
              "savetokens task branches off"],
     "tasks": ["savetokens tasks --project .", "savetokens tasks --days 30 --json"],
-    "projects": ["savetokens projects", "savetokens projects --days 7 --json"],
+    "projects": ["savetokens projects                              # tokens, API value and API spend per project",
+                 "savetokens projects --days 7 --json",
+                 "savetokens projects --share-names on              # your hub's dashboard shows names, not ids"],
     "project": ["savetokens project link                        # this folder is one project, on any machine",
                 "savetokens project link webapp",
                 "savetokens project share                       # your team sees its name, not just an id"],
@@ -117,6 +121,7 @@ EXAMPLES = {
     "connect": ["savetokens connect https://hub.example.com --token TOKEN",
                 "savetokens connect --off"],
     "server": ["savetokens server --setup                     # this machine is the hub, from now on",
+               "savetokens server --public-url https://hub.example.com   # every join command uses it",
                "savetokens server --stop",
                "savetokens server --host 0.0.0.0 --port 8787  # run it yourself, in the foreground",
                "savetokens server --add-user sam              # a teammate's own view and token",
@@ -668,27 +673,61 @@ def _amount(s):
         raise argparse.ArgumentTypeError(f"not an amount: {s} (e.g. 500, 30M, 1.5B)")
 
 
+BILLING = {"plan": "plan", "api": "API"}
+
+
+def _split_line(t):
+    """ "Claude Code plan 95% · Codex API (openai) 5%": where a project's or task's tokens went."""
+    from . import spend
+    from .pools import TOOLS
+    tot = t["tokens"] or 1
+    return " · ".join(f"{TOOLS.get(b['tool'], b['tool'])} {BILLING[b['billing']]}"
+                      + (f" ({spend.label(b['provider'])})" if b["tool"] == "hermes" or b["billing"] == "api" else "")
+                      + f" {100 * b['tokens'] / tot:.0f}%" for b in t["by"])
+
+
 def cmd_projects(args):
-    from . import projects
-    from .store import Store, load_config
-    from . import sync
+    from . import projects, sync, tasks
+    from .store import Store, load_config, save_config
+    cfg = load_config()
+    if args.share_names:
+        cfg["share_names"] = args.share_names == "on"
+        save_config(cfg)
     with Store() as s:
+        if args.share_names:
+            s.set_meta("pushed:names", None)   # sent (or cleared) on the next sync
         projects.fill(s)
-        names = projects.names(s)
-        since = time.time() - args.days * 86400
-        local = {r[0]: {"id": r[0], "usd": r[1], "tokens": r[2], "requests": r[3]} for r in s.conn.execute(
-            "SELECT project_id, COALESCE(SUM(cost_usd), 0), SUM(input + cache_read + cache_write_5m"
-            " + cache_write_1h + output), COUNT(*) FROM usage WHERE project_id IS NOT NULL AND ts >= ?"
-            " GROUP BY project_id", (since,))}
-        hub = s.meta("hub_projects") if sync.connected(load_config()) and args.days == 30 else None
-    rows = {r["id"]: r for r in (hub or {}).get("totals", [])} or local
-    out = sorted(({**r, "name": names.get(r["id"]), "this_machine": r["id"] in local} for r in rows.values()),
-                 key=lambda r: -r["usd"])
-    where = "every machine" if hub else "this machine"
-    lines = [f"Projects, last {args.days} days ({where}):"] + [
-        f"  {(r['name'] or 'another machine ' + r['id'][:8]):<28} ${r['usd']:>9,.2f}  {r['tokens'] / 1e6:>9,.1f}M tokens"
-        for r in out] if out else [f"No usage with a project in the last {args.days} days."]
-    _out(args, {"days": args.days, "every_machine": bool(hub), "projects": out}, "\n".join(lines))
+        tasks.fill(s)
+        got = projects.report(s, time.time() - args.days * 86400)
+        hub = s.meta("hub_projects") if sync.connected(cfg) and args.days == 30 else None
+    mine = {p["id"] for p in got}
+    every = {r["id"]: r for r in (hub or {}).get("totals", []) if "by" in r}
+    if every:   # the hub's totals: every machine's usage, not only this one's
+        names = {p["id"]: p for p in got}
+        got = sorted(({**names.get(i, {"name": None, "tasks": [], "more_tasks": 0}), **r} for i, r in every.items()),
+                     key=lambda p: -p["tokens"])
+    out = [{**p, "this_machine": p["id"] in mine} for p in got]
+    lines = []
+    if args.share_names:
+        lines.append("Project and task names: sent to your hub on the next sync, so its dashboard shows them."
+                     if cfg["share_names"] else "Project and task names: no longer sent to your hub (cleared on the"
+                                                " next sync).")
+    if out:
+        lines.append(f"Projects, last {args.days} days ({'every machine' if every else 'this machine'}):"
+                     "  tokens · at API prices · paid as API")
+        for p in out:
+            lines.append(f"  {(p['name'] or 'another machine ' + p['id'][:8]):<28} {p['tokens'] / 1e6:>9,.1f}M"
+                         f"  ${p['value_usd']:>9,.2f}  ${p['api_usd']:>9,.2f}")
+            lines.append(f"  {'':<28} {_split_line(p)}")
+            for t in p["tasks"][:3]:
+                lines.append(f"    {(t['name'] or t['id'][:8])[:26]:<26} {t['tokens'] / 1e6:>9,.1f}M"
+                             f"  ${t['value_usd']:>9,.2f}  ${t['api_usd']:>9,.2f}")
+        lines.append("At API prices: what it would cost pay-as-you-go. Paid as API: what was billed that way (real"
+                     " money); the rest is on plans. `savetokens tasks --project NAME` for every task.")
+    else:
+        lines.append(f"No usage with a project in the last {args.days} days.")
+    _out(args, {"days": args.days, "every_machine": bool(every), "projects": out,
+                "share_names": bool(cfg.get("share_names"))}, "\n".join(lines))
     return OK
 
 
@@ -785,6 +824,9 @@ def cmd_tasks(args):
             if not ids:
                 raise Fail(f"no project called {args.project!r} here", "savetokens projects")
         got = tasks.listing(s, ids, time.time() - args.days * 86400)
+        sp = projects.split(s, "task_id", 0)
+        got = [{**tk, **{k: v for k, v in sp.get(tk["id"], {}).items() if k in ("by", "value_usd", "api_usd")}}
+               for tk in got]
         names = projects.names(s)
         est = tasks.estimate(s, ids[0]) if ids and len(ids) == 1 else None
     if not got:
@@ -796,6 +838,9 @@ def cmd_tasks(args):
             last = tk.get("project_id")
             lines.append(f"{names.get(last) or 'project ' + str(last)[:8]}:")
         lines.append(_task_line(tk))
+        if tk.get("by"):
+            lines.append(f"  {'':<32} {_split_line(tk)}" + (f"; ${tk['api_usd']:,.2f} paid as API" if tk.get("api_usd")
+                                                             else ""))
     if est:
         lines.append(f"Estimate for the next one: {est['text']}.")
     _out(args, {"tasks": got, "estimate": est}, "\n".join(lines))
@@ -873,7 +918,8 @@ def cmd_budget(args):
             fmt = lambda o, v: f"${v:,.2f}" if o["unit"] == "usd" else f"{v / 1e6:,.1f}M tokens"
             lines = []
             for o in looks:
-                line = f"{o['label']}: {fmt(o, o['spent'])} of {fmt(o, o['amount'])} {o['per']} ({o['used']:.0f}%)"
+                line = (f"{o['label']} ({o['counts']}): {fmt(o, o['spent'])} of {fmt(o, o['amount'])} {o['per']}"
+                        f" ({o['used']:.0f}%)")
                 if o["used"] >= 100:
                     line += f"; over by {fmt(o, o['spent'] - o['amount'])}"
                 elif o["p50"] is not None:
@@ -881,8 +927,6 @@ def cmd_budget(args):
                 else:
                     line += "; forecast on the next upkeep"
                 lines.append(line)
-            if any(o["unit"] == "usd" for o in looks):
-                lines.append("($ are real on API keys, API-equivalent for usage on a plan.)")
             _out(args, {"budgets": looks}, "\n".join(lines))
             return OK
         if args.task:
@@ -901,8 +945,13 @@ def cmd_budget(args):
         else:
             label, scope = "Overall", {}
         unit, amount = ("usd", args.usd) if args.usd is not None else ("tokens", args.tokens)
-        goal = {"label": label, "scope": scope, "unit": unit, "amount": float(amount), "start": time.time(),
-                "tz": time.localtime().tm_gmtoff}
+        if args.provider:
+            scope["providers"] = sorted({p.lower() for p in args.provider})
+        if args.tool:
+            scope["tools"] = sorted(set(args.tool))
+        count = args.count or ("api" if unit == "usd" else "all")
+        goal = {"label": label, "scope": scope, "count": count, "unit": unit, "amount": float(amount),
+                "start": time.time(), "tz": time.localtime().tm_gmtoff}
         if args.by:
             try:
                 end = datetime.strptime(args.by, "%Y-%m-%d").replace(hour=23, minute=59, second=59).timestamp()
@@ -926,10 +975,20 @@ def cmd_budget(args):
         pools.set_goal(s, gid, goal)
         s.set_meta("kicked_at", 0)
         maintain.kick(s)   # its forecast, in the background
+        # would it have counted anything lately? A pay-as-you-go budget on work that's all on plans stays at 0
+        where, wargs = pools._scope(goal, s)
+        lately = s.conn.execute(f"SELECT COUNT(*) FROM usage WHERE {where} AND ts >= ?",
+                                wargs + [time.time() - 30 * 86400]).fetchone()[0]
     when = f"by {args.by}" if args.by else f"a {args.per}"
     shown = f"${amount:,.0f}" if unit == "usd" else f"{amount / 1e6:,.1f}M tokens"
-    _out(args, {"id": gid, **goal}, f"{label} budget: {shown} {when}, every tool, provider and machine. Its forecast"
-                                    " comes with the next upkeep: savetokens budget shows it.")
+    text = (f"{label} budget: {shown} {when}, counting {pools.describe(goal)}, from every machine. Its forecast"
+            " comes with the next upkeep: savetokens budget shows it.")
+    if not lately and count == "api":
+        text += ("\nNote: none of the usage it covers in the last 30 days was pay-as-you-go (it was on plans),"
+                 " so it stays at $0 until an API key is used. To budget plan usage too, at API prices: add --count all.")
+    elif not lately:
+        text += "\nNote: nothing it covers was used in the last 30 days."
+    _out(args, {"id": gid, "counted_last_30_days": lately, **goal}, text)
     return OK
 
 
@@ -1171,7 +1230,7 @@ def cmd_server(args):
               f"{'s' if len(t['members']) != 1 else ''}).")
         if new:
             code = users.pair(args.member, server.INVITE_SECONDS, server.INVITE_MACHINES)
-            base = server.public_url()
+            base = server.public_url(data)
             print(f"Their machines join with: {server.join_command(base, code) if base else 'savetokens join URL ' + code}")
         return 0
     if args.provider_key:
@@ -1184,9 +1243,19 @@ def cmd_server(args):
         print(f"{args.provider_key}: " + (f"admin key kept in {path} (only you can read it); the hub reads its"
                                           " usage report hourly" if key else "removed (pipe a key in to set one)"))
         return 0
+    if args.public_url:
+        try:
+            url = server.set_public_url(data, None if args.public_url == "off" else args.public_url)
+        except ValueError as e:
+            raise Fail(str(e))
+        print(f"Join commands use {url} from now on." if url else
+              "Forgot the saved address: join commands use the address each browser reached the hub at.")
+        if not args.setup:
+            return 0
     if args.setup:
         from . import hub
-        return 0 if hub.setup(args.port, data, interactive=sys.stdin.isatty()) else 1
+        return 0 if hub.setup(args.port, data, interactive=sys.stdin.isatty(), public=args.public_url
+                              if args.public_url not in (None, "off") else None) else 1
     if args.stop:
         from . import hub
         print("Stopped the hub; it won't start at boot. Your data stays in " + str(data) if hub.stop()
@@ -1281,15 +1350,24 @@ def main(argv=None):
     sc.add_argument("--project", metavar="NAME", help="a project's name (savetokens projects), or . for this folder's")
     sc.add_argument("--task", metavar="NAME", help="a task in this folder's project (savetokens tasks)")
     g = s.add_mutually_exclusive_group()
-    g.add_argument("--usd", type=float, help="dollars (real on API keys, API-equivalent on plans)")
+    g.add_argument("--usd", type=float, help="dollars: what --count says counts")
     g.add_argument("--tokens", type=_amount, help="tokens, e.g. 30M")
     g2 = s.add_mutually_exclusive_group()
     g2.add_argument("--per", choices=["day", "week", "month"], default="month", help="the period (default month)")
     g2.add_argument("--by", metavar="YYYY-MM-DD", help="a total to spend by this date, instead of per period")
+    s.add_argument("--count", choices=["api", "all"], help="api: only pay-as-you-go spend, real money (default for"
+                   " --usd); all: plan usage too, at API prices (default for --tokens)")
+    s.add_argument("--provider", action="append", metavar="NAME", help="only this provider (anthropic, openai, ...);"
+                   " repeat for more")
+    s.add_argument("--tool", action="append", choices=["claude-code", "codex", "hermes"], help="only this tool;"
+                   " repeat for more")
     s.add_argument("--off", metavar="NAME", help="remove a budget")
     s.add_argument("--team", action="store_true", help="the team's budget, on the hub (owner or admins)")
-    s = cmd("projects", cmd_projects, "every project's tokens and $: across machines when connected to a hub")
+    s = cmd("projects", cmd_projects, "every project's tokens and $, split by tool, provider and plan or API, with"
+            " its biggest tasks: across machines when connected to a hub")
     s.add_argument("--days", type=int, default=30, help="how many days back (default 30)")
+    s.add_argument("--share-names", choices=["on", "off"], help="send project and task names to your own hub, so its"
+                   " dashboard shows them (off: they stay on this machine; the hub sees ids)")
     s = cmd("task", cmd_task, "a unit of work in this folder's project: start, done, or what it's on now")
     s.add_argument("action", nargs="?", default="current", choices=["current", "start", "done", "pattern", "branches"],
                    help="start NAME, done [NAME], pattern REGEX|off (issue keys in branch names), branches on|off")
@@ -1343,6 +1421,8 @@ def main(argv=None):
     s.add_argument("--pair", metavar="NAME", help="a join code for one of NAME's machines")
     s.add_argument("--setup", action="store_true",
                    help="make this machine the hub: starts on boot, prints the line that adds other machines")
+    s.add_argument("--public-url", metavar="URL", help="the address other machines reach this hub at (e.g. its HTTPS"
+                   " domain): every join command uses it; --setup finds one itself; off forgets it")
     s.add_argument("--stop", action="store_true", help="stop the hub set up with --setup (the data stays)")
     s.add_argument("--provider-key", metavar="PROVIDER", help="anthropic or openai: an admin key on stdin, so the hub"
                                                               " counts API usage no reader saw (nothing piped: remove)")

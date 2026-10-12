@@ -16,7 +16,7 @@ const token = () => store.get("st_key") || store.get("st_token") || memToken;
 
 async function readFragment() {
   const h = new URLSearchParams(location.hash.slice(1));
-  if (h.get("tab") === "spend" || h.get("tab") === "limits") tab = h.get("tab");   // a link straight to a tab
+  if (["spend", "limits", "projects"].includes(h.get("tab"))) tab = h.get("tab");   // a link straight to a tab
   if (h.has("key") || h.has("code")) history.replaceState(null, "", location.pathname + location.search);
   if (h.has("key")) { memToken = h.get("key"); store.set("st_key", memToken); }
   if (h.has("code")) await join(h.get("code"));
@@ -218,7 +218,8 @@ function limitCard(o, now) {
   else if (o.p50 != null) main = `Likely ${pct(o.p50)} ${api ? "by the period's end" : "by reset"} · ${Math.round((o.p_hit || 0) * 100)}% risk`;
   else main = "Forecast on its way";
   card.append(el("span", "main", main));
-  card.append(el("span", "dim", `${api ? "Period ends" : "Resets"} ${when(o.resets, now)} (in ${span(o.resets - now)})`));
+  card.append(el("span", "dim", `${api || goal ? "Period ends" : "Resets"} ${when(o.resets, now)} (in ${span(o.resets - now)})`));
+  if (goal && o.counts) card.append(el("span", "dim", `Counts ${o.counts}`));
   return card;
 }
 
@@ -228,10 +229,70 @@ function drawLimits(s) {
     box.append(empty("No limits known yet. Send a message in Claude Code or Codex with savetokens installed, or set an API budget: savetokens api hermes --budget 100"));
     return;
   }
-  const api = clear($("api-limits")), goals = clear($("goal-limits"));
-  for (const o of s.limits) (o.kind === "api" ? api : o.kind === "goal" ? goals : box).append(limitCard(o, s.now));
-  $("api-box").hidden = !api.childNodes.length; $("goal-box").hidden = !goals.childNodes.length;
+  const api = clear($("api-limits"));
+  for (const o of s.limits) if (o.kind !== "goal") (o.kind === "api" ? api : box).append(limitCard(o, s.now));
+  $("api-box").hidden = !api.childNodes.length;
   if (!box.childNodes.length) box.append(empty("No subscription limits yet: they appear after a message in Claude Code or Codex."));
+}
+
+// ── projects ──
+const BILL = { plan: "subscription", api: "api" };
+const openProj = {};
+// where the tokens went: one segment per tool, provider and plan or API
+function mix(t) {
+  const tot = t.tokens || 1, bar = el("div", "mix");
+  bar.title = (t.by || []).map(splitText(tot)).join("\n");
+  (t.by || []).forEach((b, i) => {
+    const seg = el("span", `seg-${b.billing}` + (i % 2 ? " alt" : ""));
+    seg.style.width = `${(100 * b.tokens) / tot}%`; bar.append(seg);
+  });
+  const by = t.by || [];
+  return el("span", "where", bar, el("span", "dim", by.slice(0, 2).map(splitText(tot)).join(" · ") + (by.length > 2 ? " …" : "")));
+}
+const splitText = (tot) => (b) => `${TOOLS[b.tool] || b.tool} ${b.billing === "api" ? "API" : "plan"}`
+  + (b.billing === "api" || b.tool === "hermes" ? ` (${PROVIDERS[b.provider] || b.provider})` : "") + ` ${Math.round((100 * b.tokens) / tot)}%`;
+const PROVIDERS = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", google: "Google" };
+const paid = (x) => x.api_usd > 0.005 ? usd2(x.api_usd) : "–";
+
+function drawProjects(s) {
+  const pv = s.projects, grid = $("projects");
+  clearRows(grid);
+  const cards = clear($("budget-cards"));
+  if (!pv || pv.error) { grid.append(empty(pv ? `Couldn't add up projects: ${pv.error}` : "No projects yet.")); return; }
+  $("projects-days").textContent = `LAST ${pv.days} DAYS`;
+  for (const p of pv.list) {
+    const name = p.name || `project ${p.id.slice(0, 8)}`;
+    const r = el("div", "row click" + (openProj[p.id] ? " sel" : ""),
+      el("span", null, el("span", "mark-col", openProj[p.id] ? "−" : "+"), el("span", p.name ? "name" : "name anon", name)),
+      el("span", "r", tok(p.tokens)), el("span", "r value", usd2(p.value_usd)), el("span", "r", paid(p)), mix(p));
+    r.tabIndex = 0;
+    const toggle = () => { openProj[p.id] = !openProj[p.id]; drawProjects(last); };
+    r.addEventListener("click", toggle);
+    r.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+    grid.append(r);
+    if (!openProj[p.id]) continue;
+    const d = el("div", "detail");
+    d.append(el("div", "sub", "Where its tokens went"));
+    for (const b of p.by) d.append(el("div", "row", el("span", null, badge(BILL[b.billing]), `${TOOLS[b.tool] || b.tool} · ${PROVIDERS[b.provider] || b.provider}`),
+      el("span", "r", tok(b.tokens)), el("span", "r", usd2(b.value_usd)), el("span", "r", b.billing === "api" ? usd2(b.value_usd) : "–"),
+      el("span", "dim", `${Math.round((100 * b.tokens) / (p.tokens || 1))}% of its tokens`)));
+    for (const o of pv.budgets.filter((o) => ((o.scope || {}).projects || []).includes(p.id)))
+      d.append(el("div", "sub budget-line", badge("goal"), `${o.label}: ${pct(o.used)} used, counts ${o.counts}`));
+    if (p.tasks.length) {
+      d.append(el("div", "sub", "Biggest tasks"));
+      for (const t of p.tasks) d.append(el("div", "row", el("span", null, (t.name || `task ${t.id.slice(0, 8)}`) + (t.done ? " ✓" : "")),
+        el("span", "r", tok(t.tokens)), el("span", "r", usd2(t.value_usd)), el("span", "r", paid(t)), mix(t)));
+      if (p.more_tasks) d.append(el("div", "sub", `${p.more_tasks} more: savetokens tasks --project ${p.name || "NAME"}`));
+    }
+    grid.append(d);
+  }
+  if (!pv.list.length) grid.append(empty("No usage with a project yet: it's counted from the folder each session runs in."));
+  const notes = [];
+  if (pv.more) notes.push(`${pv.more} smaller projects: savetokens projects`);
+  if (pv.unnamed) notes.push("Names stay on your machines, so this hub shows ids. To see names here, run on each machine: savetokens projects --share-names on");
+  $("projects-note").textContent = notes.join(" · ");
+  for (const o of pv.budgets) cards.append(limitCard(o, s.now));
+  if (!pv.budgets.length) cards.append(empty("No budgets yet. e.g. savetokens budget --project webapp --usd 150 --per month (API spend), add --count all to count plan usage too"));
 }
 
 let chartId = store.get("st_chart");
@@ -425,8 +486,8 @@ function showTab(t) {
   store.set("st_tab", t);
   $("spend").hidden = t !== "spend";
   $("limits-tab").hidden = t !== "limits";
-  $("tab-spend").setAttribute("aria-selected", String(t === "spend"));
-  $("tab-limits").setAttribute("aria-selected", String(t === "limits"));
+  $("projects-tab").hidden = t !== "projects";
+  for (const k of ["spend", "limits", "projects"]) $(`tab-${k}`).setAttribute("aria-selected", String(t === k));
 }
 function setPeriod(p) { period = p; store.set("st_period", p); if (last) drawSpend(last); }
 function setLive(on) {
@@ -440,6 +501,7 @@ function setLive(on) {
 }
 $("tab-spend").addEventListener("click", () => showTab("spend"));
 $("tab-limits").addEventListener("click", () => showTab("limits"));
+$("tab-projects").addEventListener("click", () => showTab("projects"));
 $("live").addEventListener("click", () => setLive(!live));
 $("more-toggle").addEventListener("click", () => { more = !more; store.set("st_more", more ? "1" : "0"); if (last) drawMore(last); });
 
@@ -455,7 +517,7 @@ function run(raw) {
   const c = raw.trim().toLowerCase();
   closeCmd();
   if (!c) return;
-  if (c === "spend" || c === "limits") { showTab(c); return say(`Showing ${c}`); }
+  if (c === "spend" || c === "limits" || c === "projects") { showTab(c); return say(`Showing ${c}`); }
   if (["day", "today", "week", "month"].includes(c)) { setPeriod(c === "today" ? "day" : c); showTab("spend"); return say(`Period: ${PERIOD[period][0].toLowerCase()}`); }
   if (c === "refresh") { load(); return say("Refreshing"); }
   if (c === "pause" || c === "resume") { setLive(c === "resume"); return say(c === "pause" ? "Live updates paused" : "Live updates on"); }
@@ -465,7 +527,7 @@ function run(raw) {
   }
   say(`Unknown command: ${c}`, false);
 }
-const KEYS = { "/": openCmd, "1": () => showTab("spend"), "2": () => showTab("limits"), r: () => { load(); say("Refreshing"); }, p: () => setLive(!live) };
+const KEYS = { "/": openCmd, "1": () => showTab("spend"), "2": () => showTab("limits"), "3": () => showTab("projects"), r: () => { load(); say("Refreshing"); }, p: () => setLive(!live) };
 for (const b of document.querySelectorAll("#keys button")) b.addEventListener("click", () => KEYS[b.dataset.key]());
 $("cmd-form").addEventListener("submit", (ev) => { ev.preventDefault(); run($("cmd").value); });
 $("cmd").addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeCmd(); });
@@ -483,7 +545,7 @@ tick();
 
 // ── drawing and loading ──
 function draw(s) {
-  for (const f of [drawMeta, drawSetup, drawHeadline, drawSpend, drawLimits, drawChart, drawSessions, drawMore, drawTrack]) {
+  for (const f of [drawMeta, drawSetup, drawHeadline, drawSpend, drawLimits, drawProjects, drawChart, drawSessions, drawMore, drawTrack]) {
     try { f(s); } catch (e) { console.error(f.name, e); }
   }
 }

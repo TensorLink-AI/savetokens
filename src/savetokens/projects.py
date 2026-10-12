@@ -154,9 +154,72 @@ def set_key(store, new: str) -> bool:
 
 
 def names(store) -> dict:
-    """{project id: name} known on this machine, your own names (`project link`) first."""
-    out = {r[0]: r[1] for r in store.conn.execute("SELECT id, name FROM projects")}
+    """{project id: name} known on this machine, your own names (`project link`) first. On a hub: the names
+    its machines chose to send (`savetokens projects --share-names on`)."""
+    out = dict((store.meta("shared_names") or {}).get("projects") or {})
+    out.update({r[0]: r[1] for r in store.conn.execute("SELECT id, name FROM projects")})
     out.update(store.meta("project_names") or {})
+    return out
+
+
+def task_names(store) -> dict:
+    """{task id: {"name", "project_id", "source", "done"}}: this machine's tasks, else those sent to the hub."""
+    out = dict((store.meta("shared_names") or {}).get("tasks") or {})
+    for r in store.conn.execute("SELECT id, project_id, name, source, done FROM tasks"):
+        out[r[0]] = {"name": r[2], "project_id": r[1], "source": r[3], "done": r[4]}
+    return out
+
+
+def shareable(store) -> dict:
+    """What `--share-names on` sends to your own hub: project and task names, nothing else."""
+    return {"projects": {k: v for k, v in names(store).items() if k and v},
+            "tasks": {k: v for k, v in task_names(store).items() if k}}
+
+
+# ── where a project's tokens went: tool, provider, and plan or API ───────────
+
+def split(store, col, since, until=None) -> dict:
+    """{id: {"tokens", "requests", "value_usd", "api_usd", "by": [...]}} for col (project_id or task_id).
+    value_usd: every request at API prices (what it would have cost pay-as-you-go). api_usd: only what was
+    billed pay-as-you-go: real money. by: one entry per tool, provider and billing ("plan" or "api")."""
+    from . import pools, spend
+    var, fixed = spend._variable(pools.plans(store))
+    out = {}
+    for r in store.conn.execute(
+            f"SELECT {col}, harness, {spend.PROVIDER}, CASE WHEN {var} THEN 'api' ELSE 'plan' END,"
+            f" SUM({spend.TOKENS}), COALESCE(SUM(cost_usd), 0), COUNT(*) FROM usage WHERE {col} IS NOT NULL"
+            f" AND ts >= ? AND ts <= ? GROUP BY 1, 2, 3, 4", fixed + [since, until or float("inf")]):
+        t = out.setdefault(r[0], {"tokens": 0, "requests": 0, "value_usd": 0.0, "api_usd": 0.0, "by": []})
+        t["tokens"] += r[4] or 0
+        t["requests"] += r[6]
+        t["value_usd"] += r[5]
+        if r[3] == "api":
+            t["api_usd"] += r[5]
+        t["by"].append({"tool": r[1], "provider": r[2], "billing": r[3], "tokens": r[4] or 0, "value_usd": r[5],
+                        "requests": r[6]})
+    for t in out.values():
+        t["by"].sort(key=lambda b: -b["tokens"])
+    return out
+
+
+def report(store, since, until=None, tasks_each=10) -> list[dict]:
+    """Every project with usage since `since`, biggest first: its split, and its tasks with theirs."""
+    nm, tn = names(store), task_names(store)
+    tasks = split(store, "task_id", since, until)
+    by_project = {}
+    for tid, t in tasks.items():
+        info = tn.get(tid) or {}
+        pid = info.get("project_id")
+        if not pid:   # a task named nowhere this side: its requests say which project
+            row = store.conn.execute("SELECT project_id FROM usage WHERE task_id = ? AND project_id IS NOT NULL"
+                                     " LIMIT 1", (tid,)).fetchone()
+            pid = row[0] if row else None
+        by_project.setdefault(pid, []).append({"id": tid, "name": info.get("name"), "source": info.get("source"),
+                                               "done": info.get("done"), **t})
+    out = []
+    for pid, t in sorted(split(store, "project_id", since, until).items(), key=lambda kv: -kv[1]["tokens"]):
+        ts = sorted(by_project.get(pid, []), key=lambda x: -x["tokens"])
+        out.append({"id": pid, "name": nm.get(pid), **t, "tasks": ts[:tasks_each], "more_tasks": max(0, len(ts) - tasks_each)})
     return out
 
 
