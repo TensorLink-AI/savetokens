@@ -126,7 +126,9 @@ def _efficiency(store, since, now):
     from . import efficiency
     f = efficiency.facts(store, since, now)
     w = efficiency.what_ifs(f)
-    return {"context": f["context"], "top": w[0] if w else None}
+    from . import effects
+    settled = [m for m in effects.followups(store, now) if now - m["shown"] < (effects.SETTLE_DAYS + 7) * DAY]
+    return {"context": f["context"], "top": w[0] if w else None, "measured": settled[:2]}
 
 
 def _date(ts):
@@ -215,6 +217,8 @@ def text(r) -> str | None:
         w = e["top"]
         lines.append(f"  Biggest what-if: {w['title'].lower()}, up to {_usd(w['saving_usd'])}"
                      " (`savetokens efficiency` for the assumptions).")
+    for m in e.get("measured") or []:
+        lines.append(f"  {m['text']}")
     if r["hits"] or r["previous_hits"]:
         lines.append(f"  Limit hits: {r['hits']} (the {r['days']} days before: {r['previous_hits']}).")
     elif use:
