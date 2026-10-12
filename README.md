@@ -286,9 +286,13 @@ It installs savetokens if it's missing and joins. The code works for 24 hours, f
 machines. More later: `savetokens pair --machines 5 --hours 24`, or **Add a machine** in the
 hub's browser view (it also makes a token for CI).
 
-**How machines reach the hub.** With [Tailscale](https://tailscale.com) (free) on your machines,
-setup uses the hub's Tailscale name: private and encrypted, no domain or certificates. Otherwise it
-uses the hub's local network address, fine for machines on the same network.
+**How machines reach the hub.** Setup picks the hub's address once and saves it, and every join
+command (here, `savetokens pair`, and **Add a machine** in the browser) uses it, whatever address your
+browser opened the hub at. It prefers HTTPS from Tailscale (`tailscale serve` or `tailscale funnel` in
+front of the hub), then the hub's [Tailscale](https://tailscale.com) name (free: private and encrypted,
+no domain or certificates), then its local network address, fine for machines on the same network. Your
+own domain or a proxy in front: `savetokens server --setup --public-url https://hub.example.com`, or
+change it later with `savetokens server --public-url URL`.
 
 **No always-on machine?** Deploy a hub with HTTPS in a couple of minutes:
 
@@ -404,7 +408,7 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | `api TOOL [--budget USD --per day\|week\|month \| --off]` | Claude Code or Codex on an API key, or Hermes: its budget |
 | `price MODEL INPUT OUTPUT [CACHE_READ]` | the price of a model savetokens doesn't know |
 | `ephemeris [--key K\|- \| --model M\|ensemble \| --on \| --off]` | the forecaster: key, model (toto2-313m by default), credits left |
-| `server --setup` / `server --stop` | make this machine the hub, starting on boot / stop it (the data stays) |
+| `server --setup [--public-url URL]` / `server --public-url URL` / `server --stop` | make this machine the hub, starting on boot / the address every join command uses / stop it (the data stays) |
 | `server [--host H --port P --add-user NAME]` | run the hub yourself, with the browser view at its address |
 | `pair [--machines N --hours H]` | a join code and the one line to paste on more machines |
 | `join URL CODE` | join a hub with a code |

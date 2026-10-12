@@ -70,6 +70,22 @@ def wsl() -> bool:
         return False
 
 
+def https_name(port, run=subprocess.run) -> str | None:
+    """https://NAME when Tailscale serves this hub over HTTPS (`tailscale serve` or `tailscale funnel`)."""
+    if not shutil.which("tailscale"):
+        return None
+    try:
+        r = run(["tailscale", "serve", "status", "--json"], capture_output=True, text=True, timeout=5)
+        web = json.loads(r.stdout or "{}").get("Web") or {}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    for hostport, conf in web.items():
+        proxies = [h.get("Proxy") or "" for h in ((conf or {}).get("Handlers") or {}).values()]
+        if hostport.endswith(":443") and any(p.rstrip("/").endswith(f":{port}") for p in proxies):
+            return "https://" + hostport[:-4]
+    return None
+
+
 def address(port, run=subprocess.run) -> tuple[str, str]:
     """(URL other machines use, how they reach it: tailscale, lan or local)."""
     ts = tailscale(run)
@@ -168,7 +184,7 @@ def healthy(url, wait=10.0, sleep=time.sleep) -> bool:
 
 
 def setup(port=8787, data=None, interactive=True, out=print, ask=input, open_url=None, run=subprocess.run,
-          popen=subprocess.Popen, platform=sys.platform, wait=10.0) -> dict | None:
+          popen=subprocess.Popen, platform=sys.platform, wait=10.0, public=None) -> dict | None:
     """Make this machine the hub. Returns {"url", "how", "command", "code", "started"}."""
     from . import ephemeris, install, server
     from .store import load_config, save_config
@@ -192,9 +208,15 @@ def setup(port=8787, data=None, interactive=True, out=print, ask=input, open_url
     else:
         out("- Forecasts: local baseline (no Ephemeris key; `savetokens setup` adds one).")
 
-    # 2. the server, now and at every boot
+    # 2. the server, now and at every boot, at the address every join command will use: one you gave, one
+    #    saved before, HTTPS from Tailscale, then Tailscale's name, then this network's
     url, how = address(port, run)
     host = "0.0.0.0" if how != "local" else "127.0.0.1"
+    fixed = public or server.public_url(data) or https_name(port, run)
+    if fixed:
+        url, how = fixed.rstrip("/"), "public"
+    if how != "local":
+        server.set_public_url(data, url)
     users = server.Users(data)
     if not users.names():
         server.first_user(users, log=lambda *_: None)
@@ -224,7 +246,9 @@ def setup(port=8787, data=None, interactive=True, out=print, ask=input, open_url
     out(f"Add a machine: paste this on it (works for 24 hours, up to {server.INVITE_MACHINES} machines):")
     out(f"  {command}")
     out(f"See every machine in a browser: {url}/#code={code}")
-    if how == "tailscale":
+    if how == "public":
+        out(f"Every join command uses {url}; change it with `savetokens server --public-url URL`.")
+    elif how == "tailscale":
         out("Machines reach it over Tailscale, so each needs Tailscale signed in to the same account.")
     elif how == "lan":
         out("Machines on this network can reach it. For machines elsewhere, install Tailscale (free) on each,"

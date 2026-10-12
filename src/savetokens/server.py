@@ -143,16 +143,24 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             self.end_headers()
             self.wfile.write(data)
 
-        def _base(self):
-            """This server's address as the caller reached it (behind a proxy too), or None if odd."""
-            fixed = os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL")
+        def _base(self, others=False):
+            """This server's address as the caller reached it (behind a proxy too), or None if odd. others: for a
+            command to paste on another machine, where 127.0.0.1 would mean that machine."""
+            fixed = public_url(users.data)   # set up for remote machines: always that address
             if fixed:
-                return fixed.rstrip("/")
+                return fixed
             host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",")[0].strip()
             proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip()
             if proto not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9.\-]+(:\d{1,5})?|\[[0-9a-fA-F:.]+\](:\d{1,5})?",
                                                                     host):
                 return None
+            name, _, port = host.rpartition(":") if not host.endswith("]") else (host, "", "")
+            listening = self.server.server_address[0] if hasattr(self, "server") else ""
+            if others and (name or host) in ("127.0.0.1", "localhost", "[::1]") and listening in ("0.0.0.0", "::"):
+                from . import hub
+                url, how = hub.address(int(port) if port.isdigit() else 80)
+                if how != "local":
+                    return url
             return f"{proto}://{host}"
 
         def _script(self):
@@ -177,7 +185,7 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             if not (1 <= machines <= MAX_INVITE_MACHINES and 60 <= seconds <= MAX_INVITE_SECONDS):
                 return self._send(400, {"error": f"machines is 1 to {MAX_INVITE_MACHINES}, hours at most"
                                                  f" {MAX_INVITE_SECONDS // 3600}"})
-            code, base = users.pair(user, seconds, machines), self._base()
+            code, base = users.pair(user, seconds, machines), self._base(others=True)
             self._send(200, {"code": code, "expires_in": int(seconds), "machines": machines, "url": base,
                              "command": join_command(base, code) if base else None})
 
@@ -212,7 +220,7 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
             if path == "/v1/pair":
                 return self._pair(user)
             if path == "/v1/token":
-                return self._send(200, {"token": users.add(user), "url": self._base()})
+                return self._send(200, {"token": users.add(user), "url": self._base(others=True)})
             if path in ("/v1/logs", "/v1/traces"):   # OpenTelemetry (OTLP over HTTP, JSON)
                 return self._otel(user)
             if path == "/v1/team":
@@ -567,8 +575,33 @@ def join_script(base):
     return install_script(base)
 
 
-def public_url():
-    return (os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/") or None
+def public_url(data=None):
+    """The address machines join this hub at: SAVETOKENS_PUBLIC_URL, else what `server --setup` or
+    `server --public-url` saved with the hub's data."""
+    env = (os.environ.get("SAVETOKENS_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    if env or data is None:
+        return env or None
+    try:
+        return (Path(data) / PUBLIC_URL_FILE).read_text().strip().rstrip("/") or None
+    except OSError:
+        return None
+
+
+PUBLIC_URL_FILE = "public_url"
+
+
+def set_public_url(data, url):
+    """Save (or, with None, forget) the address every join command uses."""
+    path = Path(data) / PUBLIC_URL_FILE
+    if not url:
+        path.unlink(missing_ok=True)
+        return None
+    url = url.strip().rstrip("/")
+    if not re.fullmatch(r"https?://[A-Za-z0-9.\-]+(:\d{1,5})?(/[A-Za-z0-9._~\-/]*)?", url):
+        raise ValueError(f"not an http(s) address: {url!r}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(url + "\n")
+    return url
 
 
 def first_user(users: Users, log=print):
@@ -583,7 +616,7 @@ def first_user(users: Users, log=print):
         log("Your token, for containers and cloud sessions (SAVETOKENS_TOKEN), is in first-token.txt.")
     if users.names() == ["me"] and not users.joined("me"):
         code = users.pair("me", seconds=7 * 86400, uses=INVITE_MACHINES)
-        base = public_url() or "<this server's URL>"
+        base = public_url(users.data) or "<this server's URL>"
         log(f"Add your machines (this code works for a week, for up to {INVITE_MACHINES} machines):")
         log(f"  {join_command(base, code)}")
         log("More codes later: `savetokens pair` on a joined machine, or 'Add a machine' in the browser view.")

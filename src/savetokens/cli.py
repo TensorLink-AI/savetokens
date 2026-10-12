@@ -121,6 +121,7 @@ EXAMPLES = {
     "connect": ["savetokens connect https://hub.example.com --token TOKEN",
                 "savetokens connect --off"],
     "server": ["savetokens server --setup                     # this machine is the hub, from now on",
+               "savetokens server --public-url https://hub.example.com   # every join command uses it",
                "savetokens server --stop",
                "savetokens server --host 0.0.0.0 --port 8787  # run it yourself, in the foreground",
                "savetokens server --add-user sam              # a teammate's own view and token",
@@ -1229,7 +1230,7 @@ def cmd_server(args):
               f"{'s' if len(t['members']) != 1 else ''}).")
         if new:
             code = users.pair(args.member, server.INVITE_SECONDS, server.INVITE_MACHINES)
-            base = server.public_url()
+            base = server.public_url(data)
             print(f"Their machines join with: {server.join_command(base, code) if base else 'savetokens join URL ' + code}")
         return 0
     if args.provider_key:
@@ -1242,9 +1243,19 @@ def cmd_server(args):
         print(f"{args.provider_key}: " + (f"admin key kept in {path} (only you can read it); the hub reads its"
                                           " usage report hourly" if key else "removed (pipe a key in to set one)"))
         return 0
+    if args.public_url:
+        try:
+            url = server.set_public_url(data, None if args.public_url == "off" else args.public_url)
+        except ValueError as e:
+            raise Fail(str(e))
+        print(f"Join commands use {url} from now on." if url else
+              "Forgot the saved address: join commands use the address each browser reached the hub at.")
+        if not args.setup:
+            return 0
     if args.setup:
         from . import hub
-        return 0 if hub.setup(args.port, data, interactive=sys.stdin.isatty()) else 1
+        return 0 if hub.setup(args.port, data, interactive=sys.stdin.isatty(), public=args.public_url
+                              if args.public_url not in (None, "off") else None) else 1
     if args.stop:
         from . import hub
         print("Stopped the hub; it won't start at boot. Your data stays in " + str(data) if hub.stop()
@@ -1410,6 +1421,8 @@ def main(argv=None):
     s.add_argument("--pair", metavar="NAME", help="a join code for one of NAME's machines")
     s.add_argument("--setup", action="store_true",
                    help="make this machine the hub: starts on boot, prints the line that adds other machines")
+    s.add_argument("--public-url", metavar="URL", help="the address other machines reach this hub at (e.g. its HTTPS"
+                   " domain): every join command uses it; --setup finds one itself; off forgets it")
     s.add_argument("--stop", action="store_true", help="stop the hub set up with --setup (the data stays)")
     s.add_argument("--provider-key", metavar="PROVIDER", help="anthropic or openai: an admin key on stdin, so the hub"
                                                               " counts API usage no reader saw (nothing piped: remove)")
