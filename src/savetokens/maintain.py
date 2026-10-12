@@ -74,8 +74,9 @@ def run(store: Store, now=None, log=lambda *_: None) -> list[dict]:
     if pricing.refresh(now=now):   # the price catalogue, once a day: new models are priced without an update
         log(f"price catalogue refreshed; {pricing.reprice(store)} requests priced")
     capture.backfill(store)
-    from . import projects
+    from . import projects, tasks
     projects.fill(store)   # requests read before their folder's project was known
+    tasks.fill(store)
     if sync.connected(cfg):
         try:
             sync.push(store, cfg)

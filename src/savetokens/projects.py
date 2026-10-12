@@ -141,11 +141,15 @@ def set_key(store, new: str) -> bool:
     """Use the hub's project key, so every machine names a project alike. Recomputes ids already given."""
     if not new or new == store.meta("project_key"):
         return False
+    before = dict(store.conn.execute("SELECT cwd, id FROM projects").fetchall())
     store.set_meta("project_key", new)
     store.conn.execute("DELETE FROM projects")
     store.conn.execute("UPDATE usage SET project_id = NULL WHERE cwd IS NOT NULL")
     _cache.clear()
     fill(store)
+    after = dict(store.conn.execute("SELECT cwd, id FROM projects").fetchall())
+    from . import tasks
+    tasks.rekey(store, {old: after[cwd] for cwd, old in before.items() if cwd in after})
     return True
 
 

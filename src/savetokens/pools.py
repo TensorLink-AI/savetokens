@@ -123,10 +123,12 @@ def remove_goal(store, gid) -> bool:
 
 
 def _scope(goal):
-    ids = (goal.get("scope") or {}).get("projects")
-    if not ids:
-        return "1", []
-    return f"project_id IN ({','.join('?' * len(ids))})", list(ids)
+    sc = goal.get("scope") or {}
+    for col, key in (("task_id", "tasks"), ("project_id", "projects")):
+        ids = sc.get(key)
+        if ids:
+            return f"{col} IN ({','.join('?' * len(ids))})", list(ids)
+    return "1", []
 
 
 def history(store, pool: Pool, now, hours=meter.HISTORY_HOURS):

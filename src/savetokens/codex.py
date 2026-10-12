@@ -64,7 +64,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
     end = data.rfind(b"\n") + 1
     state = store.meta(f"codex_file:{path.name}") or {}
     sid, model, project, sub = state.get("sid"), state.get("model"), state.get("project"), state.get("sub", False)
-    cwd = state.get("cwd")
+    cwd, branch = state.get("cwd"), state.get("branch")
     planned = state.get("planned", False)          # this session has shown a plan meter
     usage, readings = [], []
     last_total = state.get("total")
@@ -80,6 +80,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
             sid = p.get("id") or p.get("session_id") or sid
             project = Path(p["cwd"]).name if p.get("cwd") else project
             cwd = p.get("cwd") or cwd
+            branch = (p.get("git") or {}).get("branch") or branch
             sub = sub or bool(p.get("parent_thread_id"))
         elif kind == "turn_context":
             model = p.get("model") or model
@@ -105,6 +106,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
                           input=max(0, int(last.get("input_tokens") or 0) - cached), cache_read=cached,
                           cache_write_5m=int(last.get("cache_write_input_tokens") or 0),
                           output=int(last.get("output_tokens") or 0), project=project, thread=sid, cwd=cwd,
+                          branch=branch,
                           reasoning=int(last["reasoning_output_tokens"]) if "reasoning_output_tokens" in last else None)
                 e.cost_usd = pricing.cost(model, input=e.input, output=e.output, cache_read=e.cache_read,
                                           cache_write_5m=e.cache_write_5m)
@@ -114,7 +116,7 @@ def ingest_file(store: Store, path: Path, billing=None) -> int:
         e.billing = "api" if api else None
     added = store.add_usage(usage)
     _add_readings(store, readings)
-    store.set_meta(f"codex_file:{path.name}", {"sid": sid, "model": model, "project": project, "sub": sub, "cwd": cwd,
+    store.set_meta(f"codex_file:{path.name}", {"sid": sid, "model": model, "project": project, "sub": sub, "cwd": cwd, "branch": branch,
                                               "planned": planned, "total": last_total})
     store.set_offset(path, offset + end, size)
     store.conn.commit()

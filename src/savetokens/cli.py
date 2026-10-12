@@ -29,7 +29,8 @@ GROUPS = [
     ("start", ["install", "setup", "suggest", "uninstall"]),
     ("see where you stand", ["status", "recap", "efficiency", "advise", "spend", "watch", "web", "dashboard"]),
     ("before a big job", ["estimate", "check"]),
-    ("budgets and projects", ["budget", "projects", "project", "api", "plan", "price", "ephemeris"]),
+    ("budgets, projects and tasks", ["budget", "projects", "project", "tasks", "task", "api", "plan", "price",
+                                     "ephemeris"]),
     ("several machines", ["server", "pair", "join", "connect"]),
     ("run by install, in the background", ["maintain", "backfill", "mcp"]),
 ]
@@ -79,7 +80,14 @@ EXAMPLES = {
                "savetokens budget --usd 500 --per month         # overall: every tool, provider and machine",
                "savetokens budget --project webapp --usd 150 --per month",
                "savetokens budget --project . --tokens 30M --by 2026-12-15   # this folder's project, by a date",
+               "savetokens budget --task \"Add OAuth\" --tokens 3M    # a task in this folder's project",
                "savetokens budget --off webapp"],
+    "task": ["savetokens task start \"Add OAuth\"          # what follows here counts to it",
+             "savetokens task done                          # finished: its cost joins the estimates",
+             "savetokens task                               # the task this folder is on, and its cost so far",
+             "savetokens task pattern '[A-Z]+-[0-9]+'       # issue keys in branch names are tasks",
+             "savetokens task branches off"],
+    "tasks": ["savetokens tasks --project .", "savetokens tasks --days 30 --json"],
     "projects": ["savetokens projects", "savetokens projects --days 7 --json"],
     "project": ["savetokens project link                        # this folder is one project, on any machine",
                 "savetokens project link webapp"],
@@ -693,6 +701,92 @@ def cmd_project(args):
     return OK
 
 
+def _task_line(tk):
+    state = "done" if tk.get("done") else "open"
+    return (f"  {tk['name']:<32} {state:<5} ${tk.get('usd') or 0:>9,.2f}  {(tk.get('tokens') or 0) / 1e6:>8,.1f}M tokens"
+            f"  {tk.get('sessions') or 0} session{'s' if tk.get('sessions') != 1 else ''}  ({tk['source']})")
+
+
+def cmd_task(args):
+    import re
+    from . import tasks
+    from .store import Store
+    cwd = os.getcwd()
+    with Store() as s:
+        if args.action == "start":
+            if not args.name:
+                raise Fail("name the task: savetokens task start NAME")
+            got = tasks.start(s, cwd, args.name)
+            _out(args, got, f"Started {args.name!r} in {got['project']}: what follows here counts to it until"
+                            f" `savetokens task done`.\nEstimate: {got['estimate']['text']}.")
+        elif args.action == "done":
+            got = tasks.done(s, cwd, args.name)
+            if not got:
+                raise Fail("no task here to finish: start one, or work on a branch", "savetokens task start NAME")
+            _out(args, got, f"Done: {got['name']}, ${got['usd']:,.2f}, {got['tokens'] / 1e6:,.1f}M tokens over"
+                            f" {got['sessions']} session{'s' if got['sessions'] != 1 else ''}.")
+        elif args.action == "pattern":
+            st = tasks._settings(s)
+            st["pattern"] = None if args.name in (None, "off") else args.name
+            if st["pattern"]:
+                try:
+                    re.compile(st["pattern"])
+                except re.error as e:
+                    raise Fail(f"not a pattern: {e}")
+            s.set_meta("task_settings", st)
+            s.conn.execute("UPDATE usage SET task_id = NULL WHERE branch IS NOT NULL")
+            n = tasks.fill(s)
+            _out(args, {"pattern": st["pattern"], "requests": n},
+                 f"Tracker keys: {st['pattern'] or 'off'} ({n:,} requests on a task).")
+        elif args.action == "branches":
+            st = tasks._settings(s)
+            st["branches"] = args.name != "off"
+            s.set_meta("task_settings", st)
+            s.conn.execute("UPDATE usage SET task_id = NULL WHERE branch IS NOT NULL")
+            n = tasks.fill(s)
+            _out(args, {"branches": st["branches"], "requests": n},
+                 f"Branches as tasks: {'on' if st['branches'] else 'off'} ({n:,} requests on a task).")
+        else:   # current
+            got = tasks.current(s, cwd)
+            if not got:
+                _out(args, {"task": None}, "No task here: `savetokens task start NAME`, or work on a branch.")
+            else:
+                tot = tasks.totals(s, got["id"])
+                _out(args, {"task": tot, "estimate": tasks.estimate(s, got["project_id"])},
+                     f"{tot['name']} ({tot['source']}): ${tot['usd']:,.2f}, {tot['tokens'] / 1e6:,.1f}M tokens so far."
+                     f"\nEstimate: {tasks.estimate(s, got['project_id'])['text']}.")
+    return OK
+
+
+def cmd_tasks(args):
+    from . import projects, tasks
+    from .store import Store
+    with Store() as s:
+        projects.fill(s)
+        tasks.fill(s)
+        ids = None
+        if args.project:
+            ids = [i for i in projects.by_name(s, args.project) if i]
+            if not ids:
+                raise Fail(f"no project called {args.project!r} here", "savetokens projects")
+        got = tasks.listing(s, ids, time.time() - args.days * 86400)
+        names = projects.names(s)
+        est = tasks.estimate(s, ids[0]) if ids and len(ids) == 1 else None
+    if not got:
+        _out(args, {"tasks": []}, "No tasks yet: `savetokens task start NAME` in a project, or work on a branch.")
+        return OK
+    lines, last = [], None
+    for tk in got:
+        if tk.get("project_id") != last:
+            last = tk.get("project_id")
+            lines.append(f"{names.get(last) or 'project ' + str(last)[:8]}:")
+        lines.append(_task_line(tk))
+    if est:
+        lines.append(f"Estimate for the next one: {est['text']}.")
+    _out(args, {"tasks": got, "estimate": est}, "\n".join(lines))
+    return OK
+
+
 def cmd_budget(args):
     from . import forecast, maintain, pools, projects
     from .store import Store
@@ -726,7 +820,14 @@ def cmd_budget(args):
                 lines.append("($ are real on API keys, API-equivalent for usage on a plan.)")
             _out(args, {"budgets": looks}, "\n".join(lines))
             return OK
-        if args.project:
+        if args.task:
+            from . import tasks
+            pid, _ = projects.resolve(s, os.getcwd())
+            tid = tasks.task_id(s, pid, args.task)
+            if not s.conn.execute("SELECT 1 FROM tasks WHERE id = ?", (tid,)).fetchone():
+                raise Fail(f"no task called {args.task!r} in this folder's project", "savetokens tasks --project .")
+            label, scope = args.task, {"tasks": [tid]}
+        elif args.project:
             ids = projects.by_name(s, args.project)
             if not ids or ids == [None]:
                 raise Fail(f"no project called {args.project!r} here", "savetokens projects")
@@ -1047,7 +1148,9 @@ def main(argv=None):
     s.add_argument("cache_read", type=float, nargs="?", help="$ per million cached input tokens (default: a tenth of input)")
     s = cmd("budget", cmd_budget, "set a budget, overall or for a project, in $ or tokens: per period or a total by"
             " a date; or list them with their forecasts")
-    s.add_argument("--project", metavar="NAME", help="a project's name (savetokens projects), or . for this folder's")
+    sc = s.add_mutually_exclusive_group()
+    sc.add_argument("--project", metavar="NAME", help="a project's name (savetokens projects), or . for this folder's")
+    sc.add_argument("--task", metavar="NAME", help="a task in this folder's project (savetokens tasks)")
     g = s.add_mutually_exclusive_group()
     g.add_argument("--usd", type=float, help="dollars (real on API keys, API-equivalent on plans)")
     g.add_argument("--tokens", type=_amount, help="tokens, e.g. 30M")
@@ -1057,6 +1160,13 @@ def main(argv=None):
     s.add_argument("--off", metavar="NAME", help="remove a budget")
     s = cmd("projects", cmd_projects, "every project's tokens and $: across machines when connected to a hub")
     s.add_argument("--days", type=int, default=30, help="how many days back (default 30)")
+    s = cmd("task", cmd_task, "a unit of work in this folder's project: start, done, or what it's on now")
+    s.add_argument("action", nargs="?", default="current", choices=["current", "start", "done", "pattern", "branches"],
+                   help="start NAME, done [NAME], pattern REGEX|off (issue keys in branch names), branches on|off")
+    s.add_argument("name", nargs="?", help="the task's name (or the pattern, or on/off)")
+    s = cmd("tasks", cmd_tasks, "every task: tokens, $, sessions, open or done; and what finished ones cost")
+    s.add_argument("--project", metavar="NAME", help="one project (or . for this folder's)")
+    s.add_argument("--days", type=int, default=90, help="tasks active in this many days (default 90)")
     s = cmd("project", cmd_project, "make this folder one project on every machine (writes a .savetokens file)")
     s.add_argument("action", choices=["link"], help="link: this folder and everything under it is one project")
     s.add_argument("name", nargs="?", help="what to call it (default: the repo's or folder's name)")
