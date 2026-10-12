@@ -171,7 +171,7 @@ def charts(store, every, now, hours=24) -> list[dict]:
             out.append({"id": p.id, "group": "limits", "unit": "$" if p.kind == "api" else "%",
                         "label": f"{p.tool} API $" if p.kind == "api" else f"{p.tool} % of weekly limit",
                         **demand_view(hist, fc, now, hours)})
-    for prov, hist in spend.series(store, now):
+    for prov, hist in spend.series(store, now, min_hours=1):   # a new provider charts at once; its forecast waits for a day
         k = spend.key(prov)
         fc = _hourly_forecast(store, k, forecast.preferred_source(store, k), now, hours)
         out.append({"id": k, "group": "providers", "unit": "M", "label": f"{spend.label(prov)} tokens (millions)",

@@ -72,13 +72,13 @@ def history(store, provider, now, hours=HISTORY_HOURS):
     return [(h, got.get(h, 0.0)) for h in range(int(min(got)), int(end), HOUR)]
 
 
-def series(store, now):
-    """Providers worth forecasting: used lately, with a day of history."""
+def series(store, now, min_hours=MIN_HISTORY_HOURS):
+    """Providers used lately with at least `min_hours` of history: a day to be worth forecasting, any to chart."""
     out = []
     for (p,) in store.conn.execute(f"SELECT DISTINCT {PROVIDER} FROM usage WHERE ts >= ?",
                                    (now - ACTIVE_DAYS * 86400,)):
         hist = history(store, p, now)
-        if len(hist) >= MIN_HISTORY_HOURS:
+        if hist and len(hist) >= min_hours:
             out.append((p, hist))
     return out
 

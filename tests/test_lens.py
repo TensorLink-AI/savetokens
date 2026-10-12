@@ -50,3 +50,10 @@ def test_every_tab_follows_the_lens():
         assert lens in html
     for part in ("function drawPlans", "inLens(x.billing)", "inLens(m.billing)", "apiBudgets(s)", 'h.get("lens")'):
         assert part in js
+
+
+def test_a_provider_used_for_an_hour_is_charted_at_once_but_not_forecast_yet(store):
+    _use(store, "s", "hermes", 3, at=T0 - 2 * H, billing="api", provider="chutes.ai")
+    got = {c["id"]: c for c in dashboard.charts(store, [], T0)}
+    assert spend.key("chutes.ai") in got
+    assert not [p for p, _ in spend.series(store, T0)]                 # a day of history before it's forecast
