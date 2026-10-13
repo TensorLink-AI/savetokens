@@ -160,6 +160,15 @@
         <span class="legend">┤ BUDGETS ├</span>
         <span class="legend right info pop-host" tabindex="0" aria-label="About budgets"><span class="i">i</span><span class="pop right"><span class="pop-in w340">Overall, project and task budgets you set: savetokens budget. Each says what it counts: API spend, or all usage at API prices.</span></span></span>
         <div class="cards flat" id="budget-cards"></div>
+        <form id="budget-form" class="budget-form">
+          <span class="cap">ADD A BUDGET · API SPEND, REAL MONEY</span>
+          <select id="b-for" aria-label="What the budget covers"></select>
+          <span class="prompt">$</span>
+          <input id="b-usd" type="number" min="1" step="any" inputmode="decimal" required placeholder="20" aria-label="Amount in dollars">
+          <select id="b-per" aria-label="Per"><option value="month">a month</option><option value="week">a week</option><option value="day">a day</option></select>
+          <button type="submit">SET</button>
+          <span class="err small" id="b-err" role="alert"></span>
+        </form>
       </section>
     </div>
 

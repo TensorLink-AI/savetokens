@@ -170,3 +170,39 @@ def test_every_command_but_the_long_running_ones_takes_json(capsys):
             cli.main([c, "--help"])
         out = capsys.readouterr().out
         assert e.value.code == 0 and "--json" in out and "exit codes:" in out, c
+
+
+def test_budgets_are_set_and_removed_from_the_hubs_browser_view(running):
+    users, token, url = running
+    auth = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    post = lambda body, h=auth: _get(url + "/v1/budget", h, json.dumps(body).encode())
+    assert post({"usd": 20, "per": "month"}, {"Content-Type": "application/json"})[0] == 401
+    code, _, body = post({"usd": 20, "per": "month", "provider": "chutes.ai"})
+    assert code == 200 and json.loads(body)["id"] == "chutes"
+    code, _, body = post({"usd": 150, "per": "week", "project": "96e65e3f1c6bb62e"})
+    pid = json.loads(body)["id"]
+    with users.store("chris") as s:
+        g = pools.goals_(s)
+        assert g["chutes"]["scope"] == {"providers": ["chutes.ai"]} and g["chutes"]["count"] == "api"
+        assert (g[pid]["scope"], g[pid]["period"], g[pid]["amount"]) == ({"projects": ["96e65e3f1c6bb62e"]}, "week", 150)
+        at = s.meta("goals_at")
+    assert at   # machines take it on their next sync: the newest setting wins
+    for bad in ({"usd": -5}, {"usd": "x"}, {"usd": 5, "per": "year"}, {"usd": 5, "provider": "a b"}, {"off": "nope"}):
+        assert post(bad)[0] == 400
+    assert post({"off": "chutes"})[0] == 200
+    with users.store("chris") as s:
+        assert "chutes" not in pools.goals_(s)
+
+
+def test_the_local_view_sets_a_budget_with_its_key(tmp_path):
+    got = []
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), web.local_handler("k3y", lambda: {}, budget=lambda b: got.append(b) or {"ok": True}))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/v1/budget"
+    try:
+        data = json.dumps({"usd": 10}).encode()
+        assert _get(url, {"Authorization": "Bearer nope"}, data)[0] == 404
+        assert _get(url, {"Authorization": "Bearer k3y", "Host": "evil.example"}, data)[0] == 403
+        assert _get(url, {"Authorization": "Bearer k3y"}, data)[0] == 200 and got == [{"usd": 10}]
+    finally:
+        httpd.shutdown()

@@ -2,6 +2,7 @@
 
   POST /v1/push    a machine's new rows (usage, meter, hits)
   POST /v1/settings   API budgets (the newest setting wins)
+  POST /v1/budget  set or remove a budget from the browser view ({"usd", "per", "provider"|"project"} or {"off": id})
   POST /v1/pair    a short join code for more machines (authenticated; {"machines": N, "hours": H})
   POST /v1/join    a join code in, that user's new token out (no token needed; codes expire)
   POST /v1/token   a new token for this user, for CI and containers (SAVETOKENS_TOKEN)
@@ -225,6 +226,8 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                 return self._otel(user)
             if path == "/v1/team":
                 return self._team(user)
+            if path == "/v1/budget":
+                return self._budget(user)
             if path not in ("/v1/push", "/v1/settings"):
                 return self._send(404, {"error": "not found"})
             n = int(self.headers.get("Content-Length") or 0)
@@ -353,6 +356,19 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                 with lock:
                     dirty.add(user)
             self._send(200, {"partialSuccess": {}})
+
+        def _budget(self, user):
+            """A budget set or removed in the browser view; machines take it on their next sync."""
+            from . import pools
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
+                with users.store(user) as s:
+                    got = pools.apply_budget(s, body)
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
+            with lock:
+                dirty.add(user)
+            self._send(200, got)
 
         def _goals(self, user, body):
             """The budgets you set (`savetokens budget`); the newest setting wins."""
