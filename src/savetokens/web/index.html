@@ -166,7 +166,9 @@
           <span class="prompt">$</span>
           <input id="b-usd" type="number" min="1" step="any" inputmode="decimal" required placeholder="20" aria-label="Amount in dollars">
           <select id="b-per" aria-label="Per"><option value="month">a month</option><option value="week">a week</option><option value="day">a day</option></select>
+          <select id="b-mode" aria-label="Budget agent"><option value="watch">WATCH</option><option value="advise">ADVISE</option><option value="guard">GUARD</option><option value="off">OFF</option></select>
           <button type="submit">SET</button>
+          <span class="faint small" id="b-mode-note">Agent: watch alerts you · advise also tells the agent at work · guard also stops new work once it's used up · off is silent</span>
           <span class="err small" id="b-err" role="alert"></span>
         </form>
       </section>

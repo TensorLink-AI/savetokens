@@ -310,16 +310,41 @@ def brief(store, now=None, session_id=None, cwd=None, harness=None) -> dict:
     from . import effects
     effects.record_shown(store, options, now)   # so a week on, what happened after can be measured
     return {"now": now, "headline": {"level": level, "text": text}, "limits": limits, "this_session": me,
+            "budget_agent": agent_view(store, now, harness, cwd),
             "options": options, "measured": [m for m in effects.followups(store, now)][:3],
             "sessions": [{k: x.get(k) for k in ("project", "harness", "pool", "pct_week", "pace", "subagents",
                                                 "running")} for x in sessions if x.get("session")][:5],
             "sizing": sizing}
 
 
+def agent_view(store, now, harness=None, cwd=None) -> list[dict]:
+    """Budgets in advise or guard that work here may count toward (this tool and project; any provider, since a
+    tool without hooks doesn't say which it's on), with what the agent should do about each."""
+    from . import projects
+    pid = projects.resolve(store, cwd)[0] if cwd else None
+    goals = {gid: g for gid, g in pools.goals_(store).items() if pools.mode(g) in ("advise", "guard")
+             and pools.covers(g, harness, None, pid, "api" if harness == "hermes" else None)}
+    out = []
+    for o in forecast.outlook(store, now, goals=True) if goals else []:
+        g = goals.get(o["pool"][5:]) if o["kind"] == "goal" else None
+        if not g:
+            continue
+        m, st = pools.mode(g), alerts.stage(o, now)
+        do = ("stop: don't start new work that counts toward it; tell the user, who can raise it or switch it to"
+              " advise" if m == "guard" and o["used"] >= 100 else
+              "pace: cheaper models for subagents, no wide fan-outs; propose bigger changes to the user"
+              if st or o["used"] >= 100 else None)
+        out.append({"budget": o["label"], "mode": m, "used": o["used"], "stage": st, "do": do})
+    return out
+
+
 def brief_text(b) -> str:
     """The brief in a few lines, for an agent's context or a terminal."""
     now = b["now"]
     lines = [b["headline"]["text"]]
+    for a in b.get("budget_agent") or []:
+        if a["do"]:
+            lines.append(f"Budget agent ({a['mode']}): {a['budget']} at {a['used']:.0f}%: {a['do']}.")
     for l in b["limits"]:
         s = f"- {l['label']}: {l['used']:.0f}% used"
         if l["p50"] is not None:

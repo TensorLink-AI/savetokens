@@ -358,3 +358,6 @@ button.chip:hover, .chip[aria-expanded="true"] { border-color: var(--cyan); }
 .budget-form button:hover, .budget-form button:focus-visible { color: var(--white); }
 .limit .rm { all: unset; cursor: pointer; position: absolute; top: 6px; right: 10px; color: var(--faint); font-size: 12px; letter-spacing: .06em; }
 .limit .rm:hover, .limit .rm:focus-visible { color: var(--red); }
+.limit .agent { display: flex; gap: 6px; align-items: center; }
+.limit .agent select.mode, .budget-form #b-mode { background: var(--panel); color: var(--cyan); border: 1px solid var(--line); font: 12px var(--mono); letter-spacing: .06em; padding: 2px 4px; }
+.budget-form #b-mode-note { flex-basis: 100%; }

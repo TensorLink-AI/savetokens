@@ -86,6 +86,11 @@ savetokens budget                                               # every budget, 
 ```
 
 A $ budget counts real API spend unless you add `--count all`, which also counts plan usage at API prices.
+You can also add, remove and change budgets in the dashboard (Projects tab, BUDGETS).
+
+Each budget can have the budget agent watch over it: `watch` (alerts, the default), `advise` (also tells the agent
+at work to pace itself), `guard` (also stops new work once it's used up), or `off`. Set it with `--mode` or in the
+dashboard.
 
 ## 6. Day to day
 

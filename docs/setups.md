@@ -69,6 +69,10 @@ savetokens budget --provider openrouter --usd 100 --per month
 savetokens plan synthetic.new --usd 20 --per month            # a flat-rate provider: a subscription, not a budget
 ```
 
+To have it stop by itself when the money's gone, set the budget to guard (`--mode guard`, or in the
+dashboard). A loop that runs Hermes can then ask before each task: `savetokens check --tool hermes --provider
+chutes || break`.
+
 If Hermes reports no cost (some providers don't), savetokens prices the tokens from its catalogue. If the
 catalogue doesn't know the model either, run `savetokens price MODEL IN OUT`.
 

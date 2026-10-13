@@ -464,12 +464,13 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
 
 
 def _valid_goals(goals) -> bool:
+    from . import pools
     from .pools import UNITS
     ok = lambda g: (isinstance(g, dict) and isinstance(g.get("label"), str) and len(g["label"]) <= 80
                     and g.get("unit") in UNITS and isinstance(g.get("amount"), (int, float)) and g["amount"] > 0
                     and (g.get("period") in PERIODS or isinstance(g.get("by"), (int, float)))
                     and isinstance(g.get("start"), (int, float)) and isinstance(g.get("scope"), dict)
-                    and g.get("count") in (None, "api", "all")
+                    and g.get("count") in (None, "api", "all") and g.get("mode") in (None, *pools.MODES)
                     and all(isinstance(g["scope"].get(k) or [], list) and len(g["scope"].get(k) or []) <= 50
                             and all(isinstance(x, str) and len(x) <= 32 for x in g["scope"].get(k) or [])
                             for k in ("projects", "tasks", "providers", "tools")))
