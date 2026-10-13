@@ -628,18 +628,24 @@ def cmd_estimate(args):
 
 def cmd_check(args):
     """One verdict for a script or agent to act on, as the exit code: on track (0), at risk (3), won't fit (4)."""
-    from . import alerts, capture, forecast, mcp, pools
+    from . import alerts, capture, forecast, mcp, pools, projects
     from .store import Store
     sized = any(v is not None for v in (args.points, args.usd, args.like, args.hours))
     with Store() as s:
         capture.backfill(s)
         now = time.time()
         every = pools.pools(s, now)
-        if args.tool and not any(p.harness == args.tool for p in every):
+        if args.tool and not any(p.harness == args.tool for p in every) and not pools.goals_(s):
             raise Fail(f"no limits known for {args.tool} yet",
                        f"savetokens api {args.tool} --budget USD --per month" if args.tool == "hermes"
                        else "savetokens status")
-        looks = [o for o in forecast.outlook(s, now) if not args.tool or o["harness"] == args.tool]
+        pid = projects.resolve(s, os.getcwd())[0]
+        # budgets in advise or guard count here too, when this work counts toward them
+        looks = [o for o in forecast.outlook(s, now, goals=True)
+                 if (o["kind"] != "goal" and (not args.tool or o["harness"] == args.tool))
+                 or (o["kind"] == "goal" and o.get("mode") in ("advise", "guard") and pools.covers(
+                     {"scope": o["scope"], "count": o["count"]}, args.tool, args.provider, pid,
+                     "api" if args.tool == "hermes" else None))]
         pool = next((p.id for p in every if p.harness == args.tool), None) if args.tool else None
         job = _estimate(s, args, pool) if sized else None
     limits = [{k: o.get(k) for k in ("pool", "label", "kind", "used", "p50", "p10", "p90", "p_hit", "eta",
@@ -648,6 +654,12 @@ def cmd_check(args):
     risky = [x for x in limits if x["stage"]]
     reasons = [f"{x['label']}: {x['stage'].replace('_', ' ')}" for x in risky]
     code = AT_RISK if risky else OK
+    with Store() as s:   # a guarded budget this work counts toward, used up: stop
+        guarded = [g for _, g, _ in pools.used_up(s, now, "guard")
+                   if pools.covers(g, args.tool, args.provider, pid, "api" if args.tool == "hermes" else None)]
+    if guarded:
+        code = WONT_FIT
+        reasons[:0] = [f"{g['label']} budget used up, and guarded: stop new work" for g in guarded]
     if job:
         w = job.get("likely_at_reset_with_job")
         if job["finish"] is None or (w is not None and w > 100):
@@ -657,7 +669,7 @@ def cmd_check(args):
             code = max(code, AT_RISK)
             reasons.insert(0, "the job has to wait for a 5-hour reset")
     verdict = {OK: "on_track", AT_RISK: "at_risk", WONT_FIT: "wont_fit"}[code]
-    if not limits:
+    if not limits and not guarded:
         verdict = "no_data"
     text = {"on_track": "on track", "at_risk": "at risk", "wont_fit": "won't fit",
             "no_data": "no limits known yet (savetokens status)"}[verdict]
@@ -890,6 +902,10 @@ def cmd_team(args):
     return OK
 
 
+MODE_HELP = {"off": "no alerts", "watch": "alerts (default)", "advise": "also tells the agent at work to pace itself",
+             "guard": "also stops new work once it's used up"}
+
+
 def cmd_budget(args):
     from . import forecast, maintain, pools, projects
     from .store import Store
@@ -905,6 +921,15 @@ def cmd_budget(args):
                 raise Fail(f"no team budget {args.off!r}", "savetokens team")
             _team_call("/v1/team", {"goals": goals})
             _out(args, {"removed": gid, "team": True}, f"Removed the team's {gid} budget.")
+            return OK
+        if args.mode and args.usd is None and args.tokens is None:   # change an existing budget's mode
+            gid = pools.find_goal(s, args.name or "")
+            if not args.name or not gid:
+                raise Fail(f"no budget {args.name!r}" if args.name else "--mode alone needs --name: which budget",
+                           "savetokens budget")
+            pools.set_mode(s, gid, args.mode)
+            _out(args, {"id": gid, "mode": args.mode}, f"{pools.goals_(s)[gid]['label']} budget: {args.mode}"
+                 f" ({pools.MODES[args.mode]}).")
             return OK
         if args.off:
             gid = args.off if args.off in pools.goals_(s) else re.sub(r"[^a-z0-9]+", "-", args.off.lower()).strip("-")
@@ -922,7 +947,7 @@ def cmd_budget(args):
             lines = []
             for o in looks:
                 line = (f"{o['label']} ({o['counts']}): {fmt(o, o['spent'])} of {fmt(o, o['amount'])} {o['per']}"
-                        f" ({o['used']:.0f}%)")
+                        f" ({o['used']:.0f}%)" + (f" [{o['mode']}]" if o.get("mode", "watch") != "watch" else ""))
                 if o["used"] >= 100:
                     line += f"; over by {fmt(o, o['spent'] - o['amount'])}"
                 elif o["p50"] is not None:
@@ -959,6 +984,8 @@ def cmd_budget(args):
         count = args.count or ("api" if unit == "usd" else "all")
         goal = {"label": label, "scope": scope, "count": count, "unit": unit, "amount": float(amount),
                 "start": time.time(), "tz": time.localtime().tm_gmtoff}
+        if args.mode:
+            goal["mode"] = args.mode
         if args.by:
             try:
                 end = datetime.strptime(args.by, "%Y-%m-%d").replace(hour=23, minute=59, second=59).timestamp()
@@ -1321,6 +1348,7 @@ def main(argv=None):
     s = cmd("check", cmd_check, "one verdict in the exit code: 0 on track, 3 at risk, 4 the job won't fit")
     _job_args(s, required=False)
     s.add_argument("--tool", choices=["claude-code", "codex", "hermes"], help="only this tool's limits")
+    s.add_argument("--provider", metavar="NAME", help="the provider the work runs on (for guarded budgets)")
     s = cmd("watch", cmd_watch, "live dashboard in the terminal (put it in a split pane next to your agent)", json=False)
     s.add_argument("--every", type=int, default=15, help="seconds between refreshes")
     s = cmd("web", cmd_web, "the dashboard in your browser (every machine, when connected to a server)", json=False)
@@ -1372,6 +1400,9 @@ def main(argv=None):
                    " repeat for more")
     s.add_argument("--off", metavar="NAME", help="remove a budget")
     s.add_argument("--team", action="store_true", help="the team's budget, on the hub (owner or admins)")
+    s.add_argument("--mode", choices=list(MODE_HELP), help="what the budget agent does for it: "
+                   + "; ".join(f"{k}: {v}" for k, v in MODE_HELP.items()))
+    s.add_argument("--name", metavar="NAME", help="with --mode alone: an existing budget (as `savetokens budget` lists it)")
     s = cmd("projects", cmd_projects, "every project's tokens and $, split by tool, provider and plan or API, with"
             " its biggest tasks: across machines when connected to a hub")
     s.add_argument("--days", type=int, default=30, help="how many days back (default 30)")

@@ -5,6 +5,8 @@ statusline  records Claude's limit readings, reads the session's new transcript 
 hooks       read transcripts as sessions run and end; on your next prompt, show any
             new pace alert (to you; and to the agent too, with a pacing note, if you turned
             that on: `agent_context`), and at session start when a limit is at risk
+budget agent  per budget (`savetokens budget --mode`): advise tells the agent when a budget its session counts
+            toward is at risk; guard blocks new prompts once that budget is used up
 """
 from __future__ import annotations
 
@@ -78,11 +80,67 @@ def note(store, now=None):
     return n.get("text") if now - n.get("at", 0) <= NOTE_MAX_AGE else None
 
 
+def session(store, payload, who=None) -> dict:
+    """What a session counts toward: its tool, provider, project id and billing."""
+    from . import projects
+    pid = projects.resolve(store, payload.get("cwd"))[0] if payload.get("cwd") else None
+    return {"tool": capture.HARNESS, "provider": who or "anthropic", "project": pid,
+            "billing": "api" if who or capture.billing(store) == "api" else "plan"}
+
+
+def guard(store, here, now=None) -> str | None:
+    """Why this prompt is stopped: a guarded budget it counts toward is used up. None: go ahead."""
+    from . import pools
+    for gid, g, used in pools.used_up(store, now, "guard"):
+        if pools.covers(g, **here):
+            return (f"savetokens: the {g['label']} budget is used up ({used:.0f}%) and set to guard, so new work"
+                    f" stops here until its period ends. To go on: raise it, or switch it to advise"
+                    f" (dashboard, or `savetokens budget --name {gid} --mode advise`).")
+    return None
+
+
+ADVISE_EVERY = 3600
+
+
+def advise(store, here, session_id, now=None) -> str | None:
+    """A pacing note for the agent, at most hourly per session, when a budget in advise (or guard) that this
+    session counts toward is at risk."""
+    from . import pools
+    now = now or time.time()
+    wanted = {gid for gid, g in pools.goals_(store).items() if pools.mode(g) in ("advise", "guard")
+              and pools.covers(g, **here)}
+    if not wanted:
+        return None
+    told = store.meta("advised") or {}
+    if now - told.get(session_id or "", 0) < ADVISE_EVERY:
+        return None
+    risky = [o for o in forecast.outlook(store, now, goals=True) if o["kind"] == "goal"
+             and o["pool"][5:] in wanted and (alerts.stage(o, now) or o["used"] >= 100)]
+    if not risky:
+        return None
+    told[session_id or ""] = now
+    store.set_meta("advised", dict(list(told.items())[-200:]))
+    return ("savetokens (budget agent): " + " ".join(alerts.message(o, alerts.stage(o, now), now) for o in risky)
+            + " Pace yourself: use cheaper models for subagents and exploration, avoid wide fan-outs and re-reading"
+              " large files, and at a task boundary propose starting fresh. Propose bigger changes (a cheaper model"
+              " or provider for the main work) to the user; don't make them yourself.")
+
+
 def handle(event: str, payload: dict, store: Store):
     """Hook output as a dict (printed as JSON), or None."""
     acct = _account(store)
-    capture.note_endpoint(store, payload.get("session_id"))   # hooks run in Claude Code's environment
+    who = capture.note_endpoint(store, payload.get("session_id"))   # hooks run in Claude Code's environment
     capture.ingest_session(store, payload.get("transcript_path"), acct)
+    if event == "UserPromptSubmit":
+        here = session(store, payload, who)
+        why = guard(store, here)
+        if why:
+            return {"decision": "block", "reason": why}
+        told = advise(store, here, payload.get("session_id"))
+        if told:
+            shown = alerts.unseen(store)
+            return {"systemMessage": " ".join(shown) or "savetokens: a budget is at risk; the agent was told.",
+                    "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": told}}
     if event == "SessionStart":
         text = note(store)
         if text:

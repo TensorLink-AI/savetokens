@@ -135,6 +135,8 @@ def check(store, now=None) -> list[dict]:
     found = []
     looks = forecast.outlook(store, now, goals=True)
     for o in looks:
+        if o.get("mode") == "off":   # a budget whose agent is off: no alerts
+            continue
         st = stage(o, now)
         if o["name"] != "five_hour":     # the weekly limit and budgets: watch how the projection moves
             found += [{**f, "account": o["account"]} for f in projection_flags(store, now, o)]

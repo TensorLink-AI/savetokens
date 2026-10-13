@@ -147,6 +147,13 @@ def apply_budget(store, body) -> dict:
         if not remove_goal(store, str(body["off"])):
             raise ValueError("no such budget")
         return {"ok": True, "off": body["off"]}
+    m = body.get("mode")
+    if m is not None and m not in MODES:
+        raise ValueError("mode: off, watch, advise or guard")
+    if "id" in body:   # change an existing budget's mode
+        if m is None or not set_mode(store, str(body["id"]), m):
+            raise ValueError("no such budget, or no mode")
+        return {"ok": True, "id": body["id"], "mode": m}
     try:
         usd = float(body.get("usd"))
     except (TypeError, ValueError):
@@ -166,6 +173,8 @@ def apply_budget(store, body) -> dict:
                               "amount": usd, "period": per, "start": time.time(), "tz": time.localtime().tm_gmtoff})
     else:
         gid = add_budget(store, usd, per, providers=[provider] if provider else ())
+    if m:
+        set_mode(store, gid, m)
     return {"ok": True, "id": gid}
 
 
@@ -177,6 +186,66 @@ def remove_goal(store, gid) -> bool:
     store.set_meta("goals", g)
     store.set_meta("goals_at", time.time())
     return True
+
+
+# what the budget agent may do for a budget, each mode including the ones before it
+MODES = {"off": "no alerts", "watch": "alerts you as it runs out (the default)",
+         "advise": "also tells the agent at work, so it paces itself and proposes cheaper ways; you approve",
+         "guard": "also stops new work once it's used up: Claude Code's prompts are blocked, `savetokens check`"
+                  " exits 4, and Codex and Hermes are told through MCP"}
+
+
+def mode(goal) -> str:
+    return goal.get("mode") if goal.get("mode") in MODES else "watch"
+
+
+def set_mode(store, gid, m) -> bool:
+    g = goals_(store)
+    if gid not in g or m not in MODES:
+        return False
+    g[gid]["mode"] = m
+    store.set_meta("goals", g)
+    store.set_meta("goals_at", time.time())
+    return True
+
+
+def find_goal(store, name) -> str | None:
+    """A budget's id from its id or its name, as `savetokens budget` lists it."""
+    g = goals_(store)
+    if name in g:
+        return name
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
+    return slug if slug in g else next((k for k, v in g.items() if v.get("label", "").lower() == str(name).lower()), None)
+
+
+def covers(goal, tool, provider, project, billing) -> bool:
+    """Whether a session (its tool, provider, project id and billing: "api" or "plan") counts toward this budget.
+    Something not known (None) doesn't rule it out."""
+    if counts(goal) == "api" and billing == "plan":
+        return False
+    sc = goal.get("scope") or {}
+    if sc.get("tasks"):
+        return False   # a task's budget: the session's task isn't known at a prompt
+    if sc.get("tools") and tool and tool not in sc["tools"]:
+        return False
+    if sc.get("providers") and provider and stem(provider) not in {stem(x) for x in sc["providers"]}:
+        return False
+    return not sc.get("projects") or not project or project in sc["projects"]
+
+
+def used_up(store, now=None, mode_=None) -> list[tuple[str, dict, float]]:
+    """(id, budget, % used) for budgets used up this period, only those in mode_ when given. Cheap: no forecast."""
+    now = now or time.time()
+    out = []
+    for gid, g in goals_(store).items():
+        if mode_ and mode(g) != mode_:
+            continue
+        since, _ = period(g, now)
+        pool = Pool(f"goal:{gid}", "all", "goal", f"goal:{gid}", g)
+        used = 100.0 * spent(store, pool, since, now) / g["amount"] if g.get("amount") else 0.0
+        if used >= 100:
+            out.append((gid, g, used))
+    return out
 
 
 COUNTS = {"api": "API spend: only what was billed pay-as-you-go", "all": "all usage, at API prices"}

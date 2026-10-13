@@ -125,6 +125,26 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   ```
 
   Each budget is forecast like a limit, alerts in the same three stages, and has a line in the weekly recap.
+  Budgets can also be set and removed in the browser view (Projects tab, BUDGETS).
+
+  **The budget agent (optional), per budget.** Each budget has a mode, set with `--mode` or in the browser view.
+  Each mode includes the ones before it:
+
+  | mode | what it does |
+  |---|---|
+  | `off` | nothing: no alerts |
+  | `watch` | alerts you as it runs out (the default) |
+  | `advise` | also tells the agent doing work that counts toward it, so it paces itself (cheaper subagents, no wide fan-outs) and proposes bigger changes for you to approve |
+  | `guard` | also stops new work once it's used up: Claude Code's prompts are blocked with the reason, `savetokens check` exits 4, and Codex and Hermes are told through MCP |
+
+  ```sh
+  savetokens budget --provider chutes --usd 20 --per month --mode guard
+  savetokens budget --name Chutes --mode advise      # change an existing budget's mode
+  savetokens check --tool hermes --provider chutes   # in a loop: exit 4 once a guarded budget is used up
+  ```
+
+  Guard stops new prompts; a turn already running finishes. Codex and Hermes have no hooks, so there it relies on
+  the agent following the MCP brief, or on your loop calling `savetokens check`.
   `savetokens projects` shows every project's tokens, its value at API prices and what was paid as API, split
   by tool, provider and plan or API, with its biggest tasks; the browser view's Projects tab shows the same.
 

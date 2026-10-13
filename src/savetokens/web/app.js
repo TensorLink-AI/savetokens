@@ -376,6 +376,7 @@ function limitCard(o, now) {
       catch (e) { alert(`Couldn't remove it (${e.message}).`); }
     };
     card.append(rm);
+    card.append(modePicker(o));
   }
   if (o.stage) card._pop.append(kv("alert", o.stage.replace("_", "-")));
   if (o.eta) card._pop.append(kv("runs out", `${when(o.eta, now)}, ${span(o.resets - o.eta)} before ${api || goal ? "the period ends" : "it resets"}`));
@@ -637,6 +638,31 @@ function drawProjects(s) {
   budgetChoices(s);
 }
 
+// the budget agent: what it may do for each budget
+const MODES = {
+  off: "Off: no alerts",
+  watch: "Watch: alerts you as it runs out",
+  advise: "Advise: also tells the agent at work to pace itself; you approve bigger changes",
+  guard: "Guard: also stops new work once it's used up (Claude Code prompts blocked; savetokens check exits 4; Codex and Hermes told through MCP)",
+};
+function modeSelect(value) {
+  const sel = el("select", "mode");
+  for (const [k, t] of Object.entries(MODES)) { const o = el("option", null, k.toUpperCase()); o.value = k; o.title = t; sel.append(o); }
+  sel.value = value || "watch";
+  sel.title = MODES[sel.value];
+  return sel;
+}
+function modePicker(o) {
+  const sel = modeSelect(o.mode);
+  sel.setAttribute("aria-label", `Budget agent for the ${o.label}`);
+  sel.onchange = async () => {
+    sel.disabled = true;
+    try { await post("v1/budget", { id: o.pool.slice(5), mode: sel.value }); await load(); }
+    catch (e) { alert(`Couldn't change it (${e.message}).`); sel.value = o.mode || "watch"; sel.disabled = false; }
+  };
+  return el("span", "agent small", el("span", "dim", "AGENT "), sel, info(MODES[o.mode || "watch"]));
+}
+
 // what a new budget can cover: everything paid as you go, a provider, or a project
 function budgetChoices(s) {
   const sel = $("b-for"), keep = sel.value;
@@ -654,7 +680,7 @@ $("budget-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   $("b-err").textContent = "";
   const [what, ...rest] = $("b-for").value.split(":"), id = rest.join(":");
-  const body = { usd: Number($("b-usd").value), per: $("b-per").value };
+  const body = { usd: Number($("b-usd").value), per: $("b-per").value, mode: $("b-mode").value };
   if (what === "provider") body.provider = id;
   if (what === "project") body.project = id;
   try { await post("v1/budget", body); $("b-usd").value = ""; await load(); }
