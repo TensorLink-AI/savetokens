@@ -58,14 +58,16 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   give the % used and reset time for each limit. That counts everything: other
   machines, the web apps, every session. savetokens records it, along with token
   counts and the limit errors in your transcripts (the times you actually ran out).
+  Several accounts on one tool (signing in to another Claude or ChatGPT account) each get
+  their own limits, forecast and alerts once two are in use; readings carry only a hash of the account.
 - **Or counts against your API budget.** On an API key there's no plan meter, so you
-  set a budget and savetokens prices each request:
+  set a budget for each provider you pay per token, and savetokens prices each request:
 
   ```sh
-  savetokens api claude-code --budget 200 --per month   # or --per day / week
-  savetokens api codex --budget 50 --per week
-  savetokens api hermes --budget 100 --per month
-  savetokens price gpt-6-astra 2 8      # Codex models: $ per million tokens in, out
+  savetokens budget --provider anthropic --usd 200 --per month   # or --per day / week
+  savetokens budget --provider chutes --usd 20 --per month       # a provider by any of its names (chutes.ai)
+  savetokens budget --tool codex --usd 50 --per week             # or one tool's API spend
+  savetokens price gpt-6-astra 2 8      # a model it can't price: $ per million tokens in, out
   ```
 
   Hermes is always pay as you go, on whichever provider you point it at (OpenRouter,
@@ -74,11 +76,11 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   Hermes's own cost figure, or the price list when Hermes has none. Usage Hermes marks as
   included in a plan (a ChatGPT login) counts against no budget.
 
-  `savetokens api TOOL --off` goes back to the plan. The mode is per machine (a laptop on
-  a plan and a CI box on a key both work); the budget is shared through your server.
-  You rarely need to switch it yourself: Claude Code on an API key is detected (its
-  statusline sends no limit meter), as is Codex logged in with a key, and savetokens asks
-  once for a budget.
+  You rarely need to say which machine is on a key: Claude Code on an API key is detected (its
+  statusline sends no limit meter), as is Codex logged in with a key, and any other endpoint
+  (`ANTHROPIC_BASE_URL`) is put under its own provider. `savetokens setup` then lists one budget
+  to set for each provider you paid per token in the last week. Budgets are shared through your hub.
+  (`savetokens api TOOL --budget USD` still sets an older per-tool budget; `--off` goes back to the plan.)
 - **Where your tokens go, and what the same work would cost done differently.** `savetokens efficiency`
   works the same for every tool, provider and way of paying. Every number is one of two kinds:
   - **facts**, plain accounting: tokens and $ by provider, model and project; how much of each prompt is
@@ -151,8 +153,8 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   A project is its git repository, the same on every machine however it was cloned. A folder without one is a
   project on that machine only, unless you mark it: `savetokens project link NAME` writes a `.savetokens` file,
   and committing it makes the folder (or several repos under it) one project everywhere. Only an id goes to
-  your hub, unless you ask: `savetokens projects --share-names on` sends project and task names to your own
-  hub, so its dashboard shows them.
+  your hub, unless you ask: joining a hub asks once, and `savetokens projects --share-names on|off` changes it
+  later. It sends project and task names to your own hub only, so its dashboard shows them.
 - **Tasks: what each piece of work costs.** A git branch is a task (any but the repo's default one), or an
   issue key in its name (`savetokens task pattern '[A-Z]+-[0-9]+'`), or one you declare:
 
@@ -225,7 +227,8 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   for that run. It shows each limit with its forecast range, usage per hour against the forecast, every session
   and what stopping it would save, models, machines, alerts and limit hits. When the machine is connected to a
   server, it shows every machine. A server also serves the page at its own address: sign in with a code from
-  `savetokens pair`, so a teammate or your phone needs no install.
+  `savetokens pair`, so a teammate or your phone needs no install. Budgets can be added, removed and given a
+  budget-agent mode there too (Projects tab, BUDGETS).
 - **In a terminal:** `savetokens watch`, the same dashboard full-screen. Put it in a split pane
   or tmux window next to Claude Code.
 - **Anywhere else:** `savetokens dashboard --json`. When connected to a server, both show every
@@ -243,6 +246,7 @@ savetokens check --hours 3 --parallel 4 || echo "not now"
 #  3  a limit is at risk, or the job has to wait for a 5-hour reset
 #  4  the job doesn't fit before the limit resets
 savetokens check --tool hermes --json      # one tool's limits only
+savetokens check --tool hermes --provider chutes || break   # in a loop: exit 4 once a guarded budget is used up
 savetokens setup --json                    # the setup checklist: done, and what's left with its command
 ```
 
@@ -289,7 +293,7 @@ savetokens setup --json       # the checklist, for an agent (changes nothing)
 echo "$KEY" | savetokens setup --key -   # a key from a secret store, kept out of shell history
 ```
 
-`install` adds a statusline (yours is kept, ours goes after it), four light hooks, the
+`install` adds a statusline (yours is kept, ours goes after it), light hooks, the
 skill, and one crontab line (every 10 minutes; Codex and Hermes have no hooks, so this is
 when their sessions are read). It reads your Claude Code, Codex and Hermes history. `savetokens uninstall`
 removes all of it; your data stays in `~/.savetokens`.
@@ -413,7 +417,8 @@ Every failure with `--json` also says `"fix"`: the command to run.
   (or the dollars spent, on an API budget). No tokens, prompts, models, projects or sessions.
 - **To your own server, if you connect one:** token counts per request (model, time,
   session id), limit readings and the times you hit a limit, plus ids for projects and tasks
-  (keyed hashes, not names). Never prompts, replies, code, file, folder, branch or project names.
+  (keyed hashes, not names). Never prompts, replies, code, file, folder or branch names, nor project and task
+  names unless you said yes when joining (or ran `savetokens projects --share-names on`).
 - **Telemetry and provider reports, if you turn them on:** OpenTelemetry goes from the agent to your hub;
   a provider admin key stays on the hub machine and is used only to read that provider's usage report.
 
@@ -422,7 +427,7 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | | |
 |---|---|
 | `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
-| `budget [--project NAME \| --task NAME] [--provider P] [--tool T] [--count api\|all] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE)` / `budget` / `budget --off NAME` | a budget, overall or for a project or task, API spend or all usage / every budget with its forecast / remove one |
+| `budget [--project NAME \| --task NAME] [--provider P] [--tool T] [--count api\|all] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE) [--mode off\|watch\|advise\|guard]` / `budget` / `budget --name NAME --mode M` / `budget --off NAME` | a budget, overall or for a project, task, provider or tool, API spend or all usage / every budget with its forecast / its budget-agent mode / remove one |
 | `projects [--days N] [--share-names on\|off]` / `project link [NAME]` | every project's tokens, API value and API spend by tool, provider and plan or API (every machine, on a hub) / make this folder one project everywhere |
 | `task start NAME` / `task done` / `task` / `tasks [--project NAME]` | declare a task, finish it, see the current one / every task's cost and the measured estimate |
 | `team [--people on\|off]` / `project share` / `budget --team ...` | your team's totals, projects and budgets / name a project for the team / a team budget |
@@ -431,12 +436,12 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |
 | `advise [--json]` | where the limits stand and the options, biggest effect first |
 | `estimate --like small\|typical\|big \| --hours H \| --points P \| --usd D [--parallel N]` | a job's size, run time and whether it fits |
-| `check [--hours H \| --like ... ] [--tool T]` | one verdict in the exit code: 0 on track, 3 at risk, 4 won't fit |
+| `check [--hours H \| --like ... ] [--tool T] [--provider P]` | one verdict in the exit code: 0 on track, 3 at risk, 4 won't fit (or a guarded budget is used up) |
 | `spend [--models]` | tokens and $ by provider and model: so far, by each period's end, and coming |
 | `plan PROVIDER --usd USD [--per day\|week\|month \| --off]` | a subscription's fixed price |
 | `setup [--yes] [--key K\|-]` | plans (prices detected), API budgets, the Ephemeris key: one guided pass |
 | `suggest` | what to set up here, each with its command (changes nothing) |
-| `web [--port P]` | the dashboard in your browser |
+| `web [--port P]` | the dashboard in your browser; budgets can be set there too |
 | `mcp` | the MCP server your agent uses (install registers it) |
 | `api TOOL [--budget USD --per day\|week\|month \| --off]` | Claude Code or Codex on an API key, or Hermes: its budget |
 | `price MODEL INPUT OUTPUT [CACHE_READ]` | the price of a model savetokens doesn't know |
