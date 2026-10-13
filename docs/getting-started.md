@@ -22,7 +22,7 @@ change it's about to make and asks before making it:
 
 It also reads your existing history, so you see real numbers straight away.
 
-Nothing changes how your tools run. `savetokens uninstall` removes all of it, and your data stays in
+Nothing changes how your tools run (unless you later set a budget to guard). `savetokens uninstall` removes all of it, and your data stays in
 `~/.savetokens`.
 
 ## 2. Answer one question (maybe two)

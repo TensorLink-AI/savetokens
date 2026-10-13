@@ -1,9 +1,10 @@
 # savetokens
 
-Set a token budget and stick to it, for Claude Code, Codex and Hermes.
+Know when you'll run out, before you do: plan limits and pay-as-you-go budgets for Claude Code, Codex, Hermes and any agent, on every provider, machine and account.
 
 savetokens tells you when, at this pace, you'd run out, and what to cut before you do. It doesn't
-change how your tools run: you decide. Each week it shows how you did against your plan.
+change how your tools run unless you ask it to (a budget set to guard stops new work once it's used up):
+you decide. Each week it shows how you did against your plan.
 
 savetokens watches your Claude Code and Codex limits (each plan's 5-hour and weekly
 limits, or a dollar budget when you're on an API key) and what Hermes Agent spends on
