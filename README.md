@@ -24,6 +24,13 @@ Last 7 days: Claude Code $412 (API-equivalent, on your plan), Hermes $38; spend 
 
 ## Quick start
 
+Let your agent do it: paste *"Set up savetokens by following
+https://github.com/TensorLink-AI/savetokens/blob/main/docs/agents.md"* into Claude Code, Codex or Hermes.
+
+New here? Follow [Getting started](docs/getting-started.md), ten minutes start to finish. Recipes for each setup
+(several accounts or machines, Hermes providers, CI, teams) are in [Setups](docs/setups.md). Setting it up with
+an agent: give it [the agent playbook](docs/agents.md).
+
 One machine, one line (installs uv if needed, then savetokens, then sets it up; shows every change first):
 
 ```sh
