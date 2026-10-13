@@ -102,5 +102,6 @@ def test_install_with_a_server_connects_and_never_asks_for_a_key(homes, monkeypa
     assert install.install(yes=False, server="http://127.0.0.1:9", token="st_x", cron=False,
                            out=lambda *_: None, ask=lambda q: asked.append(q) or "y")
     assert asked[0] == "Proceed? [y/N] " and not any("Ephemeris" in q for q in asked)
+    assert len(asked) == 2 and "names on your hub" in asked[1]       # one more question: names on your own hub
     from savetokens.store import load_config
-    assert load_config()["server_url"] == "http://127.0.0.1:9"
+    assert load_config()["server_url"] == "http://127.0.0.1:9" and load_config()["share_names"] is True

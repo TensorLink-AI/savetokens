@@ -1,6 +1,6 @@
 # Getting started
 
-Ten minutes from nothing to a dashboard that shows every limit and budget you have. It works with Claude Code,
+Five minutes from nothing to a dashboard that shows every limit and budget you have. It works with Claude Code,
 Codex and Hermes, on a plan or an API key, on one machine or many.
 
 Setting it up with an agent? Hand it [agents.md](agents.md). Have a particular setup in mind (several accounts,
@@ -16,7 +16,7 @@ This installs savetokens (and uv first if you don't have it), then runs `savetok
 change it's about to make and asks before making it:
 
 - a statusline in Claude Code (if you already have one, it stays, and ours goes after it)
-- four light hooks in Claude Code
+- light hooks in Claude Code
 - a skill and an MCP server for Claude Code, Codex and Hermes, so your agent can answer "how are my limits?"
 - one crontab line that runs every 10 minutes and reads Codex and Hermes sessions, since those tools have no hooks
 
@@ -25,18 +25,17 @@ It also reads your existing history, so you see real numbers straight away.
 Nothing changes how your tools run. `savetokens uninstall` removes all of it, and your data stays in
 `~/.savetokens`.
 
-## 2. Answer setup's questions
+## 2. Answer one question (maybe two)
 
-Setup runs as part of install, and you can run it again any time with `savetokens setup`. It detects what it can
-and asks only for the rest. Enter takes the suggested answer.
+Install takes what it can detect without asking: which Claude or ChatGPT plan you're on, and its list price.
 
 | It asks | What to say |
 |---|---|
-| Your Claude or ChatGPT plan's price | It reads which plan you're on from your login (for example Claude Max 20x) and offers its list price. Press Enter. |
-| A budget for each provider you pay per token | Shown only for providers you actually paid by API in the last 7 days (for example Chutes, OpenRouter, Anthropic API). Give a $ figure a month. |
-| An Ephemeris key (the forecaster) | Press Enter. Your browser opens; sign in or sign up (new accounts get free credits) and approve the code shown in your terminal. Skip it and forecasts use a simple local model. |
+| Sign in to Ephemeris (the forecaster)? | Press Enter. Your browser opens; sign in or sign up (new accounts get free credits) and approve the code shown in your terminal. Type `s` to skip, and forecasts use a simple local model. Not asked on a machine joined to a hub: the hub forecasts for it. |
+| Show project names on your hub's dashboard? | Only asked when joining a hub. Enter says yes. Names go to your own hub only; otherwise its dashboard shows ids. |
 
-To see what's done and what's left, run `savetokens setup --json`, or open the dashboard.
+Budgets for what you pay per token (Chutes, OpenRouter, an Anthropic API key, ...) come later, once
+savetokens has seen what you spend: run `savetokens setup`, which asks for each one, or see step 5.
 
 ## 3. Look at it
 

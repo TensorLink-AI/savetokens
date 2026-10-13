@@ -556,6 +556,7 @@ set -eu
         run = 'savetokens install "$@"'
     return f"""#!/bin/sh
 {head}SOURCE="${{SAVETOKENS_SOURCE:-{SOURCE}}}"
+YOUR_PATH="$PATH"
 PATH="$HOME/.local/bin:$PATH"; export PATH
 if ! command -v savetokens >/dev/null 2>&1; then
   echo "Installing savetokens..."
@@ -567,11 +568,18 @@ if ! command -v savetokens >/dev/null 2>&1; then
     uv tool install --quiet "$SOURCE"
   fi
 fi
+status=0
 if ( : </dev/tty ) 2>/dev/null; then
-  exec {run} </dev/tty
+  {run} </dev/tty || status=$?
 else
-  exec {run} --yes
+  {run} --yes || status=$?
 fi
+if ! PATH="$YOUR_PATH" command -v savetokens >/dev/null 2>&1; then
+  echo
+  echo "savetokens is in $HOME/.local/bin, which isn't on your PATH yet: open a new terminal, or run"
+  echo '  export PATH="$HOME/.local/bin:$PATH"'
+fi
+exit $status
 """
 
 

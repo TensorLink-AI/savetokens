@@ -86,6 +86,22 @@ def https_name(port, run=subprocess.run) -> str | None:
     return None
 
 
+def serve_https(port, run=subprocess.run, out=print) -> str | None:
+    """Have Tailscale serve the hub over HTTPS, on your tailnet only (not the internet): `tailscale serve`.
+    Returns https://NAME, or None when Tailscale can't (HTTPS off for the tailnet, no permission)."""
+    try:
+        run(["tailscale", "serve", "--bg", "--yes", str(port)], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    url = https_name(port, run)
+    if url:
+        out(f"- HTTPS on your tailnet (tailscale serve): {url}. Only your Tailscale devices can reach it.")
+    else:
+        out(f"- For HTTPS, turn on HTTPS certificates for your tailnet (Tailscale admin, DNS), then run"
+            f" `tailscale serve --bg {port}` and `savetokens server --setup` again. Plain Tailscale works meanwhile.")
+    return url
+
+
 def address(port, run=subprocess.run) -> tuple[str, str]:
     """(URL other machines use, how they reach it: tailscale, lan or local)."""
     ts = tailscale(run)
@@ -213,6 +229,8 @@ def setup(port=8787, data=None, interactive=True, out=print, ask=input, open_url
     url, how = address(port, run)
     host = "0.0.0.0" if how != "local" else "127.0.0.1"
     fixed = public or server.public_url(data) or https_name(port, run)
+    if not fixed and how == "tailscale":
+        fixed = serve_https(port, run, out)
     if fixed:
         url, how = fixed.rstrip("/"), "public"
     if how != "local":
@@ -235,6 +253,8 @@ def setup(port=8787, data=None, interactive=True, out=print, ask=input, open_url
     # 3. this machine joins its own hub
     if not (cfg.get("server_url") and cfg.get("server_token")):
         cfg.update(server_url=f"http://127.0.0.1:{port}", server_token=users.add("me"))
+        if "share_names" not in cfg:
+            cfg["share_names"] = interactive and install.ask_names(ask)
         save_config(cfg)
         out("- This machine sends its usage to the hub.")
 

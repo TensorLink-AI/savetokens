@@ -253,3 +253,14 @@ def test_each_provider_paid_by_api_gets_its_own_budget_step(store):
     pools.add_budget(store, 100, "month")                                       # an overall one covers the rest
     steps = {x["id"]: x for x in setup.steps(store, now, cfg={}, found={})}
     assert steps["budget:provider:saygm.com"]["done"] and steps["budget:provider:saygm.com"]["title"] == "saygm.com: in your overall budget"
+
+
+def test_install_takes_the_detected_plan_and_asks_for_no_budget(homes, monkeypatch):
+    _claude(homes)
+    (homes / "hermes").mkdir()
+    log = []
+    with Store() as s:
+        got = setup.run(s, load_config(), accept=True, quick=True, ask=lambda q: log.append(q) or "50",
+                        secret=lambda q: "s", out=lambda *_: None, open_url=lambda u: None)
+        assert {p: v["usd"] for p, v in pools.plans(s).items()} == {"anthropic": 200} and pools.goals_(s) == {}
+    assert not log and got["changed"] == ["plan anthropic"]         # nothing asked; budgets wait for `setup`
