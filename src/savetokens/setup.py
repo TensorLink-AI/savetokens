@@ -239,9 +239,10 @@ def _money(text):
 
 
 def run(store, cfg, interactive=True, accept=False, key=None, out=print, ask=input, secret=None, now=None,
-        open_url=None) -> dict:
+        open_url=None, quick=False) -> dict:
     """Walk what's left. interactive: ask, the detected answer as the default. accept: take the detected
-    answers and ask nothing. key: an Ephemeris key to check and keep. Returns {"changed", "steps"}."""
+    answers and ask nothing. quick (install): take the detected answers and ask only for the Ephemeris sign-in;
+    budgets wait for `savetokens setup`. key: an Ephemeris key to check and keep. Returns {"changed", "steps"}."""
     from . import ephemeris, spend, sync
     from .store import save_config
     secret = secret or __import__("getpass").getpass
@@ -270,7 +271,7 @@ def run(store, cfg, interactive=True, accept=False, key=None, out=print, ask=inp
         kind, _, name = s["id"].partition(":")
         if kind == "plan":
             usd, label = s["default"], s["title"].split(":")[0]
-            if interactive:
+            if interactive and not quick:
                 a = ask(f"{label}: what does it cost a month? "
                         + (f"[${usd:,.0f}; n to skip] " if usd is not None else "$ (Enter to skip) ")).strip()
                 usd = usd if not a and usd is not None else _money(a)
@@ -280,7 +281,7 @@ def run(store, cfg, interactive=True, accept=False, key=None, out=print, ask=inp
                 pools.set_plan(store, name, usd, "month")
                 changed.append(f"plan {name}")
                 out(f"  {label}: ${usd:,.0f} a month, counted as a fixed cost.")
-        elif kind == "budget" and interactive:
+        elif kind == "budget" and interactive and not quick:
             what, _, it = name.partition(":")
             label = spend.label(it) if what == "provider" else pools.TOOLS.get(it, it)
             v = _money(ask(f"{label} bills per token. A budget, $ a month (Enter to skip): "))
@@ -310,7 +311,7 @@ def run(store, cfg, interactive=True, accept=False, key=None, out=print, ask=inp
                 k = secret("  Paste your Ephemeris key (hidden; Enter to skip): ").strip()
                 if not k or try_key(k):
                     break
-        elif interactive and not s["optional"]:
+        elif interactive and not s["optional"] and not quick:
             out(f"- {s['title']}: {s['command']}")
     save_config(cfg)
     if changed and sync.connected(cfg):
@@ -320,7 +321,12 @@ def run(store, cfg, interactive=True, accept=False, key=None, out=print, ask=inp
             pass
     checklist = steps(store, now, cfg)
     left = [s for s in todo(checklist) if not s["optional"]]
-    out(f"Setup: {len(checklist) - len(todo(checklist))} of {len(checklist)} done."
-        + (" Left: " + "; ".join(f"{s['title']} ({s['command']})" for s in left) if left else "")
-        + " Run `savetokens setup` again any time.")
+    if quick:
+        out(f"Setup: {len(checklist) - len(todo(checklist))} of {len(checklist)} done"
+            + (f"; {len(left)} left for `savetokens setup`: " + "; ".join(s["title"] for s in left) if left else "")
+            + ".")
+    else:
+        out(f"Setup: {len(checklist) - len(todo(checklist))} of {len(checklist)} done."
+            + (" Left: " + "; ".join(f"{s['title']} ({s['command']})" for s in left) if left else "")
+            + " Run `savetokens setup` again any time.")
     return {"changed": changed, "steps": checklist}

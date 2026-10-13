@@ -27,7 +27,7 @@ Last 7 days: Claude Code $412 (API-equivalent, on your plan), Hermes $38; spend 
 Let your agent do it: paste *"Set up savetokens by following
 https://github.com/TensorLink-AI/savetokens/blob/main/docs/agents.md"* into Claude Code, Codex or Hermes.
 
-New here? Follow [Getting started](docs/getting-started.md), ten minutes start to finish. Recipes for each setup
+New here? Follow [Getting started](docs/getting-started.md), five minutes start to finish. Recipes for each setup
 (several accounts or machines, Hermes providers, CI, teams) are in [Setups](docs/setups.md). Setting it up with
 an agent: give it [the agent playbook](docs/agents.md).
 
@@ -251,9 +251,11 @@ curl -fsSL https://raw.githubusercontent.com/TensorLink-AI/savetokens/main/insta
 savetokens status
 ```
 
-Setup asks as little as it can. It reads which plan you're on from what Claude Code and Codex keep
-locally (only the plan's name, e.g. Claude Max 20x or ChatGPT Pro), and offers its list price as the
-default. Then it asks for what it can't know: a budget for tools paying by API, and an Ephemeris key.
+Install asks as little as it can. It reads which plan you're on from what Claude Code and Codex keep
+locally (only the plan's name, e.g. Claude Max 20x or ChatGPT Pro) and takes its list price. It asks
+only for an Ephemeris key (not on a machine joined to a hub) and, when joining a hub, whether its
+dashboard may show project names. `savetokens setup` later asks for the rest: a budget for each
+provider you pay per token, once it has seen the spend, and a plan's price it couldn't detect.
 For the key, press Enter: it opens Ephemeris in your browser, you sign in (or sign up) and approve
 the code shown in your terminal, and the key arrives on its own. You can also paste a key; either way
 it's checked on the spot. The key is kept in `~/.config/ephemeris/credentials` (readable by you only), the file the Ephemeris CLI (`ephemeris auth login`) and MCP bridge (`ephemeris-mcp login`) use too, so signing in with any of them covers all three. If your Ephemeris credits run out, `status`, `setup` and the browser view
@@ -292,6 +294,10 @@ curl -fsSL http://your-hub:8787/join | sh -s KXQT-7MBD
 It installs savetokens if it's missing and joins. The code works for 24 hours, for up to 10
 machines. More later: `savetokens pair --machines 5 --hours 24`, or **Add a machine** in the
 hub's browser view (it also makes a token for CI).
+
+**HTTPS with no setup.** With Tailscale on the hub, `server --setup` has Tailscale serve it over HTTPS
+(`tailscale serve`, your tailnet only, never the internet). If your tailnet has HTTPS certificates off, it
+says where to turn them on, and plain Tailscale works meanwhile.
 
 **How machines reach the hub.** Setup picks the hub's address once and saves it, and every join
 command (here, `savetokens pair`, and **Add a machine** in the browser) uses it, whatever address your

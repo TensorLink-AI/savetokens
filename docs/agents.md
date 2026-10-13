@@ -25,7 +25,7 @@ If it's installed, go to step 3.
 
 ## 2. Install (ask first)
 
-Say: "This installs savetokens and adds a statusline, four hooks, an MCP server, a skill and one crontab line.
+Say: "This installs savetokens and adds a statusline, hooks, an MCP server, a skill and one crontab line.
 It doesn't change how your tools run, and `savetokens uninstall` removes all of it. OK?"
 
 ```sh

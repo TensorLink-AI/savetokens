@@ -96,6 +96,20 @@ def test_tailscale_name_is_preferred(monkeypatch):
     assert hub.tailscale(down) is None
 
 
+def test_tailscale_serves_the_hub_over_https_when_it_can(monkeypatch):
+    monkeypatch.setattr(hub.shutil, "which", lambda n: "/usr/bin/" + n)
+    served = {"Web": {"box.tail1234.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8787"}}}}}
+    ran, log = [], []
+
+    def run(cmd, **k):
+        ran.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(served) if "status" in cmd else "", "")
+    assert hub.serve_https(8787, run, log.append) == "https://box.tail1234.ts.net"
+    assert ["tailscale", "serve", "--bg", "--yes", "8787"] in ran and "tailnet" in log[0]
+    off = lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, "{}", "HTTPS is disabled")
+    assert hub.serve_https(8787, off, log.append) is None and "HTTPS certificates" in log[-1]
+
+
 def test_server_setup_makes_a_systemd_service_joins_this_machine_and_prints_the_line(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(hub.shutil, "which", lambda n: "/usr/bin/" + n)

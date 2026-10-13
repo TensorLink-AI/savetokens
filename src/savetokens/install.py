@@ -293,10 +293,7 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
     if not yes and ask("Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
         out("Nothing changed.")
         return False
-    if tell_agent is None:
-        tell_agent = (not yes and ask("Also tell your agent when a limit is at risk, so it can pace itself? It adds"
-                                      " a short note (about 100 tokens) only then. [y/N] ").strip().lower()
-                      in ("y", "yes"))
+    tell_agent = bool(tell_agent)   # opt in with --tell-agent; not asked, to keep install to one question
     if server and code and not token:
         import urllib.request
         req = urllib.request.Request(server.rstrip("/") + "/v1/join", data=json.dumps({"code": code}).encode(),
@@ -323,6 +320,8 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
     cfg["agent_context"] = bool(tell_agent)
     if server:
         cfg.update(server_url=server, server_token=token)
+        if "share_names" not in cfg:
+            cfg["share_names"] = not yes and ask_names(ask)
     elif key:
         ephemeris.save_key(key, cfg)
     save_config(cfg)
@@ -356,12 +355,22 @@ def install(yes=False, key=None, no_ephemeris=False, cron=True, server=None, tok
         out(f"Couldn't reach {server} yet ({err['error']}); it retries in the background." if err
             else f"Synced with {server}.")
     from . import setup
-    with Store() as s:   # plans (their price detected), budgets, the Ephemeris key
-        setup.run(s, load_config(), interactive=not yes, accept=yes, out=out, ask=ask, secret=secret)
-    out("The statusline updates on your next message. `savetokens status` shows the full picture.")
+    with Store() as s:   # plan prices as detected; only the Ephemeris sign-in is asked, and only without a hub
+        setup.run(s, load_config(), interactive=not yes, accept=True, quick=True, out=out, ask=ask, secret=secret)
+    out("\nNext:")
+    out("  savetokens web              the dashboard in your browser (the statusline fills in on your next message)")
     if not server:
-        out("More than one machine? On the one that's always on: savetokens server --setup")
+        out("  savetokens server --setup   more than one machine? run this on the one that's always on")
+    out("  savetokens setup            budgets for what you pay per token, and anything else left")
+    out("  a live pane in Claude Code: /plugin install savetokens --marketplace TensorLink-AI/savetokens")
     return True
+
+
+def ask_names(ask=input) -> bool:
+    """Whether this machine sends project and task names to your own hub, so its dashboard shows them."""
+    a = ask("Show project and task names on your hub's dashboard? They go to your own hub only, never anywhere"
+            " else; otherwise it shows ids. [Y/n] ").strip().lower()
+    return a in ("", "y", "yes")
 
 
 def uninstall(out=print, run=subprocess.run):
