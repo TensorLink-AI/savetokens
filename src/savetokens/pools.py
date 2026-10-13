@@ -138,6 +138,37 @@ def add_budget(store, usd, period="month", providers=(), tools=()) -> str:
     return gid
 
 
+def apply_budget(store, body) -> dict:
+    """What the dashboard sends: {"off": id} removes a budget; {"usd", "per", "provider" | "project"} sets one
+    on API spend (real money), for a provider, a project (its id) or overall. Raises ValueError when it's not."""
+    if not isinstance(body, dict):
+        raise ValueError("bad body")
+    if "off" in body:
+        if not remove_goal(store, str(body["off"])):
+            raise ValueError("no such budget")
+        return {"ok": True, "off": body["off"]}
+    try:
+        usd = float(body.get("usd"))
+    except (TypeError, ValueError):
+        raise ValueError("an amount in $") from None
+    per = body.get("per") or "month"
+    if not (0 < usd < 1e7) or per not in PERIODS:
+        raise ValueError("an amount over $0, per day, week or month")
+    provider, project = body.get("provider"), body.get("project")
+    for v in (provider, project):
+        if v is not None and not (isinstance(v, str) and 0 < len(v) <= 32 and re.fullmatch(r"[\w.:-]+", v)):
+            raise ValueError("bad provider or project")
+    if project:
+        from . import projects
+        name = projects.names(store).get(project) or f"project {project[:8]}"
+        gid = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or project[:12]
+        set_goal(store, gid, {"label": name, "scope": {"projects": [project]}, "count": "api", "unit": "usd",
+                              "amount": usd, "period": per, "start": time.time(), "tz": time.localtime().tm_gmtoff})
+    else:
+        gid = add_budget(store, usd, per, providers=[provider] if provider else ())
+    return {"ok": True, "id": gid}
+
+
 def remove_goal(store, gid) -> bool:
     g = goals_(store)
     if gid not in g:

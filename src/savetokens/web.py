@@ -1,4 +1,4 @@
-"""The browser view: a read-only page that draws /v1/dashboard.
+"""The browser view: a page that draws /v1/dashboard, and sets or removes budgets (POST /v1/budget).
 
 The sync server serves it at / (people sign in with a join code from `savetokens pair`).
 `savetokens web` serves it on this machine: 127.0.0.1 only, behind a key made for that run,
@@ -53,8 +53,10 @@ def send_static(handler: BaseHTTPRequestHandler, path) -> bool:
     return True
 
 
-def local_handler(key: str, snapshot):
-    """The page and this machine's dashboard (snapshot() gives it), for requests carrying the run's key."""
+def local_handler(key: str, snapshot, budget=None):
+    """The page and this machine's dashboard (snapshot() gives it), for requests carrying the run's key;
+    budget(body) sets or removes a budget."""
+    budget = budget or local_budget
     class Handler(BaseHTTPRequestHandler):
         server_version = "savetokens"
 
@@ -92,6 +94,15 @@ def local_handler(key: str, snapshot):
                 self._json(500, {"error": str(e)[:200]})
 
         def do_POST(self):
+            if not self._local():
+                return self._json(403, {"error": "local only"})
+            auth = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+            if urllib.parse.urlparse(self.path).path == "/v1/budget" and hmac.compare_digest(auth, key):
+                try:
+                    body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 4096)) or b"{}")
+                    return self._json(200, budget(body))
+                except ValueError as e:
+                    return self._json(400, {"error": str(e)})
             # join codes are for a server's address; this view opens with the link `savetokens web` printed
             self._json(404, {"error": "This is the view on your own machine: it doesn't take codes. Open the full"
                                       " link savetokens web printed (it ends in #key=...), or enter the code at"
@@ -130,3 +141,18 @@ def local_snapshot():
         snap["setup"] = setup.steps(s)   # this machine's: what it detects, and its own key and connection
     snap.setdefault("now", time.time())
     return snap
+
+
+def local_budget(body) -> dict:
+    """A budget set or removed in `savetokens web`: kept here, and sent to your hub when connected."""
+    from . import pools, sync
+    from .store import Store, load_config
+    with Store() as s:
+        got = pools.apply_budget(s, body)
+        cfg = load_config()
+        if sync.connected(cfg):
+            try:
+                sync.push(s, cfg)
+            except Exception:
+                pass   # the next sync sends it
+    return got

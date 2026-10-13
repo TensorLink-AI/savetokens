@@ -366,6 +366,17 @@ function limitCard(o, now) {
   else main = "Forecast on its way";
   card.append(el("span", "main", main));
   if (goal && o.counts) card.append(el("span", "dim small", `Counts ${o.counts}`));
+  if (goal && String(o.pool || "").startsWith("goal:")) {
+    const rm = el("button", "rm", "REMOVE");
+    rm.type = "button";
+    rm.setAttribute("aria-label", `Remove the ${o.label} budget`);
+    rm.onclick = async () => {
+      if (!confirm(`Remove the ${o.label} budget?`)) return;
+      try { await post("v1/budget", { off: o.pool.slice(5) }); await load(); }
+      catch (e) { alert(`Couldn't remove it (${e.message}).`); }
+    };
+    card.append(rm);
+  }
   if (o.stage) card._pop.append(kv("alert", o.stage.replace("_", "-")));
   if (o.eta) card._pop.append(kv("runs out", `${when(o.eta, now)}, ${span(o.resets - o.eta)} before ${api || goal ? "the period ends" : "it resets"}`));
   card._pop.append(kv(`likely at ${end}`, pct(o.p50)), kv("range", o.p10 != null ? `${pct(o.p10)}–${pct(o.p90)}` : "–"),
@@ -379,7 +390,7 @@ function drawLimits(s) {
   const box = clear($("limits"));
   const list = lens === "api" ? apiBudgets(s) : (s.limits || []).filter((o) => o.kind !== "goal" && inLens(o.kind === "api" ? "api" : "plan"));
   if (!list.length) {
-    box.append(empty(lens === "api" ? "No API budgets yet. Set one: savetokens budget --provider NAME --usd 20 --per month (one per provider you pay as you go: SETUP lists them)"
+    box.append(empty(lens === "api" ? "No API budgets yet. Add one on the Projects tab (BUDGETS), or: savetokens budget --provider NAME --usd 20 --per month"
       : lens === "plans" ? "No plan limits yet: they appear after a message in Claude Code or Codex."
       : "No limits known yet. Send a message in Claude Code or Codex with savetokens installed, or set a budget for a provider you pay as you go: savetokens budget --provider NAME --usd 20 --per month"));
     return;
@@ -622,8 +633,33 @@ function drawProjects(s) {
   if (pv.more) note.append(el("span", "dim", ` · ${pv.more} more `), info("Smaller projects: savetokens projects lists them all."));
   const bs = pv.budgets.filter((o) => lens === "all" || (o.count === "api") === (lens === "api"));
   for (const o of bs) cards.append(limitCard(o, s.now));
-  if (!bs.length) cards.append(empty("No budgets yet. e.g. savetokens budget --project webapp --usd 150 --per month (API spend), add --count all to count plan usage too"));
+  if (!bs.length) cards.append(empty("No budgets yet. Add one below, or from a terminal: savetokens budget --project webapp --usd 150 --per month"));
+  budgetChoices(s);
 }
+
+// what a new budget can cover: everything paid as you go, a provider, or a project
+function budgetChoices(s) {
+  const sel = $("b-for"), keep = sel.value;
+  const opts = [["overall", "All API spend (every provider)"]];
+  for (const e of ((s.spend || {}).providers || [])) if (e.provider) opts.push([`provider:${e.provider}`, `Provider: ${e.label || PROVIDERS[e.provider] || e.provider}`]);
+  for (const p of (((s.projects || {}).list) || [])) opts.push([`project:${p.id}`, `Project: ${p.name || `project ${p.id.slice(0, 8)}`}`]);
+  const sig = opts.map((o) => o[0]).join("|");
+  if (sel.dataset.sig === sig) return;   // unchanged: keep the list (and what's picked) as it is
+  sel.dataset.sig = sig;
+  clear(sel);
+  for (const [v, t] of opts) { const o = el("option", null, t); o.value = v; sel.append(o); }
+  if (opts.some((o) => o[0] === keep)) sel.value = keep;
+}
+$("budget-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("b-err").textContent = "";
+  const [what, ...rest] = $("b-for").value.split(":"), id = rest.join(":");
+  const body = { usd: Number($("b-usd").value), per: $("b-per").value };
+  if (what === "provider") body.provider = id;
+  if (what === "project") body.project = id;
+  try { await post("v1/budget", body); $("b-usd").value = ""; await load(); }
+  catch (e) { $("b-err").textContent = `Couldn't set it (${e.message}).`; }
+});
 
 // ── menus: setup and add a machine ──
 function closeMenus(except) {

@@ -346,3 +346,15 @@ button.chip:hover, .chip[aria-expanded="true"] { border-color: var(--cyan); }
   .sdetail { padding-left: 22px; }
   .menu, .menu.wide { position: fixed; left: 16px; right: 16px; top: 70px; width: auto; max-height: calc(100vh - 100px); overflow-y: auto; }
 }
+
+/* budgets: add one, remove one */
+.budget-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.budget-form .cap { flex-basis: 100%; }
+.budget-form select, .budget-form input { background: var(--panel); color: var(--white); border: 1px solid var(--line); font: 14px var(--mono); padding: 4px 6px; min-width: 0; }
+.budget-form select:focus, .budget-form input:focus { outline: none; border-color: var(--cyan); }
+.budget-form #b-for { flex: 1 1 180px; max-width: 100%; }
+.budget-form input { width: 90px; }
+.budget-form button { all: unset; cursor: pointer; color: var(--cyan); letter-spacing: .08em; padding: 4px 6px; }
+.budget-form button:hover, .budget-form button:focus-visible { color: var(--white); }
+.limit .rm { all: unset; cursor: pointer; position: absolute; top: 6px; right: 10px; color: var(--faint); font-size: 12px; letter-spacing: .06em; }
+.limit .rm:hover, .limit .rm:focus-visible { color: var(--red); }
