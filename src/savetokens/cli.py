@@ -1,4 +1,6 @@
-"""savetokens: set a token budget and stick to it, for Claude Code, Codex and Hermes. It forecasts and advises; it never changes how your tools run."""
+"""savetokens: know when you'll run out, before you do: plan limits and pay-as-you-go budgets for Claude Code,
+Codex, Hermes and any agent, on every provider, machine and account. It forecasts and advises; it changes how
+your tools run only for a budget you set to guard."""
 from __future__ import annotations
 
 import argparse
@@ -227,7 +229,8 @@ def overview() -> int:
     from .store import load_config
     found = setup.detected()
     done = install._our_statusline(install._read_json(install.settings_path()).get("statusLine"))
-    print(f"savetokens {__version__}: set a token budget and stick to it, for Claude Code, Codex and Hermes.")
+    print(f"savetokens {__version__}: know when you'll run out, before you do: plan limits and pay-as-you-go budgets"
+          " for Claude Code, Codex, Hermes and any agent.")
     if found:
         from .pools import TOOLS
         how = {k: v["plan"] or ("pay as you go" if k == "hermes" else v["billing"]) or "found" for k, v in found.items()}

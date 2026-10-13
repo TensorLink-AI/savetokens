@@ -26,7 +26,7 @@ If it's installed, go to step 3.
 ## 2. Install (ask first)
 
 Say: "This installs savetokens and adds a statusline, hooks, an MCP server, a skill and one crontab line.
-It doesn't change how your tools run, and `savetokens uninstall` removes all of it. OK?"
+It doesn't change how your tools run (unless you later set a budget to guard), and `savetokens uninstall` removes all of it. OK?"
 
 ```sh
 uv tool install git+https://github.com/TensorLink-AI/savetokens   # or: pipx install git+https://...
