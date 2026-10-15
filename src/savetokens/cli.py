@@ -32,7 +32,7 @@ GROUPS = [
     ("start", ["install", "setup", "suggest", "uninstall"]),
     ("see where you stand", ["status", "recap", "efficiency", "advise", "spend", "watch", "web", "dashboard"]),
     ("before a big job", ["estimate", "check"]),
-    ("budgets, projects and tasks", ["budget", "projects", "project", "tasks", "task", "api", "plan", "price",
+    ("budgets, projects and tasks", ["budget", "decide", "projects", "project", "tasks", "task", "api", "plan", "price",
                                      "ephemeris"]),
     ("several machines and teams", ["server", "pair", "join", "connect", "team", "otel"]),
     ("run by install, in the background", ["maintain", "backfill", "mcp"]),
@@ -92,6 +92,10 @@ EXAMPLES = {
                "savetokens budget --project . --tokens 30M --by 2026-12-15   # this folder's project, by a date",
                "savetokens budget --task \"Add OAuth\" --tokens 3M    # a task in this folder's project",
                "savetokens budget --off webapp"],
+    "decide": ["savetokens decide --key                       # save your decisionmodels.io key (hidden)",
+               "savetokens budget --name Chutes --mode decide   # let the decision model call it",
+               "savetokens decide                               # each budget's calls and track record",
+               "savetokens decide --ask Chutes --tool hermes --provider chutes   # ask now, see what's sent"],
     "task": ["savetokens task start \"Add OAuth\"          # what follows here counts to it",
              "savetokens task done                          # finished: its cost joins the estimates",
              "savetokens task                               # the task this folder is on, and its cost so far",
@@ -643,10 +647,10 @@ def cmd_check(args):
                        f"savetokens api {args.tool} --budget USD --per month" if args.tool == "hermes"
                        else "savetokens status")
         pid = projects.resolve(s, os.getcwd())[0]
-        # budgets in advise or guard count here too, when this work counts toward them
+        # budgets in advise, guard or decide count here too, when this work counts toward them
         looks = [o for o in forecast.outlook(s, now, goals=True)
                  if (o["kind"] != "goal" and (not args.tool or o["harness"] == args.tool))
-                 or (o["kind"] == "goal" and o.get("mode") in ("advise", "guard") and pools.covers(
+                 or (o["kind"] == "goal" and o.get("mode") in ("advise", "guard", "decide") and pools.covers(
                      {"scope": o["scope"], "count": o["count"]}, args.tool, args.provider, pid,
                      "api" if args.tool == "hermes" else None))]
         pool = next((p.id for p in every if p.harness == args.tool), None) if args.tool else None
@@ -660,9 +664,20 @@ def cmd_check(args):
     with Store() as s:   # a guarded budget this work counts toward, used up: stop
         guarded = [g for _, g, _ in pools.used_up(s, now, "guard")
                    if pools.covers(g, args.tool, args.provider, pid, "api" if args.tool == "hermes" else None)]
+        from . import decide
+        here = {"tool": args.tool, "provider": args.provider, "project": pid,
+                "billing": "api" if args.tool == "hermes" else None}
+        for gid, g, o, d in decide.calls(s, here, now):   # budgets in decide: the decision model's call
+            if decide.blocks(d, o):
+                guarded.append(g)
+                reasons.insert(0, f"{g['label']} budget: " + (decide.words(d) if d else "used up, and the decision"
+                                                              " model can't be reached: stop new work"))
+            elif d:
+                reasons.append(f"{g['label']} budget: {decide.words(d)}")
     if guarded:
         code = WONT_FIT
-        reasons[:0] = [f"{g['label']} budget used up, and guarded: stop new work" for g in guarded]
+        reasons[:0] = [f"{g['label']} budget used up, and guarded: stop new work" for g in guarded
+                       if pools.mode(g) == "guard"]
     if job:
         w = job.get("likely_at_reset_with_job")
         if job["finish"] is None or (w is not None and w > 100):
@@ -906,7 +921,8 @@ def cmd_team(args):
 
 
 MODE_HELP = {"off": "no alerts", "watch": "alerts (default)", "advise": "also tells the agent at work to pace itself",
-             "guard": "also stops new work once it's used up"}
+             "guard": "also stops new work once it's used up",
+             "decide": "a decision model picks what to do as it runs out, and savetokens acts on it"}
 
 
 def cmd_budget(args):
@@ -932,7 +948,7 @@ def cmd_budget(args):
                            "savetokens budget")
             pools.set_mode(s, gid, args.mode)
             _out(args, {"id": gid, "mode": args.mode}, f"{pools.goals_(s)[gid]['label']} budget: {args.mode}"
-                 f" ({pools.MODES[args.mode]}).")
+                 f" ({pools.MODES[args.mode]})." + _decide_note(args.mode))
             return OK
         if args.off:
             gid = args.off if args.off in pools.goals_(s) else re.sub(r"[^a-z0-9]+", "-", args.off.lower()).strip("-")
@@ -957,6 +973,10 @@ def cmd_budget(args):
                     line += f"; likely {o['p50']:.0f}% by the end, {o['p_hit'] or 0:.0%} chance of going over"
                 else:
                     line += "; forecast on the next upkeep"
+                if o.get("mode") == "decide":
+                    from . import decide
+                    last = decide.record(s, o["pool"][5:])["last"]
+                    line += f"\n  last call: {decide.words(last)}" if last else ""
                 lines.append(line)
             _out(args, {"budgets": looks}, "\n".join(lines))
             return OK
@@ -1025,7 +1045,63 @@ def cmd_budget(args):
                  " so it stays at $0 until an API key is used. To budget plan usage too, at API prices: add --count all.")
     elif not lately:
         text += "\nNote: nothing it covers was used in the last 30 days."
-    _out(args, {"id": gid, "counted_last_30_days": lately, **goal}, text)
+    _out(args, {"id": gid, "counted_last_30_days": lately, **goal}, text + _decide_note(args.mode))
+    return OK
+
+
+def _decide_note(mode):
+    from . import decide
+    if mode != "decide" or decide.api_key():
+        return ""
+    return ("\nNote: no decisionmodels.io key on this machine yet, so guard's rule holds until there is one:"
+            " savetokens decide --key")
+
+
+def cmd_decide(args):
+    """The decision model's calls for budgets in decide, and each budget's track record."""
+    from . import decide, forecast, pools
+    from .store import Store
+    import getpass
+    if args.key:
+        key = os.environ.get("DECISIONMODELS_API_KEY") or getpass.getpass("decisionmodels.io API key (hidden): ")
+        if not key.strip():
+            raise Fail("no key given")
+        path = decide.save_key(key)
+        _out(args, {"saved": str(path)}, f"Saved, readable by you only: {path}")
+        return OK
+    with Store() as s:
+        now = time.time()
+        if args.ask:
+            gid = pools.find_goal(s, args.ask)
+            if not gid:
+                raise Fail(f"no budget {args.ask!r}", "savetokens budget")
+            if not decide.api_key():
+                raise Fail("no decisionmodels.io key on this machine", "savetokens decide --key")
+            g = pools.goals_(s)[gid]
+            o = next(o for o in forecast.outlook(s, now, goals=True) if o["pool"] == f"goal:{gid}")
+            here = {"tool": args.tool, "provider": args.provider, "project": None, "billing": None}
+            d = decide.decision(s, gid, o, g, here, now, fresh=True)
+            if not d:
+                raise Fail("the decision model couldn't be reached")
+            _out(args, d, f"{g['label']} budget: {decide.words(d)}\nSent: {json.dumps(d['facts'])}\n"
+                          f"Choices: {', '.join(d['choices'])}")
+            return OK
+        goals = {gid: g for gid, g in pools.goals_(s).items() if pools.mode(g) == "decide"}
+        rows = {gid: decide.record(s, gid, now) for gid in goals}
+    lines = [] if decide.api_key() else ["No decisionmodels.io key on this machine: savetokens decide --key"]
+    for gid, r in rows.items():
+        line = f"{goals[gid]['label']} budget: {r['calls']} calls"
+        if r["by_answer"]:
+            line += " (" + ", ".join(f"{k.replace('_', ' ')} {n}" for k, n in r["by_answer"].items()) + ")"
+        if r["periods_ended"]:
+            line += f"; ended within budget in {r['periods_within']} of {r['periods_ended']} periods it made calls in"
+        line += f"; cost ${r['cost_usd']:.4f}"
+        if r["last"]:
+            line += f"\n  last: {decide.words(r['last'])}"
+        lines.append(line)
+    if not goals:
+        lines.append("No budget is set to decide. e.g. savetokens budget --name Chutes --mode decide")
+    _out(args, {"key": bool(decide.api_key()), "budgets": rows}, "\n".join(lines))
     return OK
 
 
@@ -1406,6 +1482,11 @@ def main(argv=None):
     s.add_argument("--mode", choices=list(MODE_HELP), help="what the budget agent does for it: "
                    + "; ".join(f"{k}: {v}" for k, v in MODE_HELP.items()))
     s.add_argument("--name", metavar="NAME", help="with --mode alone: an existing budget (as `savetokens budget` lists it)")
+    s = cmd("decide", cmd_decide, "budgets in decide: the decision model's calls and each one's track record")
+    s.add_argument("--key", action="store_true", help="save your decisionmodels.io API key (asked for, hidden)")
+    s.add_argument("--ask", metavar="NAME", help="ask the model now for this budget, and show what was sent")
+    s.add_argument("--tool", choices=["claude-code", "codex", "hermes"], help="with --ask: the work's tool")
+    s.add_argument("--provider", metavar="NAME", help="with --ask: the provider the work runs on")
     s = cmd("projects", cmd_projects, "every project's tokens and $, split by tool, provider and plan or API, with"
             " its biggest tasks: across machines when connected to a hub")
     s.add_argument("--days", type=int, default=30, help="how many days back (default 30)")

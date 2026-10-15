@@ -95,6 +95,8 @@ the hub's address. In Claude Code the statusline fills in after the next message
 
 - Projects and tasks are automatic: each git repo is a project, and each non-default branch is a task. Offer a
   budget for a project only if they ask for one: `savetokens budget --project . --usd N --per month`.
+- If they want a decision model to make the call as a budget runs out, that's the `decide` mode
+  (`savetokens budget --name NAME --mode decide`). Ask the person to run `savetokens decide --key` themselves.
 - From now on, the installed skill and MCP tools (`pacing_brief`, `estimate_job`, `spend_summary`,
   `suggest_setup`) are how you answer "how are my limits?" and "will this fit?". See the
   [skill](../src/savetokens/skill/SKILL.md).

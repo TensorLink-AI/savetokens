@@ -377,6 +377,11 @@ function limitCard(o, now) {
     };
     card.append(rm);
     card.append(modePicker(o));
+    const d = o.decision;
+    if (d) {
+      card.append(el("span", "dim small", `Last call (${when(d.at, now)}): ${d.last}`));
+      if (d.periods_ended) card.append(el("span", "dim small", `Ended within budget in ${d.periods_within} of ${d.periods_ended} periods with calls`));
+    }
   }
   if (o.stage) card._pop.append(kv("alert", o.stage.replace("_", "-")));
   if (o.eta) card._pop.append(kv("runs out", `${when(o.eta, now)}, ${span(o.resets - o.eta)} before ${api || goal ? "the period ends" : "it resets"}`));
@@ -644,6 +649,7 @@ const MODES = {
   watch: "Watch: alerts you as it runs out",
   advise: "Advise: also tells the agent at work to pace itself; you approve bigger changes",
   guard: "Guard: also stops new work once it's used up (Claude Code prompts blocked; savetokens check exits 4; Codex and Hermes told through MCP)",
+  decide: "Decide: a decision model (decisionmodels.io) picks what to do as it runs out: carry on, finish then stop, a cheaper model, another plan, wait for the reset, or stop now. savetokens acts on it; guard's rule if it can't be reached. Needs a key on the machine: savetokens decide --key",
 };
 function modeSelect(value) {
   const sel = el("select", "mode");

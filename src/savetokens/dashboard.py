@@ -124,11 +124,16 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
 def project_view(store, now, days=30, most=25) -> dict:
     """The Projects tab: each project's tokens, API value and API spend, split by tool, provider and plan or
     API, with its biggest tasks; and every budget you set, with its forecast."""
-    from . import projects
+    from . import decide, projects
     rows = projects.report(store, now - days * 86400, tasks_each=8)
     budgets = [o for o in forecast.outlook(store, now, goals=True) if o["kind"] == "goal"]
     for o in budgets:
         o["stage"] = alerts.stage(o, now)
+        r = decide.record(store, o["pool"][5:], now) if o.get("mode") == "decide" else None
+        if r and r["last"]:   # the decision model's last call here, and its track record
+            o["decision"] = {"calls": r["calls"], "periods_ended": r["periods_ended"],
+                             "periods_within": r["periods_within"],
+                             "last": decide.words(r["last"]), "at": r["last"]["at"]}
     shown = rows[:most]
     _trend(store, shown, now, days)
     return {"days": days, "list": shown, "more": max(0, len(rows) - most), "budgets": budgets,

@@ -192,7 +192,10 @@ def remove_goal(store, gid) -> bool:
 MODES = {"off": "no alerts", "watch": "alerts you as it runs out (the default)",
          "advise": "also tells the agent at work, so it paces itself and proposes cheaper ways; you approve",
          "guard": "also stops new work once it's used up: Claude Code's prompts are blocked, `savetokens check`"
-                  " exits 4, and Codex and Hermes are told through MCP"}
+                  " exits 4, and Codex and Hermes are told through MCP",
+         "decide": "a decision model picks what to do as it runs out (carry on, finish then stop, a cheaper model,"
+                   " another plan, wait for the reset, stop now) and savetokens acts on it; guard's rule if it"
+                   " can't be reached"}
 
 
 def mode(goal) -> str:

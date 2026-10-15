@@ -217,6 +217,13 @@ def steps(store, now=None, cfg=None, found=None, on_server=False) -> list[dict]:
                              "Ephemeris forecasts your usage; without a key savetokens uses its local baseline"
                              + ("" if key else f". Sign up and create a key: {SIGNUP}"),
                              "savetokens setup", None if key else "an Ephemeris key (setup signs you in)"))
+    # the decision model, for budgets set to decide
+    if not on_server and any(pools.mode(g) == "decide" for g in pools.goals_(store).values()):
+        from . import decide
+        k = bool(decide.api_key())
+        out.append(_step("decider", k, "Decision model: key set" if k else "Decision model key: not set",
+                         "a budget is set to decide; without a decisionmodels.io key on this machine, guard's rule"
+                         " holds for it", None if k else "savetokens decide --key"))
     # every machine in one view
     if not sync.connected(cfg) and not on_server:
         out.append(_step("server", False, "Other machines: not connected",
