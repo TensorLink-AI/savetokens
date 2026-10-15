@@ -1,0 +1,275 @@
+"""The decide mode: a decision model picks what to do as a budget runs out, and savetokens acts on it.
+
+When a budget in decide is at risk (or used up), savetokens sends the measured facts to a decision model
+(decisionmodels.io, EU tier: nothing is kept) with the choices that apply right now, and two questions: what
+should the work do, and is there something to ask the person. Only numbers, the budget's label and the tool and
+provider go: no prompts, code, project names or keys.
+
+  carry_on          the work fits in what's left (not offered once it's used up: only the person raises it)
+  finish_then_stop  finish the task at hand, then stop new work that counts toward it
+  cheaper_model     a model you've used on this provider that cost less per token, measured from your usage
+  move              another plan or budget that has room, named
+  wait_for_reset    hold new work until the budget resets
+  stop_now          stop new work now (blocked, as guard does)
+
+Each call is logged with what was sent and the answer. Once the budget's period ends, how it ended is added,
+so each budget builds a track record. If the model can't be reached, the budget behaves as guard.
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+import urllib.request
+
+from . import alerts, pools
+from .store import home
+
+API = "https://api.decisionmodels.io/v1/systemone"
+MODEL = "s1-pro"                 # takes both questions in one request
+USD_PER_M = 0.084                # s1-pro, EU tier, per million input tokens (output is free), at launch
+KEY_NAMES = ("DECISIONMODELS_API_KEY",)
+CACHE_SECONDS = 600              # a budget's call holds this long, so prompts don't each wait on it
+RETRY_SECONDS = 60               # after a failure, guard's rule holds this long before trying again
+TIMEOUT = 1.5                    # hooks run on every prompt
+LOG_MAX = 500
+MODEL_DAYS = 30                  # the models compared for cheaper_model: used in this time
+
+DO = {
+    "carry_on": "Carry on: the work fits in what's left",
+    "finish_then_stop": "Finish the current task, then stop new work that counts toward this budget",
+    "cheaper_model": "Switch to {model}, which cost ${rate:.2f} per million tokens here, against ${now_rate:.2f} for {now}",
+    "move": "Move the work to {name}, which has room ({used:.0f}% used now)",
+    "wait_for_reset": "Hold new work until the budget resets in {span}",
+    "stop_now": "Stop new work that counts toward this budget now",
+}
+ASK = {
+    "nothing": "Nothing to ask the person",
+    "raise_budget": "Ask the person whether to raise this budget",
+    "pause_project": "Ask the person whether to pause this project for the rest of the period",
+}
+BLOCKS = ("stop_now", "wait_for_reset")   # what stops new work
+
+
+def key_path():
+    return home() / "decisionmodels.key"
+
+
+def api_key() -> str | None:
+    """From the environment, else the key file (owner-only). Never copied or printed."""
+    for name in KEY_NAMES:
+        if os.environ.get(name):
+            return os.environ[name]
+    p = key_path()
+    try:
+        if os.name != "nt" and p.stat().st_mode & 0o077:
+            return None   # others can read it: don't trust it
+        return p.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def save_key(key: str):
+    p = key_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.touch(mode=0o600)
+    tmp.chmod(0o600)
+    tmp.write_text(key.strip() + "\n")
+    tmp.replace(p)
+    return p
+
+
+def _post(body, key):
+    req = urllib.request.Request(API, json.dumps(body).encode(), {
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json", "S1-Region": "eu"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        return json.load(r)
+
+
+def _models(store, g, provider, now):
+    """(model, $ per million tokens, tokens) for each model used under this budget (on this provider) lately."""
+    from . import spend
+    where, args = pools._scope(g, store)
+    if provider:
+        where += f" AND ({spend.PROVIDER} = ? OR {spend.PROVIDER} LIKE ?)"
+        args = args + [provider, pools.stem(provider) + "%"]
+    rows = store.conn.execute(
+        f"SELECT model, SUM(COALESCE(cost_usd, 0)), SUM({pools.UNITS['tokens']}),"
+        f" SUM(CASE WHEN ts >= ? THEN COALESCE(cost_usd, 0) ELSE 0 END) FROM usage WHERE {where}"
+        " AND ts >= ? AND model IS NOT NULL GROUP BY model", [now - 86400] + args + [now - MODEL_DAYS * 86400]).fetchall()
+    return [(m, 1e6 * usd / tok, tok, day) for m, usd, tok, day in rows if tok and usd]
+
+
+def facts(store, o, g, here, now) -> dict:
+    """What's measured about this budget and the work, and what it could switch to. Only numbers and names of
+    budgets, plans, tools, providers and models."""
+    usd = o["unit"] == "usd"
+    f = {"budget": g["label"], "counts": o["counts"], "unit": "USD" if usd else "tokens",
+         "used_pct": round(o["used"], 1), "spent": round(o["spent"], 4 if usd else 0), "amount": o["amount"],
+         "period": o.get("period") or "total by a date", "hours_to_reset": round((o["resets"] - now) / 3600, 1)}
+    if o.get("p50") is not None:
+        f["likely_at_reset_pct"] = {"p10": round(o["p10"]), "p50": round(o["p50"]), "p90": round(o["p90"])}
+    if o.get("p_hit") is not None:
+        f["chance_it_runs_out_pct"] = round(100 * o["p_hit"])
+    if o.get("eta") and o["used"] < 100:
+        f["hours_until_it_runs_out"] = round((o["eta"] - now) / 3600, 1)
+    pool = pools.Pool(o["pool"], "all", "goal", o["pool"], g)
+    f["spent_last_24h"] = round(pools.spent(store, pool, now - 86400, now), 4 if usd else 0)
+    f["work"] = {"tool": pools.TOOLS.get(here.get("tool"), here.get("tool")), "provider": here.get("provider"),
+                 "billing": here.get("billing")}
+    ms = _models(store, g, here.get("provider"), now)
+    cur = max(ms, key=lambda m: m[3], default=None)
+    if cur and cur[3] > 0:
+        f["model_now"] = {"model": cur[0], "usd_per_m_tokens": round(cur[1], 3)}
+        cheap = min((m for m in ms if m[1] < cur[1]), key=lambda m: m[1], default=None)
+        if cheap:
+            f["cheaper_model"] = {"model": cheap[0], "usd_per_m_tokens": round(cheap[1], 3),
+                                  "tokens_measured": int(cheap[2])}
+    f["room_elsewhere"] = _room(store, o, here, now)
+    return f
+
+
+def _room(store, o, here, now):
+    """Plans and budgets the work isn't counted in that have room: not at risk, not used up."""
+    from . import forecast
+    out = []
+    for x in forecast.outlook(store, now, goals=True):
+        if x["pool"] == o["pool"] or x["used"] >= 100 or alerts.stage(x, now):
+            continue
+        if x["kind"] == "goal" and pools.covers({"scope": x["scope"], "count": x["count"]}, **here):
+            continue   # the work counts toward it already
+        if x["kind"] == "subscription" and here.get("billing") == "plan" and x["harness"] == here.get("tool"):
+            continue   # the plan the work is on
+        out.append({"name": x["label"], "used_pct": round(x["used"]),
+                    **({"likely_at_reset_pct": round(x["p50"])} if x.get("p50") is not None else {})})
+    return sorted(out, key=lambda r: r.get("likely_at_reset_pct", r["used_pct"]))[:5]
+
+
+def choices(f, g) -> tuple[dict, dict]:
+    """The options that apply now, each with its words for the model."""
+    do = {}
+    up = f["used_pct"] >= 100
+    if not up:
+        do["carry_on"] = DO["carry_on"]
+        do["finish_then_stop"] = DO["finish_then_stop"]
+    if "cheaper_model" in f:
+        do["cheaper_model"] = DO["cheaper_model"].format(
+            model=f["cheaper_model"]["model"], rate=f["cheaper_model"]["usd_per_m_tokens"],
+            now=f["model_now"]["model"], now_rate=f["model_now"]["usd_per_m_tokens"])
+    if f["room_elsewhere"]:
+        r = f["room_elsewhere"][0]
+        do["move"] = DO["move"].format(name=r["name"], used=r["used_pct"])
+    if g.get("period") in pools.PERIODS:
+        do["wait_for_reset"] = DO["wait_for_reset"].format(span=alerts.span(f["hours_to_reset"] * 3600))
+    do["stop_now"] = DO["stop_now"]
+    ask = {"nothing": ASK["nothing"], "raise_budget": ASK["raise_budget"]}
+    if (g.get("scope") or {}).get("projects"):
+        ask["pause_project"] = ASK["pause_project"]
+    return do, ask
+
+
+def ask_model(store, gid, o, g, here, now, key):
+    """One call: the facts and choices out, the model's answer back, logged. None if it can't be reached."""
+    f = facts(store, o, g, here, now)
+    do, ask = choices(f, g)
+    body = {"model": MODEL, "state": f, "questions": {
+        "do": {"type": "choice", "criteria": do,
+               "instructions": "A spending budget for AI coding agents is running low. From these measured facts,"
+                               " what should the agent's work that counts toward it do next?"},
+        "ask": {"type": "choice", "criteria": ask,
+                "instructions": "Is there a decision about money or the project's worth to put to the person?"
+                                " Only they make those."}}}
+    try:
+        r = _post(body, key)
+        a, q = r["answers"]["do"], r["answers"]["ask"]
+    except Exception as e:   # unreachable, slow, out of credit, an answer we can't read
+        return {"at": now, "budget": gid, "error": type(e).__name__}
+    since, until = pools.period(g, now)
+    tokens = (r.get("usage") or {}).get("input_tokens") or 0
+    d = {"at": now, "budget": gid, "label": g["label"], "since": since, "until": until, "amount": g.get("amount"),
+         "unit": g.get("unit", "usd"), "here": here, "facts": f, "choices": do, "asks": ask,
+         "do": a["choice"], "p": a.get("confidence"), "probabilities": a.get("probabilities"),
+         "ask": q["choice"], "ask_p": q.get("confidence"), "id": r.get("id"), "tokens": tokens,
+         "cost_usd": tokens * USD_PER_M / 1e6}
+    log = store.meta("decisions") or []
+    store.set_meta("decisions", (log + [d])[-LOG_MAX:])
+    return d
+
+
+def decision(store, gid, o, g, here, now=None, fresh=False):
+    """The model's call for this budget and this work, cached; None when there's no key or it can't be
+    reached (then guard's rule holds)."""
+    now = now or time.time()
+    key = api_key()
+    if not key:
+        return None
+    cache = store.meta("decision_cache") or {}
+    ck = f"{gid}|{here.get('tool')}|{here.get('provider')}|{here.get('billing')}"
+    hit = cache.get(ck)
+    if hit and not fresh and now - hit["at"] < (RETRY_SECONDS if "error" in hit else CACHE_SECONDS):
+        return None if "error" in hit else hit
+    d = ask_model(store, gid, o, g, here, now, key)
+    cache[ck] = d
+    store.set_meta("decision_cache", {k: v for k, v in cache.items() if now - v["at"] < CACHE_SECONDS})
+    return None if "error" in d else d
+
+
+def at_risk(store, here, now=None):
+    """(id, budget, outlook) for budgets in decide that this work counts toward and that are at risk or used up."""
+    from . import forecast
+    now = now or time.time()
+    wanted = {gid: g for gid, g in pools.goals_(store).items() if pools.mode(g) == "decide" and pools.covers(g, **here)}
+    if not wanted:
+        return []
+    return [(o["pool"][5:], wanted[o["pool"][5:]], o) for o in forecast.outlook(store, now, goals=True)
+            if o["kind"] == "goal" and o["pool"][5:] in wanted and (alerts.stage(o, now) or o["used"] >= 100)]
+
+
+def calls(store, here, now=None) -> list[tuple[str, dict, dict, dict | None]]:
+    """(id, budget, outlook, the model's call or None) for each budget in decide at risk for this work."""
+    now = now or time.time()
+    return [(gid, g, o, decision(store, gid, o, g, here, now)) for gid, g, o in at_risk(store, here, now)]
+
+
+def words(d) -> str:
+    """The call in a line: what, how sure, and the question for the person."""
+    text = f"{d['choices'].get(d['do'], d['do'])} (the decision model's call, {100 * (d.get('p') or 0):.0f}% sure)."
+    if d.get("ask") and d["ask"] != "nothing":
+        text += f" {d['asks'][d['ask']]}."
+    return text
+
+
+def blocks(d, o) -> bool:
+    """Whether new work stops: the model said so, or (no call) guard's rule: it's used up."""
+    return d["do"] in BLOCKS if d else o["used"] >= 100
+
+
+def log(store, now=None) -> list[dict]:
+    """Every logged call, with how its period ended once it has."""
+    now = now or time.time()
+    entries = store.meta("decisions") or []
+    changed = False
+    for d in entries:
+        if "ended_pct" not in d and d.get("until") and d["until"] <= now and d.get("amount"):
+            g = (pools.goals_(store).get(d["budget"]) or {"label": d["label"], "scope": {}, "unit": d["unit"]})
+            pool = pools.Pool(f"goal:{d['budget']}", "all", "goal", f"goal:{d['budget']}", g)
+            d["ended_pct"] = round(100 * pools.spent(store, pool, d["since"], d["until"]) / d["amount"], 1)
+            changed = True
+    if changed:
+        store.set_meta("decisions", entries)
+    return entries
+
+
+def record(store, gid, now=None) -> dict:
+    """A budget's track record: of the periods the model made calls in that have ended, how many ended within
+    the budget; and its calls, by answer."""
+    entries = [d for d in log(store, now) if d["budget"] == gid]
+    periods = {d["since"]: d["ended_pct"] for d in entries if "ended_pct" in d}
+    by = {}
+    for d in entries:
+        by[d["do"]] = by.get(d["do"], 0) + 1
+    return {"calls": len(entries), "by_answer": by, "periods_ended": len(periods),
+            "periods_within": sum(1 for v in periods.values() if v <= 100),
+            "cost_usd": sum(d.get("cost_usd") or 0 for d in entries),
+            "last": entries[-1] if entries else None}

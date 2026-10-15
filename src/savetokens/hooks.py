@@ -6,7 +6,8 @@ hooks       read transcripts as sessions run and end; on your next prompt, show 
             new pace alert (to you; and to the agent too, with a pacing note, if you turned
             that on: `agent_context`), and at session start when a limit is at risk
 budget agent  per budget (`savetokens budget --mode`): advise tells the agent when a budget its session counts
-            toward is at risk; guard blocks new prompts once that budget is used up
+            toward is at risk; guard blocks new prompts once that budget is used up; decide does what a
+            decision model calls (decide.py)
 """
 from __future__ import annotations
 
@@ -126,6 +127,38 @@ def advise(store, here, session_id, now=None) -> str | None:
               " or provider for the main work) to the user; don't make them yourself.")
 
 
+def decided(store, here, session_id, now=None) -> dict | None:
+    """For budgets in decide that this session counts toward and that are at risk: block the prompt if the
+    decision model's call stops new work, else tell the person and the agent the call (at most hourly per call)."""
+    from . import decide
+    now = now or time.time()
+    out = decide.calls(store, here, now)
+    for gid, g, o, d in out:
+        if decide.blocks(d, o):
+            why = (decide.words(d) if d else f"It's used up ({o['used']:.0f}%) and the decision model can't be"
+                   " reached (or has no key: `savetokens decide --key`), so guard's rule holds.")
+            return {"decision": "block", "reason": f"savetokens: {g['label']} budget: {why} To go on: raise it,"
+                    f" or switch it to advise (dashboard, or `savetokens budget --name {gid} --mode advise`)."}
+    told = store.meta("decided_told") or {}
+    lines = []
+    for gid, g, o, d in out:
+        if d and d["do"] == "carry_on" and d.get("ask") == "nothing":
+            continue
+        k = f"{session_id}|{gid}|{d['do'] + '|' + d['ask'] if d else '-'}"
+        if now - told.get(k, 0) < ADVISE_EVERY:
+            continue
+        told[k] = now
+        lines.append(f"{g['label']} budget: {decide.words(d)}" if d else
+                     alerts.message(o, alerts.stage(o, now), now) + " Pace yourself.")
+    if not lines:
+        return None
+    store.set_meta("decided_told", dict(list(told.items())[-200:]))
+    text = "savetokens (budget agent): " + " ".join(lines)
+    return {"systemMessage": text, "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext":
+            text + " Finishing up or stopping is yours to do. Propose a model switch or moving the work to the user,"
+            " and put any question to them; don't make those changes yourself."}}
+
+
 def handle(event: str, payload: dict, store: Store):
     """Hook output as a dict (printed as JSON), or None."""
     acct = _account(store)
@@ -136,6 +169,9 @@ def handle(event: str, payload: dict, store: Store):
         why = guard(store, here)
         if why:
             return {"decision": "block", "reason": why}
+        made = decided(store, here, payload.get("session_id"))
+        if made:
+            return made
         told = advise(store, here, payload.get("session_id"))
         if told:
             shown = alerts.unseen(store)

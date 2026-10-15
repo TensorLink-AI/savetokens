@@ -139,12 +139,17 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   | `watch` | alerts you as it runs out (the default) |
   | `advise` | also tells the agent doing work that counts toward it, so it paces itself (cheaper subagents, no wide fan-outs) and proposes bigger changes for you to approve |
   | `guard` | also stops new work once it's used up: Claude Code's prompts are blocked with the reason, `savetokens check` exits 4, and Codex and Hermes are told through MCP |
+  | `decide` | a decision model ([decisionmodels.io](https://decisionmodels.io)) picks what to do once it's at risk, from the options that apply: carry on, finish this task then stop, a cheaper model you've used, another plan or budget with room, wait for the reset, or stop now; and whether to ask you to raise the budget or pause the project. savetokens acts on the call (a stop blocks, as guard does), and guard's rule holds if the model can't be reached |
 
   ```sh
   savetokens budget --provider chutes --usd 20 --per month --mode guard
   savetokens budget --name Chutes --mode advise      # change an existing budget's mode
   savetokens check --tool hermes --provider chutes   # in a loop: exit 4 once a guarded budget is used up
   ```
+
+  Decide needs a key on each machine that runs the work: `savetokens decide --key`. Each call is logged with what
+  was sent and the answer, and once the period ends, how the budget ended: `savetokens decide` shows each
+  budget's calls and track record, and `savetokens decide --ask NAME` asks now and shows what's sent.
 
   Guard stops new prompts; a turn already running finishes. Codex and Hermes have no hooks, so there it relies on
   the agent following the MCP brief, or on your loop calling `savetokens check`.
@@ -420,6 +425,9 @@ Every failure with `--json` also says `"fix"`: the command to run.
   session id), limit readings and the times you hit a limit, plus ids for projects and tasks
   (keyed hashes, not names). Never prompts, replies, code, file, folder or branch names, nor project and task
   names unless you said yes when joining (or ran `savetokens projects --share-names on`).
+- **To decisionmodels.io, for a budget you set to decide:** that budget's numbers (used, forecast, time to reset,
+  recent spend), its label, the tool, provider and models in use, and other plans' and budgets' room. EU tier,
+  nothing kept. No prompts, code or project names.
 - **Telemetry and provider reports, if you turn them on:** OpenTelemetry goes from the agent to your hub;
   a provider admin key stays on the hub machine and is used only to read that provider's usage report.
 
@@ -428,13 +436,14 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | | |
 |---|---|
 | `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
-| `budget [--project NAME \| --task NAME] [--provider P] [--tool T] [--count api\|all] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE) [--mode off\|watch\|advise\|guard]` / `budget` / `budget --name NAME --mode M` / `budget --off NAME` | a budget, overall or for a project, task, provider or tool, API spend or all usage / every budget with its forecast / its budget-agent mode / remove one |
+| `budget [--project NAME \| --task NAME] [--provider P] [--tool T] [--count api\|all] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE) [--mode off\|watch\|advise\|guard\|decide]` / `budget` / `budget --name NAME --mode M` / `budget --off NAME` | a budget, overall or for a project, task, provider or tool, API spend or all usage / every budget with its forecast / its budget-agent mode / remove one |
 | `projects [--days N] [--share-names on\|off]` / `project link [NAME]` | every project's tokens, API value and API spend by tool, provider and plan or API (every machine, on a hub) / make this folder one project everywhere |
 | `task start NAME` / `task done` / `task` / `tasks [--project NAME]` | declare a task, finish it, see the current one / every task's cost and the measured estimate |
 | `team [--people on\|off]` / `project share` / `budget --team ...` | your team's totals, projects and budgets / name a project for the team / a team budget |
 | `efficiency [--days N] [--tool T] [--provider P] [--project NAME] [--as MODEL]` | where tokens go (facts) and what the same work would cost done differently (what-ifs) |
 | `recap [--days N]` | the last week (or N days) against your plan: under or over budget and forecast, limit hits |
 | `status [--json]` | each limit: used now, at reset, chance and time of running out; your recent hits |
+| `decide [--key] [--ask NAME]` | budgets in decide: the decision model's calls and track record / save its key / ask now |
 | `advise [--json]` | where the limits stand and the options, biggest effect first |
 | `estimate --like small\|typical\|big \| --hours H \| --points P \| --usd D [--parallel N]` | a job's size, run time and whether it fits |
 | `check [--hours H \| --like ... ] [--tool T] [--provider P]` | one verdict in the exit code: 0 on track, 3 at risk, 4 won't fit (or a guarded budget is used up) |

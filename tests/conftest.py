@@ -21,12 +21,14 @@ def homes(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(maintain, "kick", lambda *a, **k: None)
     monkeypatch.setattr(alerts, "desktop", lambda *a, **k: None)
-    for name in ("EPHEMERIS_API_KEY", "EPHEMERIS_API_TOKEN"):
+    for name in ("EPHEMERIS_API_KEY", "EPHEMERIS_API_TOKEN", "DECISIONMODELS_API_KEY"):
         monkeypatch.delenv(name, raising=False)
 
     def no_network(*a, **k):
         raise RuntimeError("no network in tests")
     monkeypatch.setattr(ephemeris, "_call", no_network)
+    from savetokens import decide as _decide
+    monkeypatch.setattr(_decide, "_post", no_network)   # the decision model too
     from savetokens import pricing as _pricing
     monkeypatch.setattr(_pricing, "_fetch", no_network)   # the price catalogue too
     monkeypatch.setenv("SAVETOKENS_HOME", str(tmp_path / "st"))

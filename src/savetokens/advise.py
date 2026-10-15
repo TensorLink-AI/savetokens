@@ -318,20 +318,28 @@ def brief(store, now=None, session_id=None, cwd=None, harness=None) -> dict:
 
 
 def agent_view(store, now, harness=None, cwd=None) -> list[dict]:
-    """Budgets in advise or guard that work here may count toward (this tool and project; any provider, since a
+    """Budgets in advise, guard or decide that work here may count toward (this tool and project; any provider, since a
     tool without hooks doesn't say which it's on), with what the agent should do about each."""
-    from . import projects
+    from . import decide, projects
     pid = projects.resolve(store, cwd)[0] if cwd else None
-    goals = {gid: g for gid, g in pools.goals_(store).items() if pools.mode(g) in ("advise", "guard")
-             and pools.covers(g, harness, None, pid, "api" if harness == "hermes" else None)}
+    here = {"tool": harness, "provider": None, "project": pid, "billing": "api" if harness == "hermes" else None}
+    goals = {gid: g for gid, g in pools.goals_(store).items() if pools.mode(g) in ("advise", "guard", "decide")
+             and pools.covers(g, **here)}
     out = []
     for o in forecast.outlook(store, now, goals=True) if goals else []:
         g = goals.get(o["pool"][5:]) if o["kind"] == "goal" else None
         if not g:
             continue
         m, st = pools.mode(g), alerts.stage(o, now)
+        if m == "decide" and (st or o["used"] >= 100):
+            d = decide.decision(store, o["pool"][5:], o, g, here, now)
+            if d:
+                do = (("stop: " if decide.blocks(d, o) else "") + decide.words(d)
+                      + " Finishing up or stopping is yours to do; propose model or provider changes to the user.")
+                out.append({"budget": o["label"], "mode": m, "used": o["used"], "stage": st, "do": do})
+                continue
         do = ("stop: don't start new work that counts toward it; tell the user, who can raise it or switch it to"
-              " advise" if m == "guard" and o["used"] >= 100 else
+              " advise" if m in ("guard", "decide") and o["used"] >= 100 else   # decide with no call: guard's rule
               "pace: cheaper models for subagents, no wide fan-outs; propose bigger changes to the user"
               if st or o["used"] >= 100 else None)
         out.append({"budget": o["label"], "mode": m, "used": o["used"], "stage": st, "do": do})

@@ -89,7 +89,9 @@ A $ budget counts real API spend unless you add `--count all`, which also counts
 You can also add, remove and change budgets in the dashboard (Projects tab, BUDGETS).
 
 Each budget can have the budget agent watch over it: `watch` (alerts, the default), `advise` (also tells the agent
-at work to pace itself), `guard` (also stops new work once it's used up), or `off`. Set it with `--mode` or in the
+at work to pace itself), `guard` (also stops new work once it's used up), `decide` (a decision model picks what
+to do as it runs out: carry on, finish then stop, a cheaper model, another plan, wait, or stop; it needs a key:
+`savetokens decide --key`), or `off`. Set it with `--mode` or in the
 dashboard.
 
 ## 6. Day to day
