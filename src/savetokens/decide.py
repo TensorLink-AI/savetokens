@@ -49,6 +49,9 @@ ASK = {
     "pause_project": "Ask the person whether to pause this project for the rest of the period",
 }
 BLOCKS = ("stop_now", "wait_for_reset")   # what stops new work
+SHORT = {"carry_on": "Carry on", "finish_then_stop": "Finish this task, then stop", "cheaper_model": "Use a cheaper model",
+         "move": "Move the work", "wait_for_reset": "Stopped: waits for the reset", "stop_now": "Stopped"}
+HUB_MAX = 2000                   # calls the hub keeps, from every machine
 
 
 def key_path():
@@ -205,7 +208,7 @@ def decision(store, gid, o, g, here, now=None, fresh=False):
     if not key:
         return None
     cache = store.meta("decision_cache") or {}
-    ck = f"{gid}|{here.get('tool')}|{here.get('provider')}|{here.get('billing')}"
+    ck = f"{gid}|{g.get('amount')}|{here.get('tool')}|{here.get('provider')}|{here.get('billing')}"   # a raise asks again
     hit = cache.get(ck)
     if hit and not fresh and now - hit["at"] < (RETRY_SECONDS if "error" in hit else CACHE_SECONDS):
         return None if "error" in hit else hit
@@ -273,3 +276,57 @@ def record(store, gid, now=None) -> dict:
             "periods_within": sum(1 for v in periods.values() if v <= 100),
             "cost_usd": sum(d.get("cost_usd") or 0 for d in entries),
             "last": entries[-1] if entries else None}
+
+
+def active(store, o, now=None) -> dict | None:
+    """The call that needs the person now: this period's latest (from any machine), while the budget is still at
+    risk or used up, when it stops the work or has a question for them."""
+    now = now or time.time()
+    gid = o["pool"][5:]
+    d = next((d for d in reversed(log(store, now)) if d["budget"] == gid), None)
+    if not d or d.get("until", 0) <= now or d.get("amount") != o.get("amount"):
+        return None   # its period is over, or the budget was changed since
+    if not (alerts.stage(o, now) or o["used"] >= 100):
+        return None
+    return d if d["do"] in BLOCKS or d.get("ask", "nothing") != "nothing" else None
+
+
+def view(store, o, now=None, n=10) -> dict | None:
+    """For the dashboard: a budget's latest call, whether it needs the person now, its last n calls with what was
+    sent, and its track record."""
+    r = record(store, o["pool"][5:], now)
+    if not r["last"]:
+        return None
+    a = active(store, o, now)
+    one = lambda d: {"at": d["at"], "machine": d.get("machine"), "do": d["do"], "short": SHORT.get(d["do"], d["do"]),
+                     "text": words(d), "p": d.get("p"), "ask": d.get("ask"), "sent": d.get("facts"),
+                     "choices": list(d.get("choices") or {}), "ended_pct": d.get("ended_pct")}
+    entries = [d for d in log(store, now) if d["budget"] == o["pool"][5:]]
+    return {"calls": r["calls"], "periods_ended": r["periods_ended"], "periods_within": r["periods_within"],
+            "cost_usd": r["cost_usd"], "last": words(r["last"]), "at": r["last"]["at"],
+            "now": {**one(a), "blocks": a["do"] in BLOCKS, "pause": "pause_project" in a.get("asks", {})} if a else None,
+            "history": [one(d) for d in reversed(entries[-n:])]}
+
+
+def unsent(store) -> list[dict]:
+    """Calls made here that the hub hasn't had yet."""
+    after = store.meta("pushed:decisions") or 0
+    return [{k: v for k, v in d.items() if k != "here"} for d in store.meta("decisions") or [] if d["at"] > after]
+
+
+def merge(store, machine, entries) -> int:
+    """On the hub: a machine's calls, checked, added to every machine's."""
+    ok = []
+    for d in entries if isinstance(entries, list) else []:
+        if not (isinstance(d, dict) and isinstance(d.get("at"), (int, float)) and isinstance(d.get("budget"), str)
+                and isinstance(d.get("do"), str) and isinstance(d.get("choices"), dict)
+                and isinstance(d.get("asks"), dict) and isinstance(d.get("since"), (int, float))
+                and isinstance(d.get("until"), (int, float)) and len(json.dumps(d)) <= 16384):
+            continue
+        ok.append({**{k: v for k, v in d.items() if k not in ("here", "ended_pct")}, "machine": machine})
+    have = store.meta("decisions") or []
+    seen = {(d.get("machine"), d["at"], d["budget"]) for d in have}
+    new = [d for d in ok if (d["machine"], d["at"], d["budget"]) not in seen]
+    if new:
+        store.set_meta("decisions", sorted(have + new, key=lambda d: d["at"])[-HUB_MAX:])
+    return len(new)

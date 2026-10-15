@@ -111,6 +111,10 @@ def snapshot(store, now=None, hours=24, on_server=False) -> dict:
         snap["projects"] = project_view(store, now)
     except Exception as e:   # nor on this
         snap["projects"] = {"error": str(e)[:200]}
+    # calls that need the person now: shown on every tab
+    snap["decide_now"] = [{"id": o["pool"][5:], "label": o["label"], "amount": o.get("amount"), "unit": o.get("unit"),
+                           "resets": o.get("resets"), **o["decision"]["now"]}
+                          for o in (snap["projects"].get("budgets") or []) if (o.get("decision") or {}).get("now")]
     from . import setup
     try:
         snap["setup"] = setup.steps(store, now, on_server=on_server)
@@ -129,11 +133,9 @@ def project_view(store, now, days=30, most=25) -> dict:
     budgets = [o for o in forecast.outlook(store, now, goals=True) if o["kind"] == "goal"]
     for o in budgets:
         o["stage"] = alerts.stage(o, now)
-        r = decide.record(store, o["pool"][5:], now) if o.get("mode") == "decide" else None
-        if r and r["last"]:   # the decision model's last call here, and its track record
-            o["decision"] = {"calls": r["calls"], "periods_ended": r["periods_ended"],
-                             "periods_within": r["periods_within"],
-                             "last": decide.words(r["last"]), "at": r["last"]["at"]}
+        v = decide.view(store, o, now) if o.get("mode") == "decide" else None
+        if v:   # the decision model's calls (from every machine, on a hub) and its track record
+            o["decision"] = v
     shown = rows[:most]
     _trend(store, shown, now, days)
     return {"days": days, "list": shown, "more": max(0, len(rows) - most), "budgets": budgets,

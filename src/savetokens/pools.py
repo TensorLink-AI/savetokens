@@ -149,11 +149,22 @@ def apply_budget(store, body) -> dict:
         return {"ok": True, "off": body["off"]}
     m = body.get("mode")
     if m is not None and m not in MODES:
-        raise ValueError("mode: off, watch, advise or guard")
-    if "id" in body:   # change an existing budget's mode
-        if m is None or not set_mode(store, str(body["id"]), m):
-            raise ValueError("no such budget, or no mode")
-        return {"ok": True, "id": body["id"], "mode": m}
+        raise ValueError("mode: " + ", ".join(MODES))
+    if "id" in body:   # change an existing budget: its mode, its amount, or both
+        gid, g = str(body["id"]), goals_(store)
+        if gid not in g or (m is None and body.get("usd") is None):
+            raise ValueError("no such budget, or nothing to change")
+        if body.get("usd") is not None:
+            try:
+                usd = float(body["usd"])
+            except (TypeError, ValueError):
+                raise ValueError("an amount in $") from None
+            if not 0 < usd < 1e7 or g[gid].get("unit", "usd") != "usd":
+                raise ValueError("an amount over $0, on a $ budget")
+            set_goal(store, gid, {**g[gid], "amount": usd})
+        if m is not None:
+            set_mode(store, gid, m)
+        return {"ok": True, "id": gid, "mode": m, "usd": body.get("usd")}
     try:
         usd = float(body.get("usd"))
     except (TypeError, ValueError):

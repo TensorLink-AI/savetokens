@@ -364,6 +364,8 @@ function limitCard(o, now) {
   else if (o.eta) main = `Runs out ${when(o.eta, now)}, ${span(o.resets - o.eta)} early`;
   else if (o.p50 != null) main = `Likely ${pct(o.p50)} · ${Math.round((o.p_hit || 0) * 100)}% risk`;
   else main = "Forecast on its way";
+  const dnow = (o.decision || {}).now;
+  if (dnow) main = `${dnow.short} · decision model, ${Math.round((dnow.p || 0) * 100)}% sure`;
   card.append(el("span", "main", main));
   if (goal && o.counts) card.append(el("span", "dim small", `Counts ${o.counts}`));
   if (goal && String(o.pool || "").startsWith("goal:")) {
@@ -378,12 +380,11 @@ function limitCard(o, now) {
     card.append(rm);
     card.append(modePicker(o));
     const d = o.decision;
-    if (d) {
-      card.append(el("span", "dim small", `Last call (${when(d.at, now)}): ${d.last}`));
-      if (d.periods_ended) card.append(el("span", "dim small", `Ended within budget in ${d.periods_within} of ${d.periods_ended} periods with calls`));
-    }
+    if (d && d.now) card.append(decideActions(o.pool.slice(5), o.label, o.amount, o.unit, d.now));
+    else if (d) card.append(el("span", "dim small", `Last call (${when(d.at, now)}): ${d.last}`));
   }
   if (o.stage) card._pop.append(kv("alert", o.stage.replace("_", "-")));
+  if (o.decision) decideHistory(card._pop, o.decision, now);
   if (o.eta) card._pop.append(kv("runs out", `${when(o.eta, now)}, ${span(o.resets - o.eta)} before ${api || goal ? "the period ends" : "it resets"}`));
   card._pop.append(kv(`likely at ${end}`, pct(o.p50)), kv("range", o.p10 != null ? `${pct(o.p10)}–${pct(o.p90)}` : "–"),
     kv("chance of running out", o.p_hit != null ? `${Math.round(o.p_hit * 100)}%` : "–"),
@@ -643,6 +644,46 @@ function drawProjects(s) {
   budgetChoices(s);
 }
 
+// the decide mode: the call that needs you now (on every tab), what you can do about it, and the history
+function decideActions(id, label, amount, unit, d) {
+  const row = el("span", "decide-acts");
+  const act = (text, title, fn) => { const b = el("button", "chip", text); b.type = "button"; b.title = title;
+    b.onclick = async () => { b.disabled = true; try { await fn(); await load(); } catch (e) { alert(`Couldn't do that (${e.message}).`); b.disabled = false; } };
+    row.append(b); };
+  if (unit !== "tokens") act("RAISE BUDGET", `Set a new amount for the ${label} budget`, async () => {
+    const v = prompt(`New amount for the ${label} budget, in $ (now ${usd(amount)}):`, String(Math.round(amount * 1.5)));
+    if (v == null) return;
+    await post("v1/budget", { id, usd: Number(v) });
+  });
+  if (d.pause) act("PAUSE PROJECT", "Set it to guard: new work on it stops once the budget is used up", async () => {
+    if (confirm(`Pause the ${label} project? Its budget goes to guard.`)) await post("v1/budget", { id, mode: "guard" });
+  });
+  if (d.blocks) act("LET WORK CONTINUE", "Switch it to advise: work goes on, and the agent is told to pace itself", async () => {
+    if (confirm(`Let work on the ${label} budget continue? It switches to advise: the decision model stops deciding for it.`)) await post("v1/budget", { id, mode: "advise" });
+  });
+  return row;
+}
+function drawDecide(s) {
+  const calls = s.decide_now || [];
+  $("decide").hidden = !calls.length;
+  const box = clear($("decide-list"));
+  for (const d of calls) {
+    const until = d.blocks && d.do === "wait_for_reset" && d.resets ? ` until it resets ${when(d.resets, s.now)}` : "";
+    box.append(el("p", null, `${d.label}: ${d.short}${until}. ${d.text}`), decideActions(d.id, d.label, d.amount, d.unit, d));
+  }
+}
+function decideHistory(pop, d, now) {
+  pop.append(kv("decision model", `${d.calls} call${d.calls === 1 ? "" : "s"}, $${(d.cost_usd || 0).toFixed(4)}`));
+  if (d.periods_ended) pop.append(kv("track record", `ended within budget in ${d.periods_within} of ${d.periods_ended} periods`));
+  for (const h of d.history || []) {
+    const sum = el("summary", null, `${when(h.at, now)} · ${h.short} (${Math.round((h.p || 0) * 100)}%)${h.machine ? ` · ${h.machine}` : ""}`
+      + (h.ended_pct != null ? ` · ended at ${Math.round(h.ended_pct)}%` : ""));
+    pop.append(el("details", "decide-call small", sum, el("span", "dim", h.text),
+      el("span", "faint", `Offered: ${h.choices.join(", ").replaceAll("_", " ")}`),
+      el("pre", "faint", JSON.stringify(h.sent, null, 1))));
+  }
+}
+
 // the budget agent: what it may do for each budget
 const MODES = {
   off: "Off: no alerts",
@@ -833,7 +874,7 @@ tick();
 
 // ── drawing and loading ──
 function draw(s) {
-  for (const f of [drawMeta, drawSetup, drawHeadline, drawSpend, drawLimits, drawProjects, drawChart, drawSessions, drawLists, drawTrack]) {
+  for (const f of [drawMeta, drawSetup, drawDecide, drawHeadline, drawSpend, drawLimits, drawProjects, drawChart, drawSessions, drawLists, drawTrack]) {
     try { f(s); } catch (e) { console.error(f.name, e); }
   }
 }

@@ -149,7 +149,11 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
 
   Decide needs a key on each machine that runs the work: `savetokens decide --key`. Each call is logged with what
   was sent and the answer, and once the period ends, how the budget ended: `savetokens decide` shows each
-  budget's calls and track record, and `savetokens decide --ask NAME` asks now and shows what's sent.
+  budget's calls and track record, and `savetokens decide --ask NAME` asks now and shows what's sent. On the
+  dashboard, a call that stops work or has a question for you shows as a banner on every tab, with buttons to
+  raise the budget, pause the project or let work continue; each budget's card shows its latest call, and its
+  details hold the last 10 calls (what was sent, what was offered) and the track record. Calls go to your hub,
+  so its dashboard shows every machine's.
 
   Guard stops new prompts; a turn already running finishes. Codex and Hermes have no hooks, so there it relies on
   the agent following the MCP brief, or on your loop calling `savetokens check`.

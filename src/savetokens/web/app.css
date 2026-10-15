@@ -361,3 +361,11 @@ button.chip:hover, .chip[aria-expanded="true"] { border-color: var(--cyan); }
 .limit .agent { display: flex; gap: 6px; align-items: center; }
 .limit .agent select.mode, .budget-form #b-mode { background: var(--panel); color: var(--cyan); border: 1px solid var(--line); font: 12px var(--mono); letter-spacing: .06em; padding: 2px 4px; }
 .budget-form #b-mode-note { flex-basis: 100%; }
+
+/* the decide mode: the call that needs you, its buttons, its history */
+#decide p { font-size: 16px; margin: 0 0 8px; }
+.decide-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 10px; }
+.decide-call { display: block; margin-top: 6px; }
+.decide-call summary { cursor: pointer; }
+.decide-call > span { display: block; margin-top: 4px; }
+.decide-call pre { white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto; margin: 4px 0 0; font-size: 11px; }
