@@ -145,3 +145,48 @@ def test_decide_is_a_mode_everywhere(store, capsys):
     from savetokens import server
     good = {"label": "x", "unit": "usd", "amount": 1, "period": "month", "start": 1, "scope": {}, "mode": "decide"}
     assert server._valid_goals({"x": good})
+
+
+def test_the_dashboard_shows_the_call_that_needs_you_and_your_answer_clears_it(store, monkeypatch):
+    from savetokens import dashboard
+    gid = pools.add_budget(store, 5, "month", providers=["chutes.ai"])
+    pools.set_mode(store, gid, "decide")
+    _spend(store, "chutes.ai", 6.0)
+    _model(monkeypatch, "wait_for_reset", ask="raise_budget")
+    decide.calls(store, {"tool": "hermes", "provider": "chutes.ai", "project": None, "billing": "api"})
+    snap = dashboard.snapshot(store)
+    [now] = snap["decide_now"]
+    assert now["id"] == gid and now["blocks"] and now["short"] == "Stopped: waits for the reset" and not now["pause"]
+    [b] = snap["projects"]["budgets"]
+    assert b["decision"]["history"][0]["sent"]["used_pct"] == 120.0 and "wait_for_reset" in b["decision"]["history"][0]["choices"]
+    pools.apply_budget(store, {"id": gid, "usd": 20})                           # RAISE BUDGET
+    assert pools.goals_(store)[gid]["amount"] == 20 and not dashboard.snapshot(store)["decide_now"]
+    try:
+        pools.apply_budget(store, {"id": gid, "usd": -1})
+        raise AssertionError("a bad amount was taken")
+    except ValueError:
+        pass
+
+
+def test_calls_go_to_the_hub_once_each(running, store, monkeypatch):
+    users, token, url = running
+    import json as _json
+    import urllib.request
+    gid = pools.add_budget(store, 5, "month", providers=["chutes.ai"])
+    pools.set_mode(store, gid, "decide")
+    _spend(store, "chutes.ai", 6.0)
+    _model(monkeypatch, "stop_now")
+    decide.calls(store, {"tool": "hermes", "provider": "chutes.ai", "project": "p1", "billing": "api"})
+    calls = decide.unsent(store)
+    assert len(calls) == 1 and "here" not in calls[0]
+
+    def post(body):
+        req = urllib.request.Request(url + "/v1/settings", _json.dumps(body).encode(),
+                                     {"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return _json.load(r)
+    assert post({"machine": "laptop", "decisions": calls + [{"at": "x"}]})["added"] == 1   # a bad one is dropped
+    assert post({"machine": "laptop", "decisions": calls})["added"] == 0                 # and none twice
+    with users.store("chris") as s:
+        [d] = s.meta("decisions")
+        assert d["machine"] == "laptop" and d["do"] == "stop_now"

@@ -264,6 +264,12 @@ def make_handler(users: Users, dirty: set, lock: threading.Lock):
                 return self._detected(user, body)
             if "names" in body:
                 return self._names(user, body["names"])
+            if "decisions" in body:
+                from . import decide
+                machine = body.get("machine") if isinstance(body.get("machine"), str) else None
+                with users.store(user) as s:
+                    n = decide.merge(s, (machine or "")[:64] or None, body["decisions"])
+                return self._send(200, {"ok": True, "added": n})
             if "goals" in body:
                 return self._goals(user, body)
             budgets, plans, at = body["budgets"], body.get("plans") or {}, float(body["at"])

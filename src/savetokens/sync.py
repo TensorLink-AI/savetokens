@@ -134,6 +134,15 @@ def push(store: Store, cfg) -> int:
         except urllib.error.HTTPError as e:   # a hub from before names: they stay here
             if e.code != 400:
                 raise
+    from . import decide
+    calls = decide.unsent(store)
+    if calls:
+        try:   # the decision model's calls, so the hub's dashboard shows them
+            _call(cfg, "/v1/settings", {"machine": machine, "decisions": calls[:200]})
+            store.set_meta("pushed:decisions", calls[:200][-1]["at"])
+        except urllib.error.HTTPError as e:   # a hub from before decide: they stay here
+            if e.code != 400:
+                raise
     from . import setup
     found = setup.detected()   # plan names and list prices, so the server's setup list can name them
     if found != store.meta("pushed:detected"):
