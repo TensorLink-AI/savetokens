@@ -6,6 +6,9 @@ savetokens tells you when, at this pace, you'd run out, and what to cut before y
 change how your tools run unless you ask it to (a budget set to guard stops new work once it's used up):
 you decide. Each week it shows how you did against your plan.
 
+Forecasts by [Ephemeris](https://ephemeris.cascade.industries) (zero-shot time-series models). Calls on budgets
+set to decide by [Decision Models](https://decisionmodels.io).
+
 savetokens watches your Claude Code and Codex limits (each plan's 5-hour and weekly
 limits, or a dollar budget when you're on an API key) and what Hermes Agent spends on
 any provider's API (pay as you go, against a dollar budget), forecasts your usage, and
