@@ -373,7 +373,7 @@ def view(store, o, now=None, n=10) -> dict | None:
     one = lambda d: {"at": d["at"], "machine": d.get("machine"), "do": d["do"], "short": SHORT.get(d["do"], d["do"]),
                      "text": words(d), "p": d.get("p"), "ask": d.get("ask"), "sent": d.get("facts"),
                      "choices": list(d.get("choices") or {}), "ended_pct": d.get("ended_pct"),
-                     "next": runner_up(d), "model_version": d.get("model_version")}
+                     "next": runner_up(d), "model_version": d.get("model_version"), "would": would(d)}
     entries = [d for d in log(store, now) if d["budget"] == o["pool"][5:]]
     return {"calls": r["calls"], "periods_ended": r["periods_ended"], "periods_within": r["periods_within"],
             "cost_usd": r["cost_usd"], "last": words(r["last"]), "at": r["last"]["at"],
@@ -403,6 +403,25 @@ def merge(store, machine, entries) -> int:
     if new:
         store.set_meta("decisions", sorted(have + new, key=lambda d: d["at"])[-HUB_MAX:])
     return len(new)
+
+
+def would(d) -> str | None:
+    """Each offered choice with where the budget would likely end the period, as sent to the model."""
+    f = d.get("facts") or {}
+    ifs, room = f.get("if_chosen"), (f.get("room_elsewhere") or [{}])[0]
+    if ifs is None:
+        return None   # a call from before the what-ifs were sent
+    out = []
+    for k in d.get("choices") or {}:
+        name = {"cheaper_model": f"cheaper model{' (' + f['cheaper_model']['model'] + ')' if f.get('cheaper_model') else ''}",
+                "move": f"move{' to ' + room['name'] if room.get('name') else ''}"}.get(k, k.replace("_", " "))
+        r = ifs.get(k)
+        if not r:
+            out.append(f"{name}: not measured")
+            continue
+        end = f"{r['p50']}%" + (f" ({r['p10']}–{r['p90']}%)" if r["p90"] != r["p10"] else "")
+        out.append(f"{name} → {end}" + (f", {room.get('name', 'the other')} {r['there_pct']}%" if "there_pct" in r else ""))
+    return " · ".join(out) or None
 
 
 def runner_up(d) -> dict | None:

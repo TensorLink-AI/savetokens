@@ -670,7 +670,8 @@ function drawDecide(s) {
   for (const d of calls) {
     const until = d.blocks && d.do === "wait_for_reset" && d.resets ? ` until it resets ${when(d.resets, s.now)}` : "";
     const next = d.next ? ` Next most likely: ${d.next.short} (${Math.round(d.next.p * 100)}%).` : "";
-    box.append(el("p", null, `${d.label}: ${d.short}${until}. ${d.text}${next}`), decideActions(d.id, d.label, d.amount, d.unit, d));
+    box.append(el("p", null, `${d.label}: ${d.short}${until}. ${d.text}${next}`),
+      ...(d.would ? [el("p", "faint small", `Likely end of the period, by choice: ${d.would}`)] : []), decideActions(d.id, d.label, d.amount, d.unit, d));
   }
 }
 function decideHistory(pop, d, now) {
@@ -681,7 +682,7 @@ function decideHistory(pop, d, now) {
       + (h.ended_pct != null ? ` · ended at ${Math.round(h.ended_pct)}%` : ""));
     pop.append(el("details", "decide-call small", sum, el("span", "dim", h.text),
       h.next ? el("span", "faint", `Next most likely: ${h.next.short} (${Math.round(h.next.p * 100)}%)${h.model_version ? ` · ${h.model_version}` : ""}`) : null,
-      el("span", "faint", `Offered: ${h.choices.join(", ").replaceAll("_", " ")}`),
+      el("span", "faint", h.would ? `Likely end, by choice: ${h.would}` : `Offered: ${h.choices.join(", ").replaceAll("_", " ")}`),
       el("pre", "faint", JSON.stringify(h.sent, null, 1))));
   }
 }

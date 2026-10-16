@@ -219,3 +219,12 @@ def test_each_choice_carries_its_measured_what_if_and_the_track_record_goes_back
                                                                                          "carry_on": 0.3}})["p"] == 0.3
     f2 = decide.facts(store, o, pools.goals_(store)[gid], here, now)
     assert f2["track_record"]["last_calls"][0]["call"] == "cheaper_model"
+
+
+def test_the_dashboard_line_gives_each_choice_its_likely_end():
+    d = {"choices": {"carry_on": "", "finish_then_stop": "", "move": "", "stop_now": ""},
+         "facts": {"room_elsewhere": [{"name": "B"}],
+                   "if_chosen": {"carry_on": {"p10": 44, "p50": 44, "p90": 46}, "stop_now": {"p10": 43, "p50": 43, "p90": 43},
+                                 "move": {"p10": 43, "p50": 43, "p90": 43, "there_pct": 17}}}}
+    assert decide.would(d) == "carry on → 44% (44–46%) · finish then stop: not measured · move to B → 43%, B 17% · stop now → 43%"
+    assert decide.would({"choices": {"stop_now": ""}, "facts": {}}) is None   # a call from before the what-ifs
