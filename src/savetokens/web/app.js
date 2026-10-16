@@ -381,7 +381,9 @@ function limitCard(o, now) {
     card.append(modePicker(o));
     const d = o.decision;
     if (d && d.now) card.append(decideActions(o.pool.slice(5), o.label, o.amount, o.unit, d.now));
-    else if (d) card.append(el("span", "dim small", `Last call (${when(d.at, now)}): ${d.last}`));
+    else if (d) card.append(el("span", "dim small", `Decision model's last call (${when(d.at, now)}): ${d.last}`),
+      ...(d.history[0] && d.history[0].would ? [el("span", "faint small", `Likely end, by choice: ${d.history[0].would}`)] : []));
+    else if (o.mode === "decide") card.append(el("span", "dim small", "Decision model: no call yet. It's asked once this budget is at risk or used up"));
   }
   if (o.stage) card._pop.append(kv("alert", o.stage.replace("_", "-")));
   if (o.decision) decideHistory(card._pop, o.decision, now);
