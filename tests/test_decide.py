@@ -228,3 +228,24 @@ def test_the_dashboard_line_gives_each_choice_its_likely_end():
                                  "move": {"p10": 43, "p50": 43, "p90": 43, "there_pct": 17}}}}
     assert decide.would(d) == "carry on → 44% (44–46%) · finish then stop: not measured · move to B → 43%, B 17% · stop now → 43%"
     assert decide.would({"choices": {"stop_now": ""}, "facts": {}}) is None   # a call from before the what-ifs
+
+
+def test_the_person_chooses_what_the_model_may_pick(store, monkeypatch, capsys):
+    gid = pools.add_budget(store, 5, "month", providers=["chutes.ai"])
+    pools.set_mode(store, gid, "decide")
+    _spend(store, "chutes.ai", 6.0)
+    here = {"tool": "hermes", "provider": "chutes.ai", "project": None, "billing": "api"}
+    assert pools.apply_budget(store, {"id": gid, "allow": ["stop_now", "wait_for_reset"]})["ok"]
+    sent = []
+    _model(monkeypatch, "wait_for_reset", sent=sent)
+    [(_, _, _, d)] = decide.calls(store, here)
+    assert set(sent[0]["questions"]["do"]["criteria"]) == {"stop_now", "wait_for_reset"}
+    cli.main(["budget", "--name", gid, "--allow", "stop_now"])                    # one: it's the call, no model asked
+    [(_, _, _, d)] = decide.calls(store, here)                                  # a new rule asks again
+    assert d["do"] == "stop_now" and d.get("only_choice") and len(sent) == 1
+    assert "the only choice this budget allows" in decide.words(d)
+    cli.main(["budget", "--name", gid, "--allow", "all"])
+    assert "allow" not in pools.goals_(store)[gid] and len(pools.allowed(pools.goals_(store)[gid])) == 6
+    import pytest
+    with pytest.raises(ValueError):
+        pools.apply_budget(store, {"id": gid, "allow": []})

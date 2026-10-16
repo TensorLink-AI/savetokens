@@ -233,7 +233,8 @@ def choices(f, g) -> tuple[dict, dict]:
     if g.get("period") in pools.PERIODS:
         do["wait_for_reset"] = DO["wait_for_reset"].format(span=alerts.span(f["hours_to_reset"] * 3600))
     do["stop_now"] = DO["stop_now"]
-    do = {k: _with(v, (f.get("if_chosen") or {}).get(k)) for k, v in do.items()}
+    ok = pools.allowed(g)   # the person's rule: only these may be picked
+    do = {k: _with(v, (f.get("if_chosen") or {}).get(k)) for k, v in do.items() if k in ok}
     ask = {"nothing": ASK["nothing"], "raise_budget": ASK["raise_budget"]}
     if (g.get("scope") or {}).get("projects"):
         ask["pause_project"] = ASK["pause_project"]
@@ -244,6 +245,11 @@ def ask_model(store, gid, o, g, here, now, key):
     """One call: the facts and choices out, the model's answer back, logged. None if it can't be reached."""
     f = facts(store, o, g, here, now)
     do, ask = choices(f, g)
+    if not do:   # nothing the person allows applies now: guard's rule holds
+        return {"at": now, "budget": gid, "error": "nothing_allowed"}
+    if len(do) == 1:   # one allowed choice: it's the call, no model needed
+        return _log(store, {**_entry(gid, g, here, f, do, ask, now), "do": next(iter(do)), "p": 1.0,
+                            "ask": "nothing", "only_choice": True, "cost_usd": 0.0})
     body = {"model": MODEL, "state": f, "questions": {
         "do": {"type": "choice", "criteria": do,
                "instructions": "A spending budget for AI coding agents is running low. From these measured facts,"
@@ -259,16 +265,22 @@ def ask_model(store, gid, o, g, here, now, key):
         a, q = r["answers"]["do"], r["answers"]["ask"]
     except Exception as e:   # unreachable, slow, out of credit, an answer we can't read
         return {"at": now, "budget": gid, "error": type(e).__name__}
-    since, until = pools.period(g, now)
     tokens = (r.get("usage") or {}).get("input_tokens") or 0
-    d = {"at": now, "budget": gid, "label": g["label"], "since": since, "until": until, "amount": g.get("amount"),
-         "unit": g.get("unit", "usd"), "here": here, "facts": f, "choices": do, "asks": ask,
-         "do": a["choice"], "p": a.get("confidence"), "probabilities": a.get("probabilities"),
-         "ask": q["choice"], "ask_p": q.get("confidence"), "id": r.get("id"), "tokens": tokens,
-         "model": r.get("model"), "model_version": r.get("model_version"),
-         "cost_usd": tokens * USD_PER_M / 1e6}
-    log = store.meta("decisions") or []
-    store.set_meta("decisions", (log + [d])[-LOG_MAX:])
+    return _log(store, {**_entry(gid, g, here, f, do, ask, now),
+                        "do": a["choice"], "p": a.get("confidence"), "probabilities": a.get("probabilities"),
+                        "ask": q["choice"], "ask_p": q.get("confidence"), "id": r.get("id"), "tokens": tokens,
+                        "model": r.get("model"), "model_version": r.get("model_version"),
+                        "cost_usd": tokens * USD_PER_M / 1e6})
+
+
+def _entry(gid, g, here, f, do, ask, now) -> dict:
+    since, until = pools.period(g, now)
+    return {"at": now, "budget": gid, "label": g["label"], "since": since, "until": until, "amount": g.get("amount"),
+            "unit": g.get("unit", "usd"), "here": here, "facts": f, "choices": do, "asks": ask}
+
+
+def _log(store, d) -> dict:
+    store.set_meta("decisions", ((store.meta("decisions") or []) + [d])[-LOG_MAX:])
     return d
 
 
@@ -280,7 +292,7 @@ def decision(store, gid, o, g, here, now=None, fresh=False):
     if not key:
         return None
     cache = store.meta("decision_cache") or {}
-    ck = f"{gid}|{g.get('amount')}|{here.get('tool')}|{here.get('provider')}|{here.get('billing')}"   # a raise asks again
+    ck = f"{gid}|{g.get('amount')}|{','.join(pools.allowed(g))}|{here.get('tool')}|{here.get('provider')}|{here.get('billing')}"   # a raise asks again
     hit = cache.get(ck)
     if hit and not fresh and now - hit["at"] < (RETRY_SECONDS if "error" in hit else CACHE_SECONDS):
         return None if "error" in hit else hit
@@ -309,7 +321,9 @@ def calls(store, here, now=None) -> list[tuple[str, dict, dict, dict | None]]:
 
 def words(d) -> str:
     """The call in a line: what, how sure, and the question for the person."""
-    text = f"{d['choices'].get(d['do'], d['do'])} (the decision model's call, {100 * (d.get('p') or 0):.0f}% sure)."
+    who = ("the only choice this budget allows" if d.get("only_choice")
+           else f"the decision model's call, {100 * (d.get('p') or 0):.0f}% sure")
+    text = f"{d['choices'].get(d['do'], d['do'])} ({who})."
     if d.get("ask") and d["ask"] != "nothing":
         text += f" {d['asks'][d['ask']]}."
     return text

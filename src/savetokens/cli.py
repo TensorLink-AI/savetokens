@@ -941,6 +941,20 @@ def cmd_budget(args):
             _team_call("/v1/team", {"goals": goals})
             _out(args, {"removed": gid, "team": True}, f"Removed the team's {gid} budget.")
             return OK
+        if args.allow and args.usd is None and args.tokens is None:   # the choices decide may pick
+            gid = pools.find_goal(s, args.name or "")
+            allow = [] if args.allow == "all" else [c.strip() for c in args.allow.split(",")]
+            if not args.name or not gid:
+                raise Fail(f"no budget {args.name!r}" if args.name else "--allow needs --name: which budget",
+                           "savetokens budget")
+            if allow and not all(c in pools.CHOICES for c in allow):
+                raise Fail("--allow: all, or one or more of " + ",".join(pools.CHOICES))
+            pools.set_allow(s, gid, allow or None)
+            if not args.mode:   # with --mode too, that prints the result
+                ok = pools.allowed(pools.goals_(s)[gid])
+                _out(args, {"id": gid, "allow": ok}, f"{pools.goals_(s)[gid]['label']} budget: the decision model"
+                     f" may pick {', '.join(c.replace('_', ' ') for c in ok)}.")
+                return OK
         if args.mode and args.usd is None and args.tokens is None:   # change an existing budget's mode
             gid = pools.find_goal(s, args.name or "")
             if not args.name or not gid:
@@ -1481,7 +1495,9 @@ def main(argv=None):
     s.add_argument("--team", action="store_true", help="the team's budget, on the hub (owner or admins)")
     s.add_argument("--mode", choices=list(MODE_HELP), help="what the budget agent does for it: "
                    + "; ".join(f"{k}: {v}" for k, v in MODE_HELP.items()))
-    s.add_argument("--name", metavar="NAME", help="with --mode alone: an existing budget (as `savetokens budget` lists it)")
+    s.add_argument("--name", metavar="NAME", help="with --mode or --allow alone: an existing budget (as `savetokens budget` lists it)")
+    s.add_argument("--allow", metavar="CHOICES", help="in decide, the choices the decision model may pick, e.g."
+                   " carry_on,cheaper_model,stop_now; all for every one")
     s = cmd("decide", cmd_decide, "budgets in decide: the decision model's calls and each one's track record")
     s.add_argument("--key", action="store_true", help="save your decisionmodels.io API key (asked for, hidden)")
     s.add_argument("--ask", metavar="NAME", help="ask the model now for this budget, and show what was sent")
