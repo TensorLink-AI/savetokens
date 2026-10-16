@@ -156,7 +156,10 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   can't be measured says so. The budget's past calls and how their periods ended go with it too. The model is
   pinned (s1-pro-3), so a track record is one model's.
 
-  Decide needs a key on each machine that runs the work: `savetokens decide --key`. Each call is logged with what
+  Decide needs a key on each machine that runs the work: `savetokens decide --key`. You choose which options the
+  model may pick for each budget, under MAY PICK on its dashboard card or with
+  `savetokens budget --name NAME --allow stop_now,wait_for_reset` (`--allow all` for every one). With one allowed,
+  that's the call, without asking the model. Each call is logged with what
   was sent and the answer, and once the period ends, how the budget ended: `savetokens decide` shows each
   budget's calls and track record, and `savetokens decide --ask NAME` asks now and shows what's sent. On the
   dashboard, a call that stops work or has a question for you shows as a banner on every tab, with buttons to
@@ -449,7 +452,7 @@ Every failure with `--json` also says `"fix"`: the command to run.
 | | |
 |---|---|
 | `install [--yes] [--server URL --code CODE]` / `uninstall` | set up this machine (and join a hub) / remove everything it added |
-| `budget [--project NAME \| --task NAME] [--provider P] [--tool T] [--count api\|all] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE) [--mode off\|watch\|advise\|guard\|decide]` / `budget` / `budget --name NAME --mode M` / `budget --off NAME` | a budget, overall or for a project, task, provider or tool, API spend or all usage / every budget with its forecast / its budget-agent mode / remove one |
+| `budget [--project NAME \| --task NAME] [--provider P] [--tool T] [--count api\|all] (--usd X \| --tokens N) (--per day\|week\|month \| --by DATE) [--mode off\|watch\|advise\|guard\|decide]` / `budget` / `budget --name NAME --mode M` / `budget --name NAME --allow CHOICES` / `budget --off NAME` | a budget, overall or for a project, task, provider or tool, API spend or all usage / every budget with its forecast / its budget-agent mode / the choices decide may pick / remove one |
 | `projects [--days N] [--share-names on\|off]` / `project link [NAME]` | every project's tokens, API value and API spend by tool, provider and plan or API (every machine, on a hub) / make this folder one project everywhere |
 | `task start NAME` / `task done` / `task` / `tasks [--project NAME]` | declare a task, finish it, see the current one / every task's cost and the measured estimate |
 | `team [--people on\|off]` / `project share` / `budget --team ...` | your team's totals, projects and budgets / name a project for the team / a team budget |

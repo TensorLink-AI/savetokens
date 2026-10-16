@@ -150,9 +150,12 @@ def apply_budget(store, body) -> dict:
     m = body.get("mode")
     if m is not None and m not in MODES:
         raise ValueError("mode: " + ", ".join(MODES))
-    if "id" in body:   # change an existing budget: its mode, its amount, or both
+    a = body.get("allow")
+    if a is not None and not (isinstance(a, list) and a and all(c in CHOICES for c in a)):
+        raise ValueError("allow: one or more of " + ", ".join(CHOICES))
+    if "id" in body:   # change an existing budget: its mode, its amount, the choices decide may pick
         gid, g = str(body["id"]), goals_(store)
-        if gid not in g or (m is None and body.get("usd") is None):
+        if gid not in g or (m is None and body.get("usd") is None and a is None):
             raise ValueError("no such budget, or nothing to change")
         if body.get("usd") is not None:
             try:
@@ -164,7 +167,9 @@ def apply_budget(store, body) -> dict:
             set_goal(store, gid, {**g[gid], "amount": usd})
         if m is not None:
             set_mode(store, gid, m)
-        return {"ok": True, "id": gid, "mode": m, "usd": body.get("usd")}
+        if a is not None:
+            set_allow(store, gid, a)
+        return {"ok": True, "id": gid, "mode": m, "usd": body.get("usd"), "allow": a}
     try:
         usd = float(body.get("usd"))
     except (TypeError, ValueError):
@@ -207,6 +212,26 @@ MODES = {"off": "no alerts", "watch": "alerts you as it runs out (the default)",
          "decide": "a decision model picks what to do as it runs out (carry on, finish then stop, a cheaper model,"
                    " another plan, wait for the reset, stop now) and savetokens acts on it; guard's rule if it"
                    " can't be reached"}
+CHOICES = ("carry_on", "finish_then_stop", "cheaper_model", "move", "wait_for_reset", "stop_now")   # decide's
+
+
+def allowed(goal) -> list[str]:
+    """The choices the person lets the decision model pick for this budget (all, unless they've said)."""
+    a = goal.get("allow")
+    return [c for c in CHOICES if c in a] if isinstance(a, list) else list(CHOICES)
+
+
+def set_allow(store, gid, allow) -> bool:
+    g = goals_(store)
+    if gid not in g:
+        return False
+    if allow is None or set(allow) >= set(CHOICES):
+        g[gid].pop("allow", None)
+    else:
+        g[gid]["allow"] = [c for c in CHOICES if c in allow]
+    store.set_meta("goals", g)
+    store.set_meta("goals_at", time.time())
+    return True
 
 
 def mode(goal) -> str:

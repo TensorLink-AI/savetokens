@@ -251,7 +251,7 @@ def _pool_outlook(store, p, now, source, cut, cut_hours):
         per = {"day": "a day", "week": "a week", "month": "a month"}.get(g.get("period"), "")
         o = {**base, "name": "goal", "label": f"{g['label']} budget", "short": g["label"][:12], "used": used,
              "counts": pools_.describe(g), "count": pools_.counts(g), "scope": g.get("scope") or {},
-             "mode": pools_.mode(g),
+             "mode": pools_.mode(g), "allow": pools_.allowed(g),
              "read_at": now, "resets": until, "unit": p.unit, "spent": spent, "amount": amount,
              "period": g.get("period"), "per": per or f"by {datetime.fromtimestamp(until):%a %-d %b}",
              "p_hit": 1.0 if used >= 100 else None, "eta": now if used >= 100 else None}

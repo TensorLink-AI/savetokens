@@ -379,6 +379,7 @@ function limitCard(o, now) {
     };
     card.append(rm);
     card.append(modePicker(o));
+    if (o.mode === "decide") card.append(choicePicker(o));
     const d = o.decision;
     if (d && d.now) card.append(decideActions(o.pool.slice(5), o.label, o.amount, o.unit, d.now));
     else if (d) card.append(el("span", "dim small", `Decision model's last call (${when(d.at, now)}): ${d.last}`),
@@ -713,6 +714,28 @@ function modePicker(o) {
     catch (e) { alert(`Couldn't change it (${e.message}).`); sel.value = o.mode || "watch"; sel.disabled = false; }
   };
   return el("span", "agent small", el("span", "dim", "AGENT "), sel, info(MODES[o.mode || "watch"]));
+}
+
+// the person's rule for decide: which choices the decision model may pick for this budget
+const CHOICES = { carry_on: "carry on", finish_then_stop: "finish the task, then stop", cheaper_model: "a cheaper model",
+  move: "move the work to another budget", wait_for_reset: "wait for the reset", stop_now: "stop now" };
+function choicePicker(o) {
+  const allow = o.allow || Object.keys(CHOICES);
+  const box = el("details", "allow small", el("summary", "dim", `MAY PICK ${allow.length} of ${Object.keys(CHOICES).length}`));
+  for (const [k, t] of Object.entries(CHOICES)) {
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = allow.includes(k);
+    cb.onchange = async () => {
+      const next = Object.keys(CHOICES).filter((c) => (c === k ? cb.checked : allow.includes(c)));
+      if (!next.length) { cb.checked = true; alert("Leave at least one choice."); return; }
+      cb.disabled = true;
+      try { await post("v1/budget", { id: o.pool.slice(5), allow: next }); await load(); }
+      catch (e) { alert(`Couldn't change it (${e.message}).`); cb.checked = !cb.checked; cb.disabled = false; }
+    };
+    box.append(el("label", null, cb, ` ${t}`));
+  }
+  box.append(el("span", "faint", "Only ticked choices are offered. With one, it's the call without asking the model."
+    + " With none that apply, guard's rule holds."));
+  return box;
 }
 
 // what a new budget can cover: everything paid as you go, a provider, or a project
