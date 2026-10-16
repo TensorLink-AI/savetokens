@@ -43,6 +43,27 @@ def test_switching_accounts_keeps_demand(store):
     assert meter.active_account(store) == "a2"
 
 
+def test_another_accounts_window_under_this_accounts_label_isnt_usage(store):
+    a1, a2 = T0 + 5 * 86400, T0 + 5 * 86400 - 6 * H          # a1's new week; a2's started 6 hours earlier
+    store.add_meter("claude-code", "a1", {"seven_day": (0.0, a1)}, ts=T0 - 4 * H)
+    for i, pct in enumerate([24.0, 21.0, 23.0]):               # a2's meter, read under a1's label
+        store.add_meter("claude-code", "a1", {"seven_day": (pct, a2)}, ts=T0 - 4 * H + 300 * (i + 1))
+        store.add_meter("claude-code", "a1", {"seven_day": (1.0, a1)}, ts=T0 - 4 * H + 300 * (i + 1) + 60)
+    hist, _ = meter.demand(store, T0)
+    assert abs(sum(v for _, v in hist) - 1.0) < 1e-9          # a1 used 1%, not 24% in an hour
+    assert meter.latest(store, "seven_day", T0, account="a1")["pct"] == 1.0
+    assert meter.latest(store, "seven_day", T0)["pct"] == 1.0
+
+
+def test_each_claude_config_folder_reads_its_own_account(store, monkeypatch, tmp_path):
+    from savetokens import capture, hooks
+    monkeypatch.setattr(capture, "account", lambda: {"account": "acct-" + __import__("os").environ["CLAUDE_CONFIG_DIR"][-1]})
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "a"))
+    assert hooks._account(store) == "acct-a"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "b"))   # within the minute: not a's cached account
+    assert hooks._account(store) == "acct-b"
+
+
 def test_five_hour_ratio_from_paired_readings(store):
     week_of_readings(store, T0 - 20 * H, 20, per_hour=1.0, resets=T0 + 86400, five_ratio=3.0)
     assert abs(meter.five_hour_ratio(store) - 3.0) < 0.6

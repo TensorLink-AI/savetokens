@@ -11,6 +11,7 @@ budget agent  per budget (`savetokens budget --mode`): advise tells the agent wh
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 
@@ -21,11 +22,15 @@ SHORT = {"five_hour": "5h", "seven_day": "wk", "budget": "$"}
 
 
 def _account(store):
-    """The signed-in account, cached for a minute (the statusline runs often)."""
-    cached = store.meta("account_cache") or {}
+    """The signed-in account, cached for a minute (the statusline runs often), per Claude config folder: sessions
+    on two accounts at once each read their own."""
+    where = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+    cache = store.meta("account_cache") or {}
+    cached = cache.get(where) if isinstance(cache.get(where), dict) else {}
     if time.time() - cached.get("at", 0) > 60:
         cached = {"at": time.time(), **capture.account()}
-        store.set_meta("account_cache", cached)
+        store.set_meta("account_cache", {k: v for k, v in cache.items() if isinstance(v, dict)
+                                         and time.time() - v.get("at", 0) < 86400} | {where: cached})
     return cached.get("account")
 
 
