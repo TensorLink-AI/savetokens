@@ -249,3 +249,10 @@ def test_the_person_chooses_what_the_model_may_pick(store, monkeypatch, capsys):
     import pytest
     with pytest.raises(ValueError):
         pools.apply_budget(store, {"id": gid, "allow": []})
+
+
+def test_the_new_budget_form_offers_every_mode():
+    from pathlib import Path
+    html = (Path(decide.__file__).parent / "web" / "index.html").read_text()
+    form = html[html.index('id="b-mode"'):html.index("</select>", html.index('id="b-mode"'))]
+    assert all(f'value="{m}"' in form for m in pools.MODES)
