@@ -150,6 +150,12 @@ More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-pla
   savetokens check --tool hermes --provider chutes   # in a loop: exit 4 once a guarded budget is used up
   ```
 
+  Each choice goes to the model with where it would likely leave the budget at the period's end, worked out
+  from the forecast with that choice applied (repriced at the cheaper model's measured rate, one more task the
+  size of this project's finished ones, this work's spend added to the other budget); a choice whose effect
+  can't be measured says so. The budget's past calls and how their periods ended go with it too. The model is
+  pinned (s1-pro-3), so a track record is one model's.
+
   Decide needs a key on each machine that runs the work: `savetokens decide --key`. Each call is logged with what
   was sent and the answer, and once the period ends, how the budget ended: `savetokens decide` shows each
   budget's calls and track record, and `savetokens decide --ask NAME` asks now and shows what's sent. On the

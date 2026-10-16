@@ -13,7 +13,9 @@ provider go: no prompts, code, project names or keys.
   stop_now          stop new work now (blocked, as guard does)
 
 Each call is logged with what was sent and the answer. Once the budget's period ends, how it ended is added,
-so each budget builds a track record. If the model can't be reached, the budget behaves as guard.
+so each budget builds a track record, which goes back to the model with the next call. Each choice carries
+what it would likely lead to, worked out from the forecast and your measured usage (a what-if, not a guess);
+where that can't be measured, the choice says so. If the model can't be reached, the budget behaves as guard.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ from . import alerts, pools
 from .store import home
 
 API = "https://api.decisionmodels.io/v1/systemone"
-MODEL = "s1-pro"                 # takes both questions in one request
+MODEL = "s1-pro-3"               # pinned, so a budget's track record is one model's; takes both questions at once
 USD_PER_M = 0.084                # s1-pro, EU tier, per million input tokens (output is free), at launch
 KEY_NAMES = ("DECISIONMODELS_API_KEY",)
 CACHE_SECONDS = 600              # a budget's call holds this long, so prompts don't each wait on it
@@ -130,6 +132,10 @@ def facts(store, o, g, here, now) -> dict:
             f["cheaper_model"] = {"model": cheap[0], "usd_per_m_tokens": round(cheap[1], 3),
                                   "tokens_measured": int(cheap[2])}
     f["room_elsewhere"] = _room(store, o, here, now)
+    f["if_chosen"] = outcomes(store, o, g, f, here, now)
+    f["track_record"] = _past(store, o["pool"][5:])
+    for r in f["room_elsewhere"]:
+        r.pop("_usd", None)
     return f
 
 
@@ -145,8 +151,69 @@ def _room(store, o, here, now):
         if x["kind"] == "subscription" and here.get("billing") == "plan" and x["harness"] == here.get("tool"):
             continue   # the plan the work is on
         out.append({"name": x["label"], "used_pct": round(x["used"]),
-                    **({"likely_at_reset_pct": round(x["p50"])} if x.get("p50") is not None else {})})
+                    **({"likely_at_reset_pct": round(x["p50"])} if x.get("p50") is not None else {}),
+                    **({"_usd": x["amount"]} if x["kind"] == "goal" and x["unit"] == "usd" else
+                       {"_usd": x["budget_usd"]} if x["kind"] == "api" else {})})
     return sorted(out, key=lambda r: r.get("likely_at_reset_pct", r["used_pct"]))[:5]
+
+
+def _range(lo, mid, hi):
+    return {"p10": round(lo), "p50": round(mid), "p90": round(hi)}
+
+
+def outcomes(store, o, g, f, here, now) -> dict:
+    """For each choice, where this budget would likely end the period (% of it), from the forecast with the
+    choice applied: a what-if from measured usage. A choice whose effect can't be measured has none."""
+    from . import forecast, tasks
+    used, out = o["used"], {}
+    if o.get("p50") is not None:
+        out["carry_on"] = _range(o["p10"], o["p50"], o["p90"])
+    out["stop_now"] = out["wait_for_reset"] = _range(used, used, used)   # nothing more counts this period
+    usd = o["unit"] == "usd" and o["amount"] > 0
+    pid = here.get("project") or next(iter((g.get("scope") or {}).get("projects") or []), None)
+    t = tasks.estimate(store, pid) if pid and usd else {}
+    if t.get("enough"):   # one more task, the size this project's finished tasks measured
+        out["finish_then_stop"] = {**_range(used + 100 * t["median_usd"] / o["amount"],
+                                            used + 100 * t["median_usd"] / o["amount"],
+                                            used + 100 * t["p90_usd"] / o["amount"]), "from_tasks": t["n"]}
+    if "cheaper_model" in f and o.get("p50") is not None:
+        ms = {m: (rate, day) for m, rate, _, day in _models(store, g, here.get("provider"), now)}
+        cur, cheap = f["model_now"]["model"], f["cheaper_model"]["model"]
+        day = sum(d for _, d in ms.values())
+        if day > 0 and cur in ms and cheap in ms:
+            share = ms[cur][1] / day   # the current model's part of the last day's spend, repriced
+            cut = 1 - share + share * ms[cheap][0] / ms[cur][0]
+            w = next((x for x in forecast.outlook(store, now, pool=o["pool"], cut=cut, cut_hours=f["hours_to_reset"])
+                      if x.get("p50") is not None), None)
+            if w:
+                out["cheaper_model"] = _range(w["p10"], w["p50"], w["p90"])
+    room = f["room_elsewhere"][0] if f["room_elsewhere"] else None
+    if room and o.get("p50") is not None:
+        out["move"] = {**_range(used, used, used)}
+        if usd and room.get("_usd") and room.get("likely_at_reset_pct") is not None:
+            moved = (o["p50"] - used) / 100 * o["amount"]   # the rest of this period's likely spend, there instead
+            out["move"]["there_pct"] = round(room["likely_at_reset_pct"] + 100 * moved / room["_usd"])
+    return out
+
+
+def _past(store, gid, n=5) -> dict:
+    """This budget's past calls and how their periods ended: measured feedback for the model."""
+    entries = [d for d in log(store) if d["budget"] == gid]
+    periods = {d["since"]: d["ended_pct"] for d in entries if "ended_pct" in d}
+    return {"periods_ended": len(periods), "periods_within_budget": sum(1 for v in periods.values() if v <= 100),
+            "last_calls": [{"call": d["do"], "used_pct_then": (d.get("facts") or {}).get("used_pct"),
+                            **({"period_ended_pct": d["ended_pct"]} if "ended_pct" in d else {})}
+                           for d in entries[-n:]]}
+
+
+def _with(text, r):
+    """A choice's words, with where it would likely leave the budget."""
+    if not r:
+        return text + " (its effect isn't measured)"
+    end = f"likely ends the period at {r['p50']}%" + (f", range {r['p10']}–{r['p90']}%" if r["p90"] != r["p10"] else "")
+    if "there_pct" in r:
+        end += f", and the other at {r['there_pct']}%"
+    return f"{text} ({end})"
 
 
 def choices(f, g) -> tuple[dict, dict]:
@@ -166,6 +233,7 @@ def choices(f, g) -> tuple[dict, dict]:
     if g.get("period") in pools.PERIODS:
         do["wait_for_reset"] = DO["wait_for_reset"].format(span=alerts.span(f["hours_to_reset"] * 3600))
     do["stop_now"] = DO["stop_now"]
+    do = {k: _with(v, (f.get("if_chosen") or {}).get(k)) for k, v in do.items()}
     ask = {"nothing": ASK["nothing"], "raise_budget": ASK["raise_budget"]}
     if (g.get("scope") or {}).get("projects"):
         ask["pause_project"] = ASK["pause_project"]
@@ -179,7 +247,10 @@ def ask_model(store, gid, o, g, here, now, key):
     body = {"model": MODEL, "state": f, "questions": {
         "do": {"type": "choice", "criteria": do,
                "instructions": "A spending budget for AI coding agents is running low. From these measured facts,"
-                               " what should the agent's work that counts toward it do next?"},
+                               " what should the agent's work that counts toward it do next? if_chosen gives,"
+                               " for each choice, where the budget would likely end its period (% of it), from"
+                               " the forecast with that choice applied; track_record gives past calls on this"
+                               " budget and how their periods ended."},
         "ask": {"type": "choice", "criteria": ask,
                 "instructions": "Is there a decision about money or the project's worth to put to the person?"
                                 " Only they make those."}}}
@@ -194,6 +265,7 @@ def ask_model(store, gid, o, g, here, now, key):
          "unit": g.get("unit", "usd"), "here": here, "facts": f, "choices": do, "asks": ask,
          "do": a["choice"], "p": a.get("confidence"), "probabilities": a.get("probabilities"),
          "ask": q["choice"], "ask_p": q.get("confidence"), "id": r.get("id"), "tokens": tokens,
+         "model": r.get("model"), "model_version": r.get("model_version"),
          "cost_usd": tokens * USD_PER_M / 1e6}
     log = store.meta("decisions") or []
     store.set_meta("decisions", (log + [d])[-LOG_MAX:])
@@ -300,7 +372,8 @@ def view(store, o, now=None, n=10) -> dict | None:
     a = active(store, o, now)
     one = lambda d: {"at": d["at"], "machine": d.get("machine"), "do": d["do"], "short": SHORT.get(d["do"], d["do"]),
                      "text": words(d), "p": d.get("p"), "ask": d.get("ask"), "sent": d.get("facts"),
-                     "choices": list(d.get("choices") or {}), "ended_pct": d.get("ended_pct")}
+                     "choices": list(d.get("choices") or {}), "ended_pct": d.get("ended_pct"),
+                     "next": runner_up(d), "model_version": d.get("model_version")}
     entries = [d for d in log(store, now) if d["budget"] == o["pool"][5:]]
     return {"calls": r["calls"], "periods_ended": r["periods_ended"], "periods_within": r["periods_within"],
             "cost_usd": r["cost_usd"], "last": words(r["last"]), "at": r["last"]["at"],
@@ -330,3 +403,9 @@ def merge(store, machine, entries) -> int:
     if new:
         store.set_meta("decisions", sorted(have + new, key=lambda d: d["at"])[-HUB_MAX:])
     return len(new)
+
+
+def runner_up(d) -> dict | None:
+    """The second most likely choice, with its probability: how close the call was."""
+    ps = sorted(((p, k) for k, p in (d.get("probabilities") or {}).items() if k != d["do"]), reverse=True)
+    return {"do": ps[0][1], "short": SHORT.get(ps[0][1], ps[0][1]), "p": ps[0][0]} if ps else None
