@@ -190,3 +190,32 @@ def test_calls_go_to_the_hub_once_each(running, store, monkeypatch):
     with users.store("chris") as s:
         [d] = s.meta("decisions")
         assert d["machine"] == "laptop" and d["do"] == "stop_now"
+
+
+def test_each_choice_carries_its_measured_what_if_and_the_track_record_goes_back(store, monkeypatch):
+    from array import array
+
+    from savetokens import forecast, meter
+    gid = pools.add_budget(store, 100, "month", providers=["chutes.ai"])
+    pools.set_mode(store, gid, "decide")
+    _spend(store, "chutes.ai", 30.0, model="big", tokens=10_000_000)            # $3 per million, today
+    _spend(store, "chutes.ai", 0.5, model="small", tokens=1_000_000, ago=5 * 86400)
+    now = time.time()
+    forecast.save_paths(store, f"goal:{gid}", "baseline", now, meter.hour_floor(now), 800, array("d", [0.1] * 800 * 10))
+    o = next(x for x in forecast.outlook(store, now, goals=True) if x["pool"] == f"goal:{gid}")
+    here = {"tool": "hermes", "provider": "chutes.ai", "project": None, "billing": "api"}
+    f = decide.facts(store, o, pools.goals_(store)[gid], here, now)
+    w = f["if_chosen"]
+    assert w["stop_now"]["p50"] == round(o["used"]) and w["carry_on"]["p50"] == round(o["p50"])
+    assert w["stop_now"]["p50"] < w["cheaper_model"]["p50"] < w["carry_on"]["p50"]   # repriced at $0.50/M
+    assert "finish_then_stop" not in w                                         # no finished tasks: not measured
+    do, _ = decide.choices(f, pools.goals_(store)[gid])
+    assert "likely ends the period at" in do["carry_on"] and "isn't measured" in do["finish_then_stop"]
+    assert f["track_record"] == {"periods_ended": 0, "periods_within_budget": 0, "last_calls": []}
+    sent = []
+    _model(monkeypatch, "cheaper_model", sent=sent)
+    d = decide.ask_model(store, gid, o, pools.goals_(store)[gid], here, now, "dm_test")
+    assert sent[0]["model"] == "s1-pro-3" and decide.runner_up({**d, "probabilities": {"cheaper_model": 0.6,
+                                                                                         "carry_on": 0.3}})["p"] == 0.3
+    f2 = decide.facts(store, o, pools.goals_(store)[gid], here, now)
+    assert f2["track_record"]["last_calls"][0]["call"] == "cheaper_model"
