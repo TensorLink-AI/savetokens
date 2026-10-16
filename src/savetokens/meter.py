@@ -60,7 +60,7 @@ def readings(store, name, since=0, until=None, account=None, harness=CLAUDE):
     if account is not None:
         q += " AND account IS ?"
         p.append(account)
-    rows = store.conn.execute(q + " ORDER BY ts", p).fetchall()
+    rows = _own_windows(store.conn.execute(q + " ORDER BY ts", p).fetchall(), harness)
     # per (account, window): the highest reading from each reading's time to RESET_LOOKAHEAD after it
     ahead, later = [0.0] * len(rows), [False] * len(rows)
     by = defaultdict(list)
@@ -87,6 +87,22 @@ def readings(store, name, since=0, until=None, account=None, harness=CLAUDE):
     return out
 
 
+def _own_windows(rows, harness):
+    """One Claude account's windows follow each other: once a later window has started, a reading from an
+    earlier one isn't this account's current meter (another account's, misattributed, or a stale session's).
+    Codex accounts can't be told apart, so their windows interleave and are kept."""
+    if harness != CLAUDE:
+        return rows
+    newest, out = {}, []
+    for r in rows:
+        ts, acct, pct, resets = r
+        if acct is not None and resets < newest.get(acct, resets) - 1800:
+            continue
+        newest[acct] = max(newest.get(acct, resets), resets)
+        out.append(r)
+    return out
+
+
 def latest(store, name, now, account=None, harness=CLAUDE):
     """The open window of a limit, from its newest reading: {ts, account, pct, resets}, pct being the
     highest reading in that window (lower ones are stale, from idle sessions)."""
@@ -98,6 +114,10 @@ def latest(store, name, now, account=None, harness=CLAUDE):
     r = store.conn.execute(q + " ORDER BY ts DESC LIMIT 1", p).fetchone()
     if not r:
         return None
+    if harness == CLAUDE and r["account"] is not None:   # the account's newest window, not an earlier one's reading
+        r = store.conn.execute("SELECT ts, account, pct, resets FROM meter WHERE harness = ? AND name = ? AND resets > ?"
+                               " AND ts <= ? AND account IS ? ORDER BY resets DESC, ts DESC LIMIT 1",
+                               (harness, name, now, now, r["account"])).fetchone()
     out = dict(r)
     seen = [x for x in readings(store, name, since=r["resets"] - WEEK - HOUR, until=now + 1, account=r["account"],
                                 harness=harness) if abs(x[3] - r["resets"]) < 1800]
