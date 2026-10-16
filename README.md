@@ -56,6 +56,34 @@ Then watch it in Claude Code's statusline, `savetokens web`, or ask your agent "
 More in [Install](#install), [Run a hub](#run-a-hub-all-your-machines-in-one-place) and
 [Troubleshooting](#troubleshooting).
 
+## How it fits together
+
+```mermaid
+flowchart LR
+  subgraph M["Each machine you work on"]
+    T["Claude Code · Codex · Hermes"] -->|"hooks, statusline,<br/>a 10-minute cron"| L["savetokens<br/>~/.savetokens"]
+    L -->|"budget in decide<br/>at risk or used up"| G{"options you allow<br/>(MAY PICK)"}
+    G -->|"one option"| C["that's the call"]
+    G -->|"several"| DM[("Decision Models<br/>decisionmodels.io")]
+    DM -->|"the call"| A["act on it: carry on, finish then stop,<br/>cheaper model, move, wait, stop"]
+    C --> A
+    A -->|"stop: prompt blocked,<br/>check exits 4"| T
+  end
+  subgraph H["Your hub (one always-on machine)"]
+    S["savetokens server"] --> W["dashboard"]
+  end
+  L -->|"token counts, limit readings,<br/>calls made (no prompts or code)"| S
+  S -->|"forecasts, budgets, your rules"| L
+  S -->|"one number per tool per hour"| E[("Ephemeris<br/>forecasts")]
+  E -->|"likely at reset, range, risk"| S
+```
+
+Each machine reads its tools locally and sends counts (never prompts or code) to your hub. The hub sends one number
+per tool per hour to Ephemeris and gets forecasts back. When a budget in decide is at risk or used up, the machine
+doing the work asks Decision Models to pick among the options you allow (or, with one allowed, that's the call), and
+savetokens acts on it. On one machine with no hub, savetokens sends the hourly number to Ephemeris itself. What
+leaves each machine, in full: [What leaves your machine](#what-leaves-your-machine).
+
 ## What it does
 
 - **Reads each tool's own meter.** Claude Code's statusline and Codex's session logs
