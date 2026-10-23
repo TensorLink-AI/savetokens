@@ -3,6 +3,9 @@
 # The first start prints the line that adds a machine (docker logs savetokens):
 #   curl -fsSL http://<host>:8787/join | sh -s <code>    (the code is in the same logs)
 FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+     && rm -rf /var/lib/apt/lists/* \
+     && python -m pip --cert /etc/ssl/certs/ca-certificates.crt install --no-cache-dir --upgrade "pip>=26.2.2" "certifi>=2026.10.19"
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
